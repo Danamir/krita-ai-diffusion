@@ -387,7 +387,7 @@ def generate(
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     if settings.use_advanced_sampler and not live.is_active:
-        out_latent = w.ksampler_advanced(model, positive, negative, latent, **sampler_params, two_pass=True)
+        out_latent = w.ksampler_advanced(model, positive, negative, latent, **sampler_params, two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler)
     else:
         out_latent = w.ksampler(model, positive, negative, latent, **sampler_params)
     if extent.requires_upscale:
@@ -460,7 +460,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
         )
         _, positive_upscale, _ = apply_conditioning(cond_upscale, w, comfy, model, clip, style)
         if settings.use_advanced_sampler:
-            out_latent = w.ksampler_advanced(model, positive_upscale, negative, latent, denoise=0.5, **params, two_pass=True)
+            out_latent = w.ksampler_advanced(model, positive_upscale, negative, latent, denoise=0.5, **params, two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler)
         else:
             out_latent = w.ksampler(model, positive_upscale, negative, latent, denoise=0.5, **params)
 
