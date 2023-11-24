@@ -124,7 +124,7 @@ class ComfyWorkflow:
                 latent_image=latent_image,
                 steps=steps,
                 start_at_step=round(steps*(1-denoise)),
-                end_at_step=round(steps*2/3),
+                end_at_step=round(steps*0.6),
                 cfg=cfg,
                 add_noise='enable',
                 return_with_leftover_noise='enable',
