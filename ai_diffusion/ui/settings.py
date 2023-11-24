@@ -480,6 +480,12 @@ class SettingsTab(QWidget):
         self._widgets[name] = widget
         widget.value_changed.connect(self.write)
 
+    def add_separator(self, text: str = "", space: int = 6):
+        label = QLabel(text, self)
+        label.setStyleSheet("font-weight:bold")
+        self._layout.addSpacing(space)
+        self._layout.addWidget(label)
+
     def _read(self):
         pass
 
@@ -896,6 +902,11 @@ class DiffusionSettings(SettingsTab):
         self._layout.addWidget(self._fixed_seed_checkbox)
 
         self.add("use_advanced_sampler", CheckBoxSetting(S._use_advanced_sampler, "Use", self))
+
+        self.add_separator("Development settings", 36)
+        self.add("use_refiner_pass", CheckBoxSetting(S._use_refiner_pass, "Use", self))
+        self.add("first_pass_sampler", TextSetting(S._first_pass_sampler, self))
+        self.add("override_upscaler", TextSetting(S._override_upscaler, self))
 
         self._layout.addStretch()
 

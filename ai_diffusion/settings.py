@@ -103,6 +103,15 @@ class Settings(QObject):
     use_advanced_sampler: bool
     _use_advanced_sampler = Setting("Use Advanced Sampler", False, "Use advanced KSampler methods, improves performance by using fewer steps on low strength")
 
+    use_refiner_pass: bool
+    _use_refiner_pass = Setting("Use Refiner Pass", False, "Use a refiner pass for part of the steps, only affects advanced sampler")
+
+    first_pass_sampler: str
+    _first_pass_sampler = Setting("First Pass Sampler", "dpmpp_sde", "First pass sampler, only used if refiner pass is activated")
+
+    override_upscaler: str
+    _override_upscaler = Setting("Override Upscaler", "UltraSharp 4x", "Override default upscaler (requires restart)")
+
     random_seed: str
     _random_seed = Setting(
         "Random Seed", "0", "Random number to produce different results with each generation"
