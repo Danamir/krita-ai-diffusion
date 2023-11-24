@@ -106,26 +106,64 @@ class ComfyWorkflow:
         cfg=7.0,
         denoise=1.0,
         seed=-1,
+        two_pass=False,
     ):
         self.sample_count += steps
 
-        return self.add(
-            "KSamplerAdvanced",
-            1,
-            noise_seed=random.getrandbits(64) if seed == -1 else seed,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            model=model,
-            positive=positive,
-            negative=negative,
-            latent_image=latent_image,
-            steps=steps,
-            start_at_step=round(steps*(1-denoise)),
-            end_at_step=steps,
-            cfg=cfg,
-            add_noise='enable',
-            return_with_leftover_noise='disable',
-        )
+        if two_pass:
+            latent_image = self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                sampler_name='dpmpp_sde',
+                scheduler=scheduler,
+                model=model,
+                positive=positive,
+                negative=negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=round(steps*(1-denoise)),
+                end_at_step=round(steps*2/3),
+                cfg=cfg,
+                add_noise='enable',
+                return_with_leftover_noise='enable',
+            )
+
+            return self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                model=model,
+                positive=positive,
+                negative=negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=round(max(steps*2/3, steps*(1-denoise))),
+                end_at_step=steps,
+                cfg=cfg,
+                add_noise='disable',
+                return_with_leftover_noise='disable',
+            )
+        else:
+            return self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                model=model,
+                positive=positive,
+                negative=negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=round(steps*(1-denoise)),
+                end_at_step=steps,
+                cfg=cfg,
+                add_noise='enable',
+                return_with_leftover_noise='disable',
+            )
 
     def model_sampling_discrete(self, model: Output, sampling: str):
         return self.add("ModelSamplingDiscrete", 1, model=model, sampling=sampling, zsnr=False)

@@ -368,7 +368,7 @@ def upscale(
             params["steps"] = max(1, int(params["steps"] * 0.8))
 
     if settings.use_advanced_sampler:
-        return w.ksampler_advanced(model, prompt_pos, prompt_neg, upscale, **params)
+        return w.ksampler_advanced(model, prompt_pos, prompt_neg, upscale, **params, two_pass=False)
     else:
         return w.ksampler(model, prompt_pos, prompt_neg, upscale, **params)
 
@@ -387,7 +387,7 @@ def generate(
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     if settings.use_advanced_sampler:
-        out_latent = w.ksampler_advanced(model, positive, negative, latent, **sampler_params)
+        out_latent = w.ksampler_advanced(model, positive, negative, latent, **sampler_params, two_pass=True)
     else:
         out_latent = w.ksampler(model, positive, negative, latent, **sampler_params)
     if extent.requires_upscale:
@@ -429,7 +429,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     latent = w.batch_latent(latent, batch)
     if settings.use_advanced_sampler:
         out_latent = w.ksampler_advanced(
-            model, positive, negative, latent, **_sampler_params(style, clip_vision=True)
+            model, positive, negative, latent, **_sampler_params(style, clip_vision=True), two_pass=False
         )
     else:
         out_latent = w.ksampler(
@@ -460,7 +460,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
         )
         _, positive_upscale, _ = apply_conditioning(cond_upscale, w, comfy, model, clip, style)
         if settings.use_advanced_sampler:
-            out_latent = w.ksampler_advanced(model, positive_upscale, negative, latent, denoise=0.5, **params)
+            out_latent = w.ksampler_advanced(model, positive_upscale, negative, latent, denoise=0.5, **params, two_pass=True)
         else:
             out_latent = w.ksampler(model, positive_upscale, negative, latent, denoise=0.5, **params)
 
@@ -502,7 +502,7 @@ def refine(
         latent = w.batch_latent(latent, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     if settings.use_advanced_sampler:
-        sampler = w.ksampler_advanced(model, positive, negative, latent, denoise=strength, **sampler_params)
+        sampler = w.ksampler_advanced(model, positive, negative, latent, denoise=strength, **sampler_params, two_pass=False)
     else:
         sampler = w.ksampler(model, positive, negative, latent, denoise=strength, **sampler_params)
     out_image = w.vae_decode(vae, sampler)
@@ -538,7 +538,7 @@ def refine_region(
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     if settings.use_advanced_sampler:
         out_latent = w.ksampler_advanced(
-            model, positive, negative, latent, denoise=strength, **_sampler_params(style)
+            model, positive, negative, latent, denoise=strength, **_sampler_params(style), two_pass=False
         )
     else:
         out_latent = w.ksampler(
