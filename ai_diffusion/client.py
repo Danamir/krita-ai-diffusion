@@ -7,6 +7,7 @@ import struct
 import uuid
 from typing import NamedTuple, Optional, Union, Sequence
 
+from ai_diffusion import settings
 from .comfyworkflow import ComfyWorkflow
 from .image import Image, ImageCollection
 from .network import RequestManager, NetworkError
@@ -172,9 +173,15 @@ class Client:
         client.upscalers = nodes["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
         if len(client.upscalers) == 0:
             raise MissingResource(ResourceKind.upscaler)
-        client.default_upscaler = ensure(
-            _find_upscaler(client.upscalers, "4x_NMKD-Superscale-SP_178000_G.pth")
-        )
+        if settings.override_upscaler:
+            client.default_upscaler = _find_upscaler(
+                client.upscalers,
+                settings.override_upscaler if '.' in settings.override_upscaler else settings.override_upscaler+".pth"
+            )
+        else:
+            client.default_upscaler = ensure(
+                _find_upscaler(client.upscalers, "4x_NMKD-Superscale-SP_178000_G.pth")
+            )
 
         # Retrieve LCM LoRA models
         client.lcm_model = {
