@@ -110,9 +110,6 @@ class Settings(QObject):
     fixed_seed: bool
     _fixed_seed = Setting("Use Fixed Seed", False, "Fixes the random seed to a specific value")
 
-    use_advanced_sampler: bool
-    _use_advanced_sampler = Setting("Use Advanced Sampler", False, "Use advanced KSampler methods, improves performance by using fewer steps on low strength")
-
     use_refiner_pass: bool
     _use_refiner_pass = Setting("Use Refiner Pass", False, "Use a refiner pass for part of the steps, only affects advanced sampler")
 
