@@ -530,7 +530,8 @@ def refine(
             negative,
             latent,
             denoise=strength,
-            two_pass=False,
+            two_pass=settings.use_refiner_pass,
+            first_pass_sampler=settings.first_pass_sampler,
             min_steps=sampler_params['steps'] if live.is_active else None,
             **sampler_params
         )
@@ -569,7 +570,7 @@ def refine_region(
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     if settings.use_advanced_sampler:
         out_latent = w.ksampler_advanced(
-            model, positive, negative, latent, denoise=strength, **_sampler_params(style), two_pass=False
+            model, positive, negative, latent, denoise=strength, **_sampler_params(style), two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler
         )
     else:
         out_latent = w.ksampler(
