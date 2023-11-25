@@ -103,19 +103,13 @@ class ComfyWorkflow:
         sampler="dpmpp_2m_sde_gpu",
         scheduler="normal",
         steps=20,
+        start_at_step=0,
         cfg=7.0,
-        denoise=1.0,
         seed=-1,
         two_pass=False,
         first_pass_sampler='dpmpp_sde',
-        min_steps=None,
     ):
-        self.sample_count += steps
-
-        start_at_step = round(steps*(1-denoise))
-        if min_steps and steps - start_at_step < min_steps:
-            start_at_step = math.floor(steps * 1/denoise - steps)
-            steps = start_at_step + min_steps
+        self.sample_count += steps - start_at_step
 
         if two_pass:
             latent_image = self.add(
