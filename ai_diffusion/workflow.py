@@ -482,7 +482,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
         )
         _, positive_up, negative_up = apply_conditioning(cond_upscale, w, comfy, model, clip, style)
         if settings.use_advanced_sampler:
-            out_latent = w.ksampler_advanced(model, positive_up, negative_up, negative, latent, denoise=0.5, **params, two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler)
+            out_latent = w.ksampler_advanced(model, positive_up, negative_up, latent, denoise=0.5, **params, two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler)
         else:
             out_latent = w.ksampler(model, positive_up, negative_up, latent, denoise=0.5, **params)
 
