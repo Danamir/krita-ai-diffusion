@@ -108,8 +108,14 @@ class ComfyWorkflow:
         seed=-1,
         two_pass=False,
         first_pass_sampler='dpmpp_sde',
+        min_steps=None,
     ):
         self.sample_count += steps
+
+        start_at_step = round(steps*(1-denoise))
+        if min_steps and steps - start_at_step < min_steps:
+            start_at_step = math.floor(steps * 1/denoise - steps)
+            steps = start_at_step + min_steps
 
         if two_pass:
             latent_image = self.add(
@@ -159,7 +165,7 @@ class ComfyWorkflow:
                 negative=negative,
                 latent_image=latent_image,
                 steps=steps,
-                start_at_step=round(steps*(1-denoise)),
+                start_at_step=start_at_step,
                 end_at_step=steps,
                 cfg=cfg,
                 add_noise='enable',

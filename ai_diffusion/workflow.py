@@ -9,7 +9,7 @@ from .style import SDVersion, Style, StyleSettings
 from .resources import ControlMode
 from .settings import settings
 from .comfyworkflow import ComfyWorkflow, Output
-from .util import compute_batch_size, client_logger as log
+from .util import client_logger as log
 
 
 class ScaledExtent(NamedTuple):
@@ -72,6 +72,13 @@ def create_inpaint_context(image: Image, area: Bounds, default: Output):
         if area.y == 0 or area.y + area.height == extent.height:
             return Image.crop(image, Bounds(0, offset, extent.width, extent.height - area.height))
     return default
+
+
+def compute_batch_size(extent: Extent, min_size=512, max_batches: Optional[int] = None):
+    max_batches = max_batches or settings.batch_size
+    desired_pixels = min_size * min_size * max_batches
+    requested_pixels = extent.width * extent.height
+    return max(1, min(max_batches, desired_pixels // requested_pixels))
 
 
 def prepare(
@@ -214,7 +221,7 @@ class Control:
         image: Image | Output,
         strength=1.0,
         mask: None | Mask | Output = None,
-        end: float=1.0,
+        end=1.0,
     ):
         self.mode = mode
         self.image = image
@@ -315,7 +322,14 @@ def apply_control(
         if control.mode.is_lines:  # ControlNet expects white lines on black background
             image = w.invert_image(image)
         controlnet = w.load_controlnet(model_file)
-        positive, negative = w.apply_controlnet(positive, negative, controlnet, image, strength=control.strength, end_percent=control.end)
+        positive, negative = w.apply_controlnet(
+            positive,
+            negative,
+            controlnet,
+            image,
+            strength=control.strength,
+            end_percent=control.end,
+        )
 
     # Merge all images into a single batch and apply IP-adapter to the model once
     ip_model_file = comfy.ip_adapter_model[sd_ver]
@@ -386,8 +400,16 @@ def generate(
     model, clip, vae = load_model_with_lora(w, comfy, style, is_live=live.is_active)
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
-    if settings.use_advanced_sampler and not live.is_active:
-        out_latent = w.ksampler_advanced(model, positive, negative, latent, **sampler_params, two_pass=settings.use_refiner_pass, first_pass_sampler=settings.first_pass_sampler)
+    if settings.use_advanced_sampler:
+        out_latent = w.ksampler_advanced(
+            model, positive,
+            negative,
+            latent,
+            two_pass=settings.use_refiner_pass,
+            first_pass_sampler=settings.first_pass_sampler,
+            min_steps=sampler_params['steps'] if live.is_active else None,
+            **sampler_params
+        )
     else:
         out_latent = w.ksampler(model, positive, negative, latent, **sampler_params)
     if extent.requires_upscale:
@@ -501,8 +523,17 @@ def refine(
     if batch > 1 and not live.is_active:
         latent = w.batch_latent(latent, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
-    if settings.use_advanced_sampler and not live.is_active:
-        sampler = w.ksampler_advanced(model, positive, negative, latent, denoise=strength, **sampler_params, two_pass=False)
+    if settings.use_advanced_sampler:
+        sampler = w.ksampler_advanced(
+            model,
+            positive,
+            negative,
+            latent,
+            denoise=strength,
+            two_pass=False,
+            min_steps=sampler_params['steps'] if live.is_active else None,
+            **sampler_params
+        )
     else:
         sampler = w.ksampler(model, positive, negative, latent, denoise=strength, **sampler_params)
     out_image = w.vae_decode(vae, sampler)
@@ -571,7 +602,7 @@ def create_control_image(image: Image, mode: ControlMode):
         }
         if mode is ControlMode.scribble:
             result = w.add("PiDiNetPreprocessor", 1, **args, safe="enable")
-            result = w.add("ScribblePreprocessor", 1, image=result, resolution=args['resolution'])
+            result = w.add("ScribblePreprocessor", 1, image=result, resolution=args["resolution"])
         elif mode is ControlMode.line_art:
             result = w.add("LineArtPreprocessor", 1, **args, coarse="disable")
         elif mode is ControlMode.soft_edge:
