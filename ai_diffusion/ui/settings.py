@@ -902,7 +902,7 @@ class DiffusionSettings(SettingsTab):
         self._fixed_seed_checkbox.stateChanged.connect(self.write)
         self._layout.addWidget(self._fixed_seed_checkbox)
 
-        self.add_separator("Development settings", 36)
+        self.add_separator("Experimental settings", 36)
         self.add("use_refiner_pass", CheckBoxSetting(S._use_refiner_pass, "Use", self))
         self.add("first_pass_sampler", TextSetting(S._first_pass_sampler, self))
         self.add("override_upscaler", TextSetting(S._override_upscaler, self))
