@@ -141,11 +141,16 @@ def prepare_masked(image: Image, mask: Mask, sd_ver: SDVersion, downscale: bool 
 class LiveParams:
     is_active = False
     strength = 0.3
-    seed = random.randint(0, 2**31 - 1)
+    seed: int
+
+    def __init__(self, is_active=False, strength=0.3, seed=None):
+        self.is_active = is_active
+        self.strength = strength
+        self.seed = seed or random.randint(0, 2**31 - 1)
 
 
 def _sampler_params(
-    style: Style, clip_vision=False, upscale=False, live=LiveParams()
+    style: Style, clip_vision=False, upscale=False, live=LiveParams(), strength: float = None
 ) -> dict[str, Any]:
     config = style.get_sampler_config(upscale, live.is_active)
     sampler_name = {
@@ -167,6 +172,8 @@ def _sampler_params(
     params = dict(
         sampler=sampler_name, scheduler=sampler_scheduler, steps=config.steps, cfg=config.cfg
     )
+    if strength is not None and not upscale:
+        params["steps"], params["start_at_step"] = _apply_strength(strength=strength, steps=params["steps"], min_steps=config.steps if live.is_active else 1)
     if clip_vision:
         params["cfg"] = min(5, config.cfg)
     if live.is_active:
@@ -176,21 +183,18 @@ def _sampler_params(
             params["seed"] = int(settings.random_seed)
         except ValueError:
             log.warning(f"Invalid random seed: {settings.random_seed}")
+
     return params
 
 
-def _apply_strength(strength: float, params: dict, fixed_steps: bool = False) -> dict[str, Any]:
-    steps = params['steps']
+def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
     start_at_step = round(steps*(1-strength))
 
-    if fixed_steps and start_at_step > 0:
-        start_at_step = math.floor(steps * 1/strength - steps)
-        steps += start_at_step
+    if min_steps and steps - start_at_step < min_steps:
+        steps = math.floor(min_steps * 1/strength)
+        start_at_step = steps - min_steps
 
-    params['steps'] = steps
-    params['start_at_step'] = start_at_step
-
-    return params
+    return steps, start_at_step
 
 
 def load_model_with_lora(w: ComfyWorkflow, comfy: Client, style: Style, is_live=False):
@@ -380,11 +384,10 @@ def upscale(
     vae: Output,
     comfy: Client,
 ):
-    params = _sampler_params(style)
     if extent.scale > (1 / 1.5):
         # up to 1.5x scale: upscale latent
         upscale = w.scale_latent(latent, extent.expanded)
-        params = _apply_strength(0.5, params)
+        params = _sampler_params(style, strength=0.5)
     else:
         # for larger upscaling factors use super-resolution model
         upscale_model = w.load_upscale_model(comfy.default_upscaler)
@@ -392,7 +395,7 @@ def upscale(
         upscale = w.upscale_image(upscale_model, decoded)
         upscale = w.scale_image(upscale, extent.expanded)
         upscale = w.vae_encode(vae, upscale)
-        params = _apply_strength(0.4, params)
+        params = _sampler_params(style, strength=0.4)
 
     return w.ksampler_advanced(model, prompt_pos, prompt_neg, upscale, **params, two_pass=False)
 
@@ -459,8 +462,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
         model, positive, negative, latent, **_sampler_params(style, clip_vision=True), two_pass=False
     )
     if extent.requires_upscale:
-        params = _sampler_params(style, clip_vision=True)
-        params = _apply_strength(0.5, params)
+        params = _sampler_params(style, clip_vision=True, strength=0.5)
         if extent.scale > (1 / 1.5):
             # up to 1.5x scale: upscale latent
             latent = w.scale_latent(out_latent, extent.expanded)
@@ -511,8 +513,7 @@ def refine(
 ):
     assert strength > 0 and strength < 1
     extent, image, batch = prepare_image(image, resolve_sd_version(style, comfy), downscale=False)
-    sampler_params = _sampler_params(style, live=live)
-    sampler_params = _apply_strength(strength, sampler_params, fixed_steps=live.is_active)
+    sampler_params = _sampler_params(style, live=live, strength=strength)
 
     w = ComfyWorkflow()
     model, clip, vae = load_model_with_lora(w, comfy, style, is_live=live.is_active)
@@ -547,8 +548,7 @@ def refine_region(
     downscale_if_needed = strength >= 0.7
     sd_ver = resolve_sd_version(style, comfy)
     extent, image, mask_image, batch = prepare_masked(image, mask, sd_ver, downscale_if_needed)
-    sampler_params = _sampler_params(style)
-    sampler_params = _apply_strength(strength, sampler_params)
+    sampler_params = _sampler_params(style, strength=strength)
 
     w = ComfyWorkflow()
     model, clip, vae = load_model_with_lora(w, comfy, style)

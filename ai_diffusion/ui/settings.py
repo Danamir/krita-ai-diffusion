@@ -744,10 +744,6 @@ class StylePresets(SettingsTab):
         self._default_sampler_widgets = [
             add("sampler", ComboBoxSetting(StyleSettings.sampler, self)),
             add("sampler_steps", SliderSetting(StyleSettings.sampler_steps, self, 1, 100)),
-            add(
-                "sampler_steps_upscaling",
-                SliderSetting(StyleSettings.sampler_steps_upscaling, self, 1, 100),
-            ),
             add("cfg_scale", SliderSetting(StyleSettings.cfg_scale, self, 1.0, 20.0)),
         ]
         self._toggle_default_sampler(False)
@@ -878,8 +874,9 @@ class StylePresets(SettingsTab):
                 for cp in client.checkpoints.values()
                 if not (cp.is_refiner or cp.is_inpaint)
             ]
+            loras = [lora for lora in client.lora_models if lora not in client.lcm_model.values()]
             self._style_widgets["sd_checkpoint"].set_items(checkpoints)
-            self._style_widgets["loras"].names = client.lora_models
+            self._style_widgets["loras"].names = loras
             self._style_widgets["vae"].set_items([default_vae] + client.vae_models)
         self._read_style(self.current_style)
 
