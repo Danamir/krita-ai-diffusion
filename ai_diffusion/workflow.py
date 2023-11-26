@@ -301,14 +301,15 @@ def merge_prompt(prompt: str, style_prompt: str):
 def apply_conditioning(
     cond: Conditioning, w: ComfyWorkflow, comfy: Client, model: Output, clip: Output, style: Style
 ):
+    sd_ver = resolve_sd_version(style, comfy)
     prompt = merge_prompt(cond.prompt, style.style_prompt)
     if cond.area:
         prompt = merge_prompt("", style.style_prompt)
-    positive = w.clip_text_encode(clip, prompt)
-    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt))
+    positive = w.clip_text_encode(clip, prompt, sd_ver)
+    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_ver)
     model, positive, negative = apply_control(cond, w, comfy, model, positive, negative, style)
     if cond.area and cond.prompt != "":
-        positive_area = w.clip_text_encode(clip, cond.prompt)
+        positive_area = w.clip_text_encode(clip, cond.prompt, sd_ver)
         positive_area = w.conditioning_area(positive_area, cond.area)
         positive = w.conditioning_combine(positive, positive_area)
     return model, positive, negative

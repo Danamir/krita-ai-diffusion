@@ -3,6 +3,7 @@ import math
 import random
 from typing import NamedTuple, Tuple, Literal, overload
 
+from ai_diffusion import SDVersion
 from .image import Bounds, Extent, Image
 
 
@@ -201,8 +202,19 @@ class ComfyWorkflow:
     def empty_latent_image(self, width: int, height: int, batch_size=1):
         return self.add("EmptyLatentImage", 1, width=width, height=height, batch_size=batch_size)
 
-    def clip_text_encode(self, clip: Output, text: str):
-        return self.add("CLIPTextEncode", 1, clip=clip, text=text)
+    def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None):
+        if sd_ver == SDVersion.sdxl:
+            if " . " in text:
+                text_g, text_l = text.split(" . ")
+            else:
+                text_g, text_l = text, text
+
+            # from ai_diffusion.util import client_logger as log
+            # log.debug(f"Prompts text_g = '{text_g}', text_l = '{text_l}'")
+
+            return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
+        else:
+            return self.add("CLIPTextEncode", 1, clip=clip, text=text)
 
     def conditioning_area(self, conditioning: Output, area: Bounds, strength=1.0):
         return self.add(
