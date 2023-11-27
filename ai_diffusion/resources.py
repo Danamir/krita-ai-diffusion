@@ -425,8 +425,7 @@ _control_filename = {
     },
     ControlMode.blur: {
         SDVersion.sd15: ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],
-        # SDVersion.sdxl: ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],  # FIXME: fake detection to enable SDXL Blur
-        SDVersion.sdxl: ["lllite_sdxl_blur"],  # TODO: LLLite models loader
+        SDVersion.sdxl: None,
     },
     ControlMode.stencil: {
         SDVersion.sd15: ["control_v1p_sd15_qrcode_monster"],

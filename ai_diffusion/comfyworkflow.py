@@ -243,21 +243,6 @@ class ComfyWorkflow:
             end_percent=end_percent,
         )
 
-    def apply_lllite(
-            self, model: Output, image:Output, model_name: str, strength=1.0, steps=0.0, start_percent=0.0, end_percent=0.0
-    ):
-        return self.add(
-            "LLLiteLoader",
-            1,
-            model=model,
-            cond_image=image,
-            model_name=model_name,
-            strength=strength,
-            steps=steps,
-            start_percent=start_percent,
-            end_percent=end_percent,
-        )
-
     def apply_ip_adapter(
         self,
         ipadapter: Output,
