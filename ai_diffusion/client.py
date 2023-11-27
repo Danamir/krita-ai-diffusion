@@ -127,6 +127,7 @@ class Client:
     clip_vision_model: str
     ip_adapter_model: dict[SDVersion, str | None]
     ip_adapter_has_weight_type = False
+    ip_adapter_has_start = False
     lcm_model: dict[SDVersion, str | None]
     supported_sd_versions: list[SDVersion]
     device_info: DeviceInfo
@@ -167,6 +168,9 @@ class Client:
         }
         client.ip_adapter_has_weight_type = (
             "weight_type" in nodes["IPAdapterApply"]["input"]["required"]
+        )
+        client.ip_adapter_has_start = (
+            "start_at" in nodes["IPAdapterApply"]["input"]["required"]
         )
 
         # Retrieve upscale models
