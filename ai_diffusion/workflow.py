@@ -293,6 +293,17 @@ class Conditioning:
 
 
 def merge_prompt(prompt: str, style_prompt: str):
+    if " . " in prompt or " . " in style_prompt:
+        if " . " not in prompt:
+            prompt += " . "
+        if " . " not in style_prompt:
+            style_prompt += " . "
+
+        prompt_g, prompt_l = prompt.split(" . ")
+        style_prompt_g, style_prompt_l = style_prompt.split(" . ")
+
+        return f"{merge_prompt(prompt_g, style_prompt_g)} . {merge_prompt(prompt_l, style_prompt_l)}"
+
     if style_prompt == "":
         return prompt
     elif "{prompt}" in style_prompt:
@@ -303,7 +314,7 @@ def merge_prompt(prompt: str, style_prompt: str):
 
 
 def apply_conditioning(
-    cond: Conditioning, w: ComfyWorkflow, comfy: Client, model: Output, clip: Output, style: Style
+    cond: Conditioning, w: ComfyWorkflow, comfy: Client, model: Output, clip: Output, style: Style, base_strength=1.0
 ):
     sd_ver = resolve_sd_version(style, comfy)
     prompt = merge_prompt(cond.prompt, style.style_prompt)
@@ -311,7 +322,7 @@ def apply_conditioning(
         prompt = merge_prompt("", style.style_prompt)
     positive = w.clip_text_encode(clip, prompt, sd_ver)
     negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_ver)
-    model, positive, negative = apply_control(cond, w, comfy, model, positive, negative, style)
+    model, positive, negative = apply_control(cond, w, comfy, model, positive, negative, style, base_strength=base_strength)
     if cond.area and cond.prompt != "":
         positive_area = w.clip_text_encode(clip, cond.prompt, sd_ver)
         positive_area = w.conditioning_area(positive_area, cond.area)
@@ -327,6 +338,7 @@ def apply_control(
     positive: Output,
     negative: Output,
     style: Style,
+    base_strength=1.0,
 ):
     sd_ver = resolve_sd_version(style, comfy)
 
@@ -340,15 +352,27 @@ def apply_control(
             image = w.inpaint_preprocessor(image, control.load_mask(w))
         if control.mode.is_lines:  # ControlNet expects white lines on black background
             image = w.invert_image(image)
-        controlnet = w.load_controlnet(model_file)
-        positive, negative = w.apply_controlnet(
-            positive,
-            negative,
-            controlnet,
-            image,
-            strength=control.strength,
-            end_percent=control.end,
-        )
+        if sd_ver == SDVersion.sdxl and control.mode == ControlMode.blur:
+            sampler_params = _sampler_params(style, strength=base_strength)
+
+            model = w.apply_lllite(
+                model,
+                image,
+                "LLLite_sdxl_blur.safetensors",
+                steps=sampler_params["steps"] - sampler_params["start_at_step"],
+                strength=control.strength,
+                end_percent=control.end * 100,
+            )
+        else:
+            controlnet = w.load_controlnet(model_file)
+            positive, negative = w.apply_controlnet(
+                positive,
+                negative,
+                controlnet,
+                image,
+                strength=control.strength,
+                end_percent=control.end,
+            )
 
     # Merge all images into a single batch and apply IP-adapter to the model once
     ip_model_file = comfy.ip_adapter_model[sd_ver]
@@ -523,7 +547,7 @@ def refine(
     latent = w.vae_encode(vae, in_image)
     if batch > 1 and not live.is_active:
         latent = w.batch_latent(latent, batch)
-    model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
+    model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style, base_strength=strength)
     sampler = w.ksampler_advanced(
         model,
         positive,
@@ -564,7 +588,7 @@ def refine_region(
     latent = w.set_latent_noise_mask(latent, in_mask)
     latent = w.batch_latent(latent, batch)
     cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
-    model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
+    model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style, base_strength=strength)
     out_latent = w.ksampler_advanced(
         model, positive, negative, latent, **sampler_params, two_pass=False
     )
@@ -588,6 +612,8 @@ def create_control_image(image: Image, mode: ControlMode):
 
     if mode is ControlMode.canny_edge:
         result = w.add("Canny", 1, image=input, low_threshold=0.4, high_threshold=0.8)
+    elif mode is ControlMode.blur:
+        result = w.add("ImageBlur", 1, image=input, blur_radius=20, sigma=1.0)
     else:
         args = {
             "image": input,

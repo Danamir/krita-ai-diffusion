@@ -209,9 +209,6 @@ class ComfyWorkflow:
             else:
                 text_g, text_l = text, text
 
-            # from ai_diffusion.util import client_logger as log
-            # log.debug(f"Prompts text_g = '{text_g}', text_l = '{text_l}'")
-
             return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
         else:
             return self.add("CLIPTextEncode", 1, clip=clip, text=text)
@@ -242,6 +239,21 @@ class ComfyWorkflow:
             control_net=controlnet,
             image=image,
             strength=strength,
+            start_percent=start_percent,
+            end_percent=end_percent,
+        )
+
+    def apply_lllite(
+            self, model: Output, image:Output, model_name: str, strength=1.0, steps=0.0, start_percent=0.0, end_percent=0.0
+    ):
+        return self.add(
+            "LLLiteLoader",
+            1,
+            model=model,
+            cond_image=image,
+            model_name=model_name,
+            strength=strength,
+            steps=steps,
             start_percent=start_percent,
             end_percent=end_percent,
         )
