@@ -156,6 +156,10 @@ class Client:
         cns = nodes["ControlNetLoader"]["input"]["required"]["control_net_name"][0]
         client.control_model = {mode: _find_control_model(cns, mode) for mode in ControlMode}
 
+        # Retrieve LLLite models
+        lls = nodes["LLLiteLoader"]["input"]["required"]["model_name"][0]
+        client.control_model[ControlMode.blur][SDVersion.sdxl] = _find_lllite_model(lls, ControlMode.blur)[SDVersion.sdxl]
+
         # Retrieve CLIPVision models
         cv = nodes["CLIPVisionLoader"]["input"]["required"]["clip_name"][0]
         client.clip_vision_model = _find_clip_vision_model(cv)
@@ -464,6 +468,17 @@ def _find_model(
 
 
 def _find_control_model(model_list: Sequence[str], mode: ControlMode):
+    def find(sdver: SDVersion):
+        name = mode.filenames(sdver)
+        if name is None:
+            return None
+        names = [name] if isinstance(name, str) else name
+        return _find_model(ResourceKind.controlnet, sdver, model_list, names, mode)
+
+    return {version: find(version) for version in [SDVersion.sd15, SDVersion.sdxl]}
+
+
+def _find_lllite_model(model_list: Sequence[str], mode: ControlMode):
     def find(sdver: SDVersion):
         name = mode.filenames(sdver)
         if name is None:
