@@ -948,6 +948,7 @@ class DiffusionSettings(SettingsTab):
         self.add("use_refiner_pass", CheckBoxSetting(S._use_refiner_pass, "Use", self))
         self.add("first_pass_sampler", TextSetting(S._first_pass_sampler, self))
         self.add("override_upscaler", TextSetting(S._override_upscaler, self))
+        self.add("split_conditioning_sdxl", CheckBoxSetting(S._split_conditioning_sdxl, "Split", self))
 
         self._layout.addStretch()
 

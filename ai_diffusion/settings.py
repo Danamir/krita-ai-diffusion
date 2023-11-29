@@ -119,6 +119,9 @@ class Settings(QObject):
     override_upscaler: str
     _override_upscaler = Setting("Override Upscaler", "UltraSharp 4x", "Override default upscaler (requires restart)")
 
+    split_conditioning_sdxl: bool
+    _split_conditioning_sdxl = Setting("SDXL split conditioning", False, "Split the conditioning prompts G ang L on ' . ' token for SDXL")
+
     random_seed: str
     _random_seed = Setting(
         "Random Seed", "0", "Random number to produce different results with each generation"

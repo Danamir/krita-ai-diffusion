@@ -202,9 +202,9 @@ class ComfyWorkflow:
     def empty_latent_image(self, width: int, height: int, batch_size=1):
         return self.add("EmptyLatentImage", 1, width=width, height=height, batch_size=batch_size)
 
-    def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None):
+    def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None, split_conditioning=False):
         if sd_ver == SDVersion.sdxl:
-            if " . " in text:
+            if split_conditioning and " . " in text:
                 text_g, text_l = text.split(" . ")
             else:
                 text_g, text_l = text, text

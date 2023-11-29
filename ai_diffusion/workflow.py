@@ -296,7 +296,7 @@ class Conditioning:
 
 
 def merge_prompt(prompt: str, style_prompt: str):
-    if " . " in prompt or " . " in style_prompt:
+    if settings.split_conditioning_sdxl and (" . " in prompt or " . " in style_prompt):
         if " . " not in prompt:
             prompt += " . "
         if " . " not in style_prompt:
@@ -323,11 +323,11 @@ def apply_conditioning(
     prompt = merge_prompt(cond.prompt, style.style_prompt)
     if cond.area:
         prompt = merge_prompt("", style.style_prompt)
-    positive = w.clip_text_encode(clip, prompt, sd_ver)
-    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_ver)
+    positive = w.clip_text_encode(clip, prompt, sd_ver, split_conditioning=settings.split_conditioning_sdxl)
+    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_ver, split_conditioning=settings.split_conditioning_sdxl)
     model, positive, negative = apply_control(cond, w, comfy, model, positive, negative, style)
     if cond.area and cond.prompt != "":
-        positive_area = w.clip_text_encode(clip, cond.prompt, sd_ver)
+        positive_area = w.clip_text_encode(clip, cond.prompt, sd_ver, split_conditioning=settings.split_conditioning_sdxl)
         positive_area = w.conditioning_area(positive_area, cond.area)
         positive = w.conditioning_combine(positive, positive_area)
     return model, positive, negative
