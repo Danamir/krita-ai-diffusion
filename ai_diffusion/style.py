@@ -59,6 +59,8 @@ sampler_options = [
     "DDIM",
     "DPM++ 2M",
     "DPM++ 2M Karras",
+    "DPM++ SDE",
+    "DPM++ SDE Karras",
     "DPM++ 2M SDE",
     "DPM++ 2M SDE Karras",
     "LCM",
