@@ -173,12 +173,23 @@ def _sampler_params(
         "DPM++ 2M SDE Karras": "karras",
         "LCM": "sgm_uniform",
     }[config.sampler]
-    params = dict(
-        sampler=sampler_name, scheduler=sampler_scheduler, steps=config.steps, cfg=config.cfg
+    params: dict[str, Any] = dict(
+        sampler=sampler_name,
+        scheduler=sampler_scheduler,
+        steps=config.steps,
+        cfg=config.cfg,
     )
     if advanced:
         if strength < 1.0:
             params["steps"], params["start_at_step"] = _apply_strength(strength=strength, steps=params["steps"], min_steps=config.steps if live.is_active else 1)
+        else:
+            params["start_at_step"] = 0
+    if advanced:
+        if strength < 1.0:
+            min_steps = config.steps if live.is_active else 1
+            params["steps"], params["start_at_step"] = _apply_strength(
+                strength, params["steps"], min_steps
+            )
         else:
             params["start_at_step"] = 0
     if clip_vision:
@@ -204,12 +215,23 @@ def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[in
     return steps, start_at_step
 
 
+def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
+    start_at_step = round(steps * (1 - strength))
+
+    if min_steps and steps - start_at_step < min_steps:
+        steps = math.floor(min_steps * 1 / strength)
+        start_at_step = steps - min_steps
+
+    return steps, start_at_step
+
+
 def load_model_with_lora(w: ComfyWorkflow, comfy: Client, style: Style, is_live=False):
     checkpoint = style.sd_checkpoint
     if checkpoint not in comfy.checkpoints:
         checkpoint = next(iter(comfy.checkpoints.keys()))
         log.warning(f"Style checkpoint {style.sd_checkpoint} not found, using default {checkpoint}")
     model, clip, vae = w.load_checkpoint(checkpoint)
+    clip = w.clip_set_last_layer(clip, (style.clip_skip * -1))
 
     if style.vae != StyleSettings.vae.default:
         if style.vae in comfy.vae_models:
