@@ -468,7 +468,8 @@ def generate(
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     out_latent = w.ksampler_advanced(
-        model, positive,
+        model,
+        positive,
         negative,
         latent,
         two_pass=settings.use_refiner_pass,
