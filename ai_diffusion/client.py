@@ -7,7 +7,7 @@ import struct
 import uuid
 from typing import NamedTuple, Optional, Union, Sequence
 
-from ai_diffusion import settings
+from ai_diffusion.settings import settings
 from .comfyworkflow import ComfyWorkflow
 from .image import Image, ImageCollection
 from .network import RequestManager, NetworkError
@@ -570,3 +570,4 @@ def _validate_executed_node(msg: dict, image_count: int):
     except Exception as e:
         log.warning(f"Error processing message, error={str(e)}, msg={msg}")
         return False
+

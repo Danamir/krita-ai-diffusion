@@ -3,7 +3,7 @@ import math
 import random
 from typing import NamedTuple, Tuple, Literal, overload
 
-from ai_diffusion import SDVersion
+from .style import SDVersion
 from .image import Bounds, Extent, Image
 
 
