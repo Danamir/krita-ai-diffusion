@@ -8,9 +8,11 @@
 .vscode
 __pycache__
 scripts/docker/models
-scripts/docker/ip-adapter
+scripts/docker/custom_nodes/*
 tests/.results
 settings.json
-ai_diffusion/styles/violet*
+ai_diffusion/styles/*
+!ai_diffusion/styles/cinematic-photo*.json
+!ai_diffusion/styles/digital-artwork*.json
 krita_ai_diffusion*.zip
 TODO.md
