@@ -7,9 +7,10 @@ import shutil
 from ai_diffusion import network, server, resources
 from ai_diffusion.style import SDVersion
 from ai_diffusion.server import Server, ServerState, ServerBackend, InstallationProgress
+from .config import server_dir
 
-test_dir = Path(__file__).parent / ".server"
 workload_sd15 = [p.name for p in resources.required_models if p.sd_version is SDVersion.sd15]
+workload_sd15 += [resources.default_checkpoints[0].name]
 
 
 @pytest.mark.parametrize("mode", ["from_scratch", "resume"])
@@ -38,16 +39,16 @@ def test_download(qtapp, mode):
 
 
 def clear_test_server():
-    if test_dir.exists():
-        shutil.rmtree(test_dir, ignore_errors=True)
-    test_dir.mkdir(exist_ok=True)
+    if server_dir.exists():
+        shutil.rmtree(server_dir, ignore_errors=True)
+    server_dir.mkdir(exist_ok=True)
 
 
 def test_install_and_run(qtapp, pytestconfig, local_download_server):
     """Test installing and running ComfyUI server from scratch.
     * Takes a while, only runs with --test-install
     * Starts and downloads from local file server instead of huggingface/civitai
-      * Required to run scripts/docker.py to download models once
+      * Required to run `scripts/download_models.py -m scripts/docker/downloads` to download models once
       * Remove `local_download_server` fixture to download from original urls
     * Also tests upgrading server from "previous" version
       * In this case it's the same version, but it removes & re-installs anyway
@@ -57,11 +58,14 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
 
     clear_test_server()
 
-    server = Server(str(test_dir))
+    server = Server(str(server_dir))
     server.backend = ServerBackend.cpu
     assert server.state in [ServerState.not_installed, ServerState.missing_resources]
 
+    last_stage = ""
+
     def handle_progress(report: InstallationProgress):
+        nonlocal last_stage
         assert (
             report.progress is None
             or report.progress.value == -1
@@ -69,8 +73,9 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
             and report.progress.value <= 1
         )
         assert report.stage != ""
-        if report.progress is None:
-            print(report.stage, report.message)
+        if report.progress is None and report.stage != last_stage:
+            last_stage = report.stage
+            print(report.stage)
 
     async def main():
         await server.install(handle_progress)
@@ -80,14 +85,14 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
         await server.download(workload_sd15, handle_progress)
         assert server.state is ServerState.stopped and server.version == resources.version
 
-        url = await server.start()
+        url = await server.start(port=8191)
         assert server.state is ServerState.running
-        assert url == "127.0.0.1:8188"
+        assert url == "127.0.0.1:8191"
 
         await server.stop()
         assert server.state is ServerState.stopped
 
-        version_file = test_dir / ".version"
+        version_file = server_dir / ".version"
         assert version_file.exists()
         with version_file.open("w") as f:
             f.write("1.0.42")
@@ -102,18 +107,18 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
 def test_run_external(qtapp, pytestconfig):
     if not pytestconfig.getoption("--test-install"):
         pytest.skip("Only runs with --test-install")
-    if not (test_dir / "ComfyUI").exists():
+    if not (server_dir / "ComfyUI").exists():
         pytest.skip("ComfyUI installation not found")
 
-    server = Server(str(test_dir))
+    server = Server(str(server_dir))
     server.backend = ServerBackend.cpu
     assert server.has_python
     assert server.state in [ServerState.stopped, ServerState.missing_resources]
 
     async def main():
-        url = await server.start()
+        url = await server.start(port=8192)
         assert server.state is ServerState.running
-        assert url == "127.0.0.1:8188"
+        assert url == "127.0.0.1:8192"
 
         await server.stop()
         assert server.state is ServerState.stopped

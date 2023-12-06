@@ -13,6 +13,7 @@ from ai_diffusion.settings import settings
 
 def pytest_addoption(parser):
     parser.addoption("--test-install", action="store_true")
+    parser.addoption("--ci", action="store_true")
 
 
 class QtTestApp:
@@ -44,9 +45,10 @@ def local_download_server():
     port = 51222
 
     with subprocess.Popen([sys.executable, str(script), str(port)]) as proc:
+        assert proc.poll() is None
         network.HOSTMAP = network.HOSTMAP_LOCAL
         yield f"http://localhost:{port}"
         network.HOSTMAP = {}
 
-        proc.kill()
+        proc.terminate()
         proc.wait()

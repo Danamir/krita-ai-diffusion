@@ -17,7 +17,7 @@ from .util import ZipFile, is_windows, client_logger as log, server_logger as se
 
 
 _exe = ".exe" if is_windows else ""
-_process_flags = subprocess.CREATE_NO_WINDOW if is_windows else 0
+_process_flags = subprocess.CREATE_NO_WINDOW if is_windows else 0  # type: ignore
 
 
 class ServerState(Enum):
@@ -185,6 +185,7 @@ class Server:
         get_pip_file = dir / "get-pip.py"
         await _download_cached("Python", network, git_pip_url, get_pip_file, cb)
         await _execute_process("Python", [self._python_cmd, get_pip_file], dir, cb)
+        await _execute_process("Python", self._pip_install("wheel", "setuptools"), dir, cb)
 
         cb("Installing Python", f"Patching {python_pth}")
         _prepend_file(python_pth, "../ComfyUI\n")
@@ -359,7 +360,7 @@ class Server:
                 f"Error during model migration: {str(e)}\nSome models remain in {upgrade_comfy_dir}"
             )
 
-    async def start(self):
+    async def start(self, port: int | None = None):
         assert self.state in [ServerState.stopped, ServerState.missing_resources]
         assert self._python_cmd
 
@@ -373,6 +374,8 @@ class Server:
             args.append("--force-fp16")
         if settings.server_arguments:
             args += settings.server_arguments.split(" ")
+        if port is not None:
+            args += ["--port", str(port)]
         self._process = await asyncio.create_subprocess_exec(
             self._python_cmd,
             *args,

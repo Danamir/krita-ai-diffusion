@@ -1,5 +1,5 @@
 """Simple HTTP server for testing the installation process.
-1) Run the docker.py script to download all required models.
+1) Run the download_models.py script to download all required models.
 2) Run this script to serve the model files on localhost.
 3) Set environment variable HOSTMAP=1 to replace all huggingface / civitai urls.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from ai_diffusion import resources
 
-dir = Path(__file__).parent / "docker"
+dir = Path(__file__).parent / "docker" / "downloads"
 
 
 def url_strip(url: str):
@@ -22,10 +22,7 @@ def url_strip(url: str):
 
 
 def get_path(m: resources.ModelResource):
-    if m.kind is resources.ResourceKind.ip_adapter:
-        return dir / "ip-adapter/" / m.filename
-    else:
-        return dir / m.folder / m.filename
+    return dir / m.folder / m.filename
 
 
 models = chain(
