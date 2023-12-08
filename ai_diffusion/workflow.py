@@ -156,6 +156,7 @@ def _sampler_params(
         "DPM++ 2M SDE Karras": "dpmpp_2m_sde_gpu",
         "DPM++ SDE Karras": "dpmpp_sde_gpu",
         "UniPC BH2": "uni_pc_bh2",
+        "UniPC BH2 Karras": "uni_pc_bh2",
         "LCM": "lcm",
     }[config.sampler]
     sampler_scheduler = {
@@ -168,6 +169,7 @@ def _sampler_params(
         "DPM++ 2M SDE Karras": "karras",
         "DPM++ SDE Karras": "karras",
         "UniPC BH2": "ddim_uniform",
+        "UniPC BH2 Karras": "karras",
         "LCM": "sgm_uniform",
     }[config.sampler]
     params: dict[str, Any] = dict(
