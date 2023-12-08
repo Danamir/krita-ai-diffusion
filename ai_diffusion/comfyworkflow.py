@@ -135,12 +135,18 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
 
         if two_pass:
+            first_pass_sampler = first_pass_sampler or sampler
+            if ':' in first_pass_sampler:
+                first_pass_sampler, first_pass_scheduler = first_pass_sampler.split(':')
+            else:
+                first_pass_scheduler = scheduler
+
             latent_image = self.add(
                 "KSamplerAdvanced",
                 1,
                 noise_seed=random.getrandbits(64) if seed == -1 else seed,
-                sampler_name=first_pass_sampler or sampler,
-                scheduler=scheduler,
+                sampler_name=first_pass_sampler,
+                scheduler=first_pass_scheduler,
                 model=model,
                 positive=positive,
                 negative=negative,
