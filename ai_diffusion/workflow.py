@@ -221,7 +221,7 @@ def _parse_loras(client: Client, prompt: str) -> list[dict[str, str | float]]:
 
         for client_lora in client.lora_models:
             _, lora_filename = os.path.split(client_lora)
-            lora_filename,_ = os.path.splitext(lora_filename)
+            lora_filename, _ = os.path.splitext(lora_filename)
             if match[0].lower() == lora_filename.lower():
                 lora_name = client_lora
 
@@ -238,10 +238,7 @@ def _parse_loras(client: Client, prompt: str) -> list[dict[str, str | float]]:
             log.warning(error)
             raise LoraException(error)
 
-        loras.append(dict(
-            name=lora_name,
-            strength=lora_strength
-        ))
+        loras.append(dict(name=lora_name, strength=lora_strength))
     return loras
 
 
@@ -265,7 +262,13 @@ def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[in
     return steps, start_at_step
 
 
-def load_model_with_lora(w: ComfyWorkflow, comfy: Client, style: Style, is_live=False, additional_loras: list[dict[str, str | float]] | tuple = ()):
+def load_model_with_lora(
+    w: ComfyWorkflow,
+    comfy: Client,
+    style: Style,
+    is_live=False,
+    additional_loras: list[dict[str, str | float]] | tuple = (),
+):
     checkpoint = style.sd_checkpoint
     if checkpoint not in comfy.checkpoints:
         checkpoint = next(iter(comfy.checkpoints.keys()))
@@ -504,11 +507,7 @@ def generate(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     model, clip, vae = load_model_with_lora(
-        w,
-        comfy,
-        style,
-        is_live=live.is_active,
-        additional_loras=_parse_loras(comfy, cond.prompt)
+        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
     )
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
@@ -538,7 +537,9 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     expanded_bounds = Bounds(*mask.bounds.offset, *region_expanded)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt))
+    model, clip, vae = load_model_with_lora(
+        w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt)
+    )
     in_image = w.load_image(scaled_image)
     in_mask = w.load_mask(scaled_mask)
     cropped_mask = w.load_mask(mask.to_image())
@@ -617,11 +618,7 @@ def refine(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     model, clip, vae = load_model_with_lora(
-        w,
-        comfy,
-        style,
-        is_live=live.is_active,
-        additional_loras=_parse_loras(comfy, cond.prompt)
+        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
     )
     in_image = w.load_image(image)
     if extent.is_incompatible:
@@ -664,11 +661,7 @@ def refine_region(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     model, clip, vae = load_model_with_lora(
-        w,
-        comfy,
-        style,
-        is_live=live.is_active,
-        additional_loras=_parse_loras(comfy, cond.prompt)
+        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
     )
     in_image = w.load_image(image)
     in_mask = w.load_mask(mask_image)
@@ -765,7 +758,9 @@ def upscale_tiled(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     img = w.load_image(image)
-    checkpoint, clip, vae = load_model_with_lora(w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt))
+    checkpoint, clip, vae = load_model_with_lora(
+        w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt)
+    )
     upscale_model = w.load_upscale_model(model)
     if sd_ver.has_controlnet_blur:
         cond.control.append(Control(ControlMode.blur, img))
