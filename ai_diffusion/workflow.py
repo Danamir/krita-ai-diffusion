@@ -1,7 +1,8 @@
 from __future__ import annotations
 import math
-import os.path
 import re
+from itertools import chain
+from pathlib import Path
 from typing import Any, List, NamedTuple, Optional
 
 from .image import Bounds, Extent, Image, Mask
@@ -14,11 +15,6 @@ from .util import client_logger as log
 
 
 _pattern_lora = re.compile(r"\s*<lora:([^:<>]+)(?::(-?[^:<>]*))?>\s*", re.IGNORECASE)
-
-
-class LoraException(Exception):
-    def __init__(self, msg):
-        super().__init__(msg)
 
 
 class ScaledExtent(NamedTuple):
@@ -212,21 +208,20 @@ def _sampler_params(
     return params
 
 
-def _parse_loras(client: Client, prompt: str) -> list[dict[str, str | float]]:
+def _parse_loras(client_loras: list[str], prompt: str) -> list[dict[str, str | float]]:
     loras = []
     for match in _pattern_lora.findall(prompt):
         lora_name = ""
 
-        for client_lora in client.lora_models:
-            _, lora_filename = os.path.split(client_lora)
-            lora_filename, _ = os.path.splitext(lora_filename)
+        for client_lora in client_loras:
+            lora_filename = Path(client_lora).stem
             if match[0].lower() == lora_filename.lower():
                 lora_name = client_lora
 
         if not lora_name:
             error = f"LoRA not found : {match[0]}"
             log.warning(error)
-            raise LoraException(error)
+            raise Exception(error)
 
         lora_strength = match[1] if match[1] != "" else 1.0
         try:
@@ -234,7 +229,7 @@ def _parse_loras(client: Client, prompt: str) -> list[dict[str, str | float]]:
         except ValueError:
             error = f"Invalid LoRA strength for {match[0]} : {lora_strength}"
             log.warning(error)
-            raise LoraException(error)
+            raise Exception(error)
 
         loras.append(dict(name=lora_name, strength=lora_strength))
     return loras
@@ -264,8 +259,8 @@ def load_model_with_lora(
     w: ComfyWorkflow,
     comfy: Client,
     style: Style,
+    prompt: str,
     is_live=False,
-    additional_loras: list[dict[str, str | float]] | tuple = (),
 ):
     checkpoint = style.sd_checkpoint
     if checkpoint not in comfy.checkpoints:
@@ -280,15 +275,9 @@ def load_model_with_lora(
         else:
             log.warning(f"Style VAE {style.vae} not found, using default VAE from checkpoint")
 
-    for lora in style.loras:
+    for lora in chain(style.loras, _parse_loras(comfy.lora_models, prompt)):
         if lora["name"] not in comfy.lora_models:
-            log.warning(f"Style LoRA {lora['name']} not found, skipping")
-            continue
-        model, clip = w.load_lora(model, clip, lora["name"], lora["strength"], lora["strength"])
-
-    for lora in additional_loras:
-        if lora["name"] not in comfy.lora_models:
-            log.warning(f"Prompt LoRA {lora['name']} not found, skipping")
+            log.warning(f"LoRA {lora['name']} not found, skipping")
             continue
         model, clip = w.load_lora(model, clip, lora["name"], lora["strength"], lora["strength"])
 
@@ -504,9 +493,7 @@ def generate(
     batch = 1 if live.is_active else batch
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(
-        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
-    )
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=live.is_active)
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     out_latent = w.ksampler_advanced(
@@ -535,9 +522,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     expanded_bounds = Bounds(*mask.bounds.offset, *region_expanded)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(
-        w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt)
-    )
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt)
     in_image = w.load_image(scaled_image)
     in_mask = w.load_mask(scaled_mask)
     cropped_mask = w.load_mask(mask.to_image())
@@ -615,9 +600,7 @@ def refine(
     sampler_params = _sampler_params(style, live=live, strength=strength)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(
-        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
-    )
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=live.is_active)
     in_image = w.load_image(image)
     if extent.is_incompatible:
         in_image = w.scale_image(in_image, extent.expanded)
@@ -658,9 +641,7 @@ def refine_region(
     sampler_params = _sampler_params(style, strength=strength, live=live)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(
-        w, comfy, style, is_live=live.is_active, additional_loras=_parse_loras(comfy, cond.prompt)
-    )
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=live.is_active)
     in_image = w.load_image(image)
     in_mask = w.load_mask(mask_image)
     if extent.requires_downscale:
@@ -756,9 +737,7 @@ def upscale_tiled(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     img = w.load_image(image)
-    checkpoint, clip, vae = load_model_with_lora(
-        w, comfy, style, additional_loras=_parse_loras(comfy, cond.prompt)
-    )
+    checkpoint, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt)
     upscale_model = w.load_upscale_model(model)
     if sd_ver.has_controlnet_blur:
         cond.control.append(Control(ControlMode.blur, img))
