@@ -236,16 +236,6 @@ def _parse_loras(client_loras: list[str], prompt: str) -> list[dict[str, str | f
 
 
 def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
-    start_at_step = round(steps*(1-strength))
-
-    if min_steps and steps - start_at_step < min_steps:
-        steps = math.floor(min_steps * 1/strength)
-        start_at_step = steps - min_steps
-
-    return steps, start_at_step
-
-
-def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
     start_at_step = round(steps * (1 - strength))
 
     if min_steps and steps - start_at_step < min_steps:
