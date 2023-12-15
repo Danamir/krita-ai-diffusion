@@ -1,5 +1,5 @@
 from __future__ import annotations
-from PyQt5.QtCore import Qt, QMetaObject, QSize
+from PyQt5.QtCore import Qt, QMetaObject, QSize, QPoint, pyqtSignal
 from PyQt5.QtGui import QGuiApplication, QMouseEvent
 from PyQt5.QtWidgets import (
     QWidget,
@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..properties import Binding, bind, Bind
-from ..image import Bounds
+from ..image import Bounds, Extent, Image
 from ..jobs import Job, JobQueue, JobState, JobKind
 from ..model import Model
 from ..root import root
@@ -39,6 +39,21 @@ class HistoryWidget(QListWidget):
     _last_prompt: str | None = None
     _last_bounds: Bounds | None = None
 
+    item_activated = pyqtSignal(QListWidgetItem)
+
+    _applied_icon = Image.load(theme.icon_path / "star.png")
+    _list_css = f"QListWidget::item:selected {{ border: 1px solid {theme.grey}; }}"
+    _button_css = f"""
+        QPushButton {{
+            border: 1px solid {theme.grey};
+            background: {"rgba(96, 96, 96, 180)" if theme.is_dark else "rgba(192, 192, 192, 180)"};
+            padding: 2px;
+        }}
+        QPushButton:hover {{
+            background: {"rgba(96, 96, 96, 220)" if theme.is_dark else "rgba(192, 192, 192, 220)"};
+        }}
+    """
+
     def __init__(self, parent):
         super().__init__(parent)
         self._jobs = JobQueue()
@@ -50,7 +65,17 @@ class HistoryWidget(QListWidget):
         self.setFlow(QListView.LeftToRight)
         self.setViewMode(QListWidget.IconMode)
         self.setIconSize(QSize(96, 96))
+        self.setFrameStyle(QListWidget.NoFrame)
+        self.setStyleSheet(self._list_css)
         self.itemClicked.connect(self.handle_preview_click)
+        self.itemDoubleClicked.connect(self.item_activated)
+
+        self._apply_button = QPushButton(theme.icon("apply"), "Apply", self)
+        self._apply_button.setStyleSheet(self._button_css)
+        self._apply_button.setVisible(False)
+        self._apply_button.clicked.connect(self._activate_selection)
+        if scrollbar := self.verticalScrollBar():
+            scrollbar.valueChanged.connect(self.update_apply_button)
 
     @property
     def jobs(self):
@@ -64,6 +89,7 @@ class HistoryWidget(QListWidget):
             jobs.selection_changed.connect(self.update_selection),
             self.itemSelectionChanged.connect(self.select_item),
             jobs.job_finished.connect(self.add),
+            jobs.result_used.connect(self.update_image_thumbnail),
         ]
         self.rebuild()
         self.update_selection()
@@ -71,6 +97,12 @@ class HistoryWidget(QListWidget):
     def add(self, job: Job):
         if job.state is not JobState.finished or job.kind is not JobKind.diffusion:
             return  # Only finished diffusion jobs have images to show
+
+        scrollbar = self.verticalScrollBar()
+        scroll_to_bottom = (
+            scrollbar and scrollbar.isVisible() and scrollbar.value() >= scrollbar.maximum() - 4
+        )
+
         if self._last_prompt != job.prompt or self._last_bounds != job.bounds:
             self._last_prompt = job.prompt
             self._last_bounds = job.bounds
@@ -85,7 +117,7 @@ class HistoryWidget(QListWidget):
             self.addItem(header)
 
         for i, img in enumerate(job.results):
-            item = QListWidgetItem(img.to_icon(), None)  # type: ignore (text can be None)
+            item = QListWidgetItem(self._image_thumbnail(job, i), None)  # type: ignore (text can be None)
             item.setData(Qt.ItemDataRole.UserRole, job.id)
             item.setData(Qt.ItemDataRole.UserRole + 1, i)
             item.setData(
@@ -94,18 +126,39 @@ class HistoryWidget(QListWidget):
             )
             self.addItem(item)
 
-        scrollbar = self.verticalScrollBar()
-        if scrollbar and scrollbar.isVisible() and scrollbar.value() >= scrollbar.maximum() - 4:
+        if scroll_to_bottom:
             self.scrollToBottom()
 
     def update_selection(self):
         selection = self._jobs.selection
-        if selection is None and len(self.selectedItems()) > 0:
+        if selection is None:
             self.clearSelection()
         elif selection:
             item = self._find(selection)
             if item is not None and not item.isSelected():
                 item.setSelected(True)
+        self.update_apply_button()
+
+    def update_apply_button(self):
+        selected = self.selectedItems()
+        if len(selected) > 0:
+            rect = self.visualItemRect(selected[0])
+            self._apply_button.setVisible(True)
+            self._apply_button.move(
+                QPoint(rect.left() + 3, rect.bottom() - self._apply_button.height() - 2)
+            )
+            self._apply_button.resize(QSize(rect.width() - 6, self._apply_button.height()))
+            if rect.width() < 56:
+                self._apply_button.setText("")
+            else:
+                self._apply_button.setText("Apply")
+        else:
+            self._apply_button.setVisible(False)
+
+    def update_image_thumbnail(self, id: JobQueue.Item):
+        if item := self._find(id):
+            job = ensure(self._jobs.find(id.job))
+            item.setIcon(self._image_thumbnail(job, id.image))
 
     def select_item(self):
         items = self.selectedItems()
@@ -113,6 +166,11 @@ class HistoryWidget(QListWidget):
             self._jobs.selection = self._item_data(items[0])
         else:
             self._jobs.selection = None
+
+    def _activate_selection(self):
+        items = self.selectedItems()
+        if len(items) > 0:
+            self.item_activated.emit(items[0])
 
     def is_finished(self, job: Job):
         return job.kind is JobKind.diffusion and job.state is JobState.finished
@@ -152,6 +210,10 @@ class HistoryWidget(QListWidget):
         )
         return super().mousePressEvent(e)
 
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.update_apply_button()
+
     def _find(self, id: JobQueue.Item):
         items = (ensure(self.item(i)) for i in range(self.count()))
         return next((item for item in items if self._item_data(item) == id), None)
@@ -160,6 +222,14 @@ class HistoryWidget(QListWidget):
         return JobQueue.Item(
             item.data(Qt.ItemDataRole.UserRole), item.data(Qt.ItemDataRole.UserRole + 1)
         )
+
+    def _image_thumbnail(self, job: Job, index: int):
+        image = job.results[index]
+        if job.result_was_used(index):  # add tiny star icon to mark used results
+            thumb = Image.scale_to_fit(image, Extent(96 * 2, 96 * 2))
+            thumb.draw_image(self._applied_icon, offset=(-28, 4))
+            return thumb.to_icon()
+        return image.to_icon()
 
 
 class GenerationWidget(QWidget):
@@ -229,12 +299,8 @@ class GenerationWidget(QWidget):
         layout.addWidget(self.error_text)
 
         self.history = HistoryWidget(self)
-        self.history.itemDoubleClicked.connect(self.apply_result)
+        self.history.item_activated.connect(self.apply_result)
         layout.addWidget(self.history)
-
-        self.apply_button = QPushButton(theme.icon("apply"), "Apply", self)
-        self.apply_button.clicked.connect(self.apply_selected_result)
-        layout.addWidget(self.apply_button)
 
     @property
     def model(self):
@@ -254,7 +320,6 @@ class GenerationWidget(QWidget):
                 model.progress_changed.connect(self.update_progress),
                 model.error_changed.connect(self.error_text.setText),
                 model.has_error_changed.connect(self.error_text.setVisible),
-                model.can_apply_result_changed.connect(self.apply_button.setEnabled),
                 self.add_control_button.clicked.connect(model.control.add),
                 self.prompt_textbox.activated.connect(model.generate),
                 self.negative_textbox.activated.connect(model.generate),
@@ -274,10 +339,6 @@ class GenerationWidget(QWidget):
             self.negative_textbox.text = ""
             self.negative_textbox.setVisible(value)
 
-    def apply_selected_result(self):
-        self.model.apply_result()
-
     def apply_result(self, item: QListWidgetItem):
         job_id, index = self.history.item_info(item)
-        self.model.jobs.select(job_id, index)
-        self.model.apply_result()
+        self.model.apply_result(job_id, index)

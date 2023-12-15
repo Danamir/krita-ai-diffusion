@@ -49,7 +49,6 @@ class Model(QObject, metaclass=PropertyMeta):
     progress = Property(0.0)
     jobs: JobQueue
     error = Property("")
-    can_apply_result = Property(False)
 
     workspace_changed = pyqtSignal(Workspace)
     style_changed = pyqtSignal(Style)
@@ -58,7 +57,6 @@ class Model(QObject, metaclass=PropertyMeta):
     strength_changed = pyqtSignal(float)
     progress_changed = pyqtSignal(float)
     error_changed = pyqtSignal(str)
-    can_apply_result_changed = pyqtSignal(bool)
     has_error_changed = pyqtSignal(bool)
 
     def __init__(self, document: Document, connection: Connection):
@@ -170,7 +168,6 @@ class Model(QObject, metaclass=PropertyMeta):
         else:
             work = workflow.upscale_simple(client, image, params.upscaler, params.factor)
         job.id = await client.enqueue(work)
-        self._doc.resize(params.target_extent)
 
     def generate_live(self):
         ver = resolve_sd_version(self.style, self._connection.client)
@@ -273,10 +270,8 @@ class Model(QObject, metaclass=PropertyMeta):
     def update_preview(self):
         if selection := self.jobs.selection:
             self.show_preview(selection.job, selection.image)
-            self.can_apply_result = True
         else:
             self.hide_preview()
-            self.can_apply_result = False
 
     def show_preview(self, job_id: str, index: int, name_prefix="Preview"):
         job = self.jobs.find(job_id)
@@ -298,13 +293,15 @@ class Model(QObject, metaclass=PropertyMeta):
         if self._layer is not None:
             self._doc.hide_layer(self._layer)
 
-    def apply_result(self):
-        assert self._layer and self.can_apply_result
+    def apply_result(self, job_id: str, index: int):
+        self.jobs.select(job_id, index)
+        assert self._layer is not None
         self._layer.setLocked(False)
         self._layer.setName(self._layer.name().replace("[Preview]", "[Generated]"))
         self._doc.active_layer = self._layer
         self._layer = None
         self.jobs.selection = None
+        self.jobs.notify_used(job_id, index)
 
     def add_control_layer(self, job: Job, result: dict | None):
         assert job.kind is JobKind.control_layer and job.control
@@ -322,6 +319,8 @@ class Model(QObject, metaclass=PropertyMeta):
         if self._layer:
             self._layer.remove()
             self._layer = None
+        self._doc.resize(job.bounds.extent)
+        self.upscale.target_extent_changed.emit(self.upscale.target_extent)
         self._doc.insert_layer(job.prompt, job.results[0], job.bounds)
 
     def set_workspace(self, workspace: Workspace):
@@ -372,7 +371,6 @@ class UpscaleWorkspace(QObject, metaclass=PropertyMeta):
     factor = Property(2.0)
     use_diffusion = Property(True)
     strength = Property(0.3)
-    target_extent = Property(Extent(1, 1))
 
     upscaler_changed = pyqtSignal(str)
     factor_changed = pyqtSignal(float)
@@ -387,15 +385,14 @@ class UpscaleWorkspace(QObject, metaclass=PropertyMeta):
         self._model = model
         if client := model._connection.client_if_connected:
             self.upscaler = client.default_upscaler
-        self.factor_changed.connect(self._update_target_extent)
-        self._update_target_extent()
+        self.factor_changed.connect(lambda _: self.target_extent_changed.emit(self.target_extent))
 
-    def _update_target_extent(self):
-        self.target_extent = self._model.document.extent * self.factor
+    @property
+    def target_extent(self):
+        return self._model.document.extent * self.factor
 
     @property
     def params(self):
-        self._update_target_extent()
         return UpscaleParams(
             upscaler=self.upscaler,
             factor=self.factor,
