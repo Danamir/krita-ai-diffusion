@@ -1,6 +1,7 @@
 from __future__ import annotations
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget
 from krita import Krita, DockWidget
+import krita
 
 from ..model import Model, Workspace
 from ..server import Server
@@ -51,10 +52,10 @@ class WelcomeWidget(QWidget):
 
         layout.addStretch()
 
-        root.connection.state_changed.connect(self.update)
-        self.update()
+        root.connection.state_changed.connect(self.update_content)
+        self.update_content()
 
-    def update(self):
+    def update_content(self):
         connection = root.connection
         if connection.state in [ConnectionState.disconnected, ConnectionState.error]:
             self._connect_status.setText("Not connected to server.")
@@ -102,16 +103,17 @@ class ImageDiffusionWidget(DockWidget):
         self._frame.addWidget(self._live)
         self.setWidget(self._frame)
 
-        root.connection.state_changed.connect(self.update)
+        root.connection.state_changed.connect(self.update_content)
         root.model_created.connect(self.register_model)
 
-    def canvasChanged(self, canvas):
-        self.update()
+    def canvasChanged(self, canvas: krita.Canvas):
+        if canvas is not None and canvas.view() is not None:
+            self.update_content()
 
     def register_model(self, model: Model):
-        model.workspace_changed.connect(self.update)
+        model.workspace_changed.connect(self.update_content)
 
-    def update(self):
+    def update_content(self):
         model = root.model_for_active_document()
         connection = root.connection
         if model is None or connection.state in [

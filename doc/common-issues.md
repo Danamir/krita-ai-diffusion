@@ -4,7 +4,7 @@ This document collects some common issues and potential solutions.
 > Before you report a problem on GitHub:
 > * make sure it cannot be resolved by one of the solutions proposed here
 > * use the search to find existing issues related to your problem
-> * gather relevant information such as OS, Krita and Plugin versions, GPU, log files
+> * gather relevant information such as OS, Krita and Plugin versions, GPU, [log files](#log-files)
 
 You can [create a new Issue here](https://github.com/Acly/krita-ai-diffusion/issues).
 
@@ -20,6 +20,7 @@ You can [create a new Issue here](https://github.com/Acly/krita-ai-diffusion/iss
 - [Operating System and Hardware](#operating-system-and-hardware)
   - [Supported platforms](#supported-platforms)
   - [Image generation is (really) slow](#image-generation-is-really-slow)
+  - [macOS: No images received from remote ComfyUI server](#macos-no-images-received-from-remote-comfyui-server)
 - [Custom ComfyUI](#custom-comfyui)
   - [Error: The following ComfyUI custom nodes are missing](#error-the-following-comfyui-custom-nodes-are-missing)
   - [Error: Could not find Upscale/CLIPVision/IP-Adapter model](#error-could-not-find-upscaleclipvisionip-adapter-model)
@@ -109,17 +110,22 @@ If you consider generation too slow, here are a few things to check:
   * With Krita and the plugin running, go to http://127.0.0.1:8188 in your browser and "Queue Prompt".
   * If performance is bad there, the problem is not related to the Krita plugin.
 
+### macOS: No images received from remote ComfyUI server
+
+If you are connecting to a remote server like a different machine you own, or a cloud service like runpod.ai, and run into the situation where
+**images appear to be generated but don't show up**: this might be related to SSL certificates on macOS. See [this issue](https://github.com/Acly/krita-ai-diffusion/issues/74#issuecomment-1819993842)
+for solutions.
 
 
 ## Custom ComfyUI
 
 If you choose to manage your own ComfyUI installation rather than using the built-in installer, keep in mind that you are responsible for getting it running,
 installing the plugin's prerequisites as needed, and keeping it up to date. ComfyUI is a fast-moving project with a huge number of extensions and potential for customization.
-As a result you may also sometimes encounter problem and conflicts that need to be resolved.
+As a result you may also sometimes encounter problems and conflicts that need to be resolved.
 
 > [!IMPORTANT]
 > Please understand that we cannot give tech support for individual ComfyUI installations out there.
-> Don't open an Issue here if the problem is not related to the Krita plugin.
+> Don't open an issue here if the problem is not related to the Krita plugin.
 
 A lot of related issues can be resolved by carefully following the [requirements](comfy-requirements.md) and its troubleshooting section.
 

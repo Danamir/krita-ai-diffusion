@@ -163,6 +163,8 @@ def _sampler_params(
         "UniPC BH2": "uni_pc_bh2",
         "UniPC BH2 Karras": "uni_pc_bh2",
         "LCM": "lcm",
+        "Euler": "euler",
+        "Euler a": "euler_ancestral",
     }[config.sampler]
     sampler_scheduler = {
         "DDIM": "ddim_uniform",
@@ -175,6 +177,8 @@ def _sampler_params(
         "UniPC BH2": "ddim_uniform",
         "UniPC BH2 Karras": "karras",
         "LCM": "sgm_uniform",
+        "Euler": "normal",
+        "Euler a": "normal",
     }[config.sampler]
     params: dict[str, Any] = dict(
         sampler=sampler_name,
@@ -434,8 +438,8 @@ def apply_control(
             ip_images.append(control.load_image(w))
             ip_weights.append(control.strength)
             ip_end_at = max(ip_end_at, control.end)
-        if len(ip_images) > 0:
-            max_weight = max(ip_weights)
+        max_weight = max(ip_weights, default=0.0)
+        if len(ip_images) > 0 and max_weight > 0:
             ip_weights = [w / max_weight for w in ip_weights]
             clip_vision = w.load_clip_vision(comfy.clip_vision_model)
             ip_adapter = w.load_ip_adapter(ip_model_file)
@@ -660,10 +664,10 @@ def refine_region(
     return w
 
 
-def create_control_image(image: Image, mode: ControlMode):
+def create_control_image(comfy: Client, image: Image, mode: ControlMode):
     assert mode not in [ControlMode.image, ControlMode.inpaint]
 
-    w = ComfyWorkflow()
+    w = ComfyWorkflow(comfy.nodes_inputs)
     input = w.load_image(image)
     result = None
 
@@ -702,7 +706,7 @@ def create_control_image(image: Image, mode: ControlMode):
 
 
 def upscale_simple(comfy: Client, image: Image, model: str, factor: float):
-    w = ComfyWorkflow()
+    w = ComfyWorkflow(comfy.nodes_inputs)
     upscale_model = w.load_upscale_model(model)
     img = w.load_image(image)
     img = w.upscale_image(upscale_model, img)

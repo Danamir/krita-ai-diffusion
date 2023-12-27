@@ -1,6 +1,6 @@
 from __future__ import annotations
 from contextlib import nullcontext
-from typing import NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 import krita
 from krita import Krita
 from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
@@ -19,14 +19,10 @@ class Document:
         return Extent(0, 0)
 
     @property
-    def is_active(self):
-        return Krita.instance().activeDocument() is None
+    def filename(self) -> str:
+        return ""
 
-    @property
-    def is_valid(self):
-        return True
-
-    def check_color_mode(self):
+    def check_color_mode(self) -> tuple[Literal[True], None] | tuple[Literal[False], str]:
         return True, None
 
     def create_mask_from_selection(
@@ -39,7 +35,7 @@ class Document:
 
     def get_image(
         self, bounds: Bounds | None = None, exclude_layers: list[krita.Node] | None = None
-    ):
+    ) -> Image:
         raise NotImplementedError
 
     def get_layer_image(self, layer: krita.Node, bounds: Bounds | None) -> Image:
@@ -63,6 +59,12 @@ class Document:
     def resize(self, extent: Extent):
         raise NotImplementedError
 
+    def annotate(self, key: str, value: QByteArray):
+        pass
+
+    def find_annotation(self, key: str) -> QByteArray | None:
+        return None
+
     def add_pose_character(self, layer: krita.Node):
         raise NotImplementedError
 
@@ -78,8 +80,12 @@ class Document:
         pass
 
     @property
-    def resolution(self):
-        return 0
+    def resolution(self) -> float:
+        return 0.0
+
+    @property
+    def is_valid(self) -> bool:
+        return True
 
 
 class KritaDocument(Document):
@@ -87,9 +93,11 @@ class KritaDocument(Document):
     allows to retrieve and modify pixel data."""
 
     _doc: krita.Document
+    _id: QUuid
 
     def __init__(self, krita_document: krita.Document):
         self._doc = krita_document
+        self._id = krita_document.rootNode().uniqueId()
 
     @staticmethod
     def active():
@@ -101,12 +109,8 @@ class KritaDocument(Document):
         return Extent(self._doc.width(), self._doc.height())
 
     @property
-    def is_active(self):
-        return self._doc == Krita.instance().activeDocument()
-
-    @property
-    def is_valid(self):
-        return self._doc in Krita.instance().documents()
+    def filename(self):
+        return self._doc.fileName()
 
     def check_color_mode(self):
         model = self._doc.colorModel()
@@ -239,6 +243,13 @@ class KritaDocument(Document):
         res = self._doc.resolution()
         self._doc.scaleImage(extent.width, extent.height, res, res, "Bilinear")
 
+    def annotate(self, key: str, value: QByteArray):
+        self._doc.setAnnotation(f"ai_diffusion/{key}", f"AI Diffusion Plugin: {key}", value)
+
+    def find_annotation(self, key: str) -> QByteArray | None:
+        result = self._doc.annotation(f"ai_diffusion/{key}")
+        return result if result.size() > 0 else None
+
     def add_pose_character(self, layer: krita.Node):
         assert layer.type() == "vectorlayer"
         _pose_layers.add_character(cast(krita.VectorLayer, layer))
@@ -257,6 +268,17 @@ class KritaDocument(Document):
     @property
     def resolution(self):
         return self._doc.resolution() / 72.0  # KisImage::xRes which is applied to vectors
+
+    @property
+    def is_valid(self):
+        return self._doc in Krita.instance().documents()
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        if isinstance(other, KritaDocument):
+            return self._id == other._id
+        return False
 
 
 def _traverse_layers(node: krita.Node, type_filter=None):
@@ -330,6 +352,7 @@ class LayerObserver(QObject):
         self._doc = doc
         self._layers = []
         if doc is not None:
+            self.update()
             self._timer = QTimer()
             self._timer.setInterval(500)
             self._timer.timeout.connect(self.update)

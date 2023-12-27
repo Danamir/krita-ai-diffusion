@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable
+from typing import Callable, NamedTuple
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .connection import Connection, ConnectionState
@@ -7,6 +7,7 @@ from .client import ClientMessage
 from .server import Server, ServerState
 from .document import Document, KritaDocument
 from .model import Model
+from .persistence import ModelSync
 from .settings import ServerMode, settings
 from .util import client_logger as log
 
@@ -15,9 +16,13 @@ class Root(QObject):
     """Root object, exists once, maintains all other instances. Keeps track of documents
     openend in Krita and creates a corresponding Model for each."""
 
+    class PerDocument(NamedTuple):
+        model: Model
+        sync: ModelSync
+
     _server: Server
     _connection: Connection
-    _models: list[Model]
+    _models: list[PerDocument]
 
     model_created = pyqtSignal(Model)
 
@@ -30,20 +35,28 @@ class Root(QObject):
         self._models = []
         self._connection.message_received.connect(self._handle_message)
 
-    def model_for_active_document(self):
+    def prune_models(self):
         # Remove models for documents that have been closed
-        self._models = [m for m in self._models if m.is_valid]
+        self._models = [m for m in self._models if m.model.document.is_valid]
 
-        # Find or create model for active document
-        if doc := KritaDocument.active():
-            model = next((m for m in self._models if m.is_active), None)
-            if model is None:
-                model = Model(doc, self._connection)
-                self._models.append(model)
-                self.model_created.emit(model)
-            return model
+    def create_model(self, doc: KritaDocument):
+        model = Model(doc, self._connection)
+        persistence_sync = ModelSync(model)
+        self._models.append(Root.PerDocument(model, persistence_sync))
+        self.model_created.emit(model)
+        self.prune_models()
+        return model
 
-        return None
+    def model_for_active_document(self) -> Model | None:
+        doc = KritaDocument.active()
+        if doc is None or not doc.is_valid:
+            return None
+        model = next((m.model for m in self._models if m.model.document == doc), None)
+        if model is None:
+            model = self.create_model(doc)
+        else:
+            model.document = doc
+        return model
 
     @property
     def connection(self) -> Connection:
@@ -82,7 +95,7 @@ class Root(QObject):
             log.warning(f"Failed to launch/connect server at startup: {e}")
 
     def _find_model(self, job_id: str) -> Model | None:
-        return next((m for m in self._models if m.jobs.find(job_id)), None)
+        return next((m.model for m in self._models if m.model.jobs.find(job_id)), None)
 
     def _handle_message(self, msg: ClientMessage):
         model = self._find_model(msg.job_id)

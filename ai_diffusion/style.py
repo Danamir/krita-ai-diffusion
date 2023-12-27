@@ -20,6 +20,8 @@ sampler_options = [
     "UniPC BH2",
     "UniPC BH2 Karras",
     "LCM",
+    "Euler",
+    "Euler a",
 ]
 
 
