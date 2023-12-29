@@ -41,6 +41,7 @@ class HistoryWidget(QListWidget):
 
     item_activated = pyqtSignal(QListWidgetItem)
 
+    _thumb_size = 96
     _applied_icon = Image.load(theme.icon_path / "star.png")
     _list_css = f"QListWidget::item:selected {{ border: 1px solid {theme.grey}; }}"
     _button_css = f"""
@@ -64,7 +65,7 @@ class HistoryWidget(QListWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFlow(QListView.LeftToRight)
         self.setViewMode(QListWidget.IconMode)
-        self.setIconSize(QSize(96, 96))
+        self.setIconSize(theme.screen_scale(self, QSize(self._thumb_size, self._thumb_size)))
         self.setFrameStyle(QListWidget.NoFrame)
         self.setStyleSheet(self._list_css)
         self.itemClicked.connect(self.handle_preview_click)
@@ -89,6 +90,7 @@ class HistoryWidget(QListWidget):
             jobs.selection_changed.connect(self.update_selection),
             self.itemSelectionChanged.connect(self.select_item),
             jobs.job_finished.connect(self.add),
+            jobs.job_discarded.connect(self.remove),
             jobs.result_used.connect(self.update_image_thumbnail),
         ]
         self.rebuild()
@@ -128,6 +130,22 @@ class HistoryWidget(QListWidget):
 
         if scroll_to_bottom:
             self.scrollToBottom()
+
+    def remove(self, job: Job):
+        item_was_selected = False
+        with theme.SignalBlocker(self):
+            # Remove all the job's items before triggering potential selection changes
+            for i in range(self.count()):
+                item = self.item(i)
+                while item and item.data(Qt.ItemDataRole.UserRole) == job.id:
+                    item_was_selected = item_was_selected or item.isSelected()
+                    self.takeItem(i)
+                    item = self.item(i)
+                break
+        if item_was_selected:
+            self._jobs.selection = None
+        else:
+            self.update_apply_button()  # selection may have moved
 
     def update_selection(self):
         selection = self._jobs.selection
@@ -175,11 +193,6 @@ class HistoryWidget(QListWidget):
     def is_finished(self, job: Job):
         return job.kind is JobKind.diffusion and job.state is JobState.finished
 
-    def prune(self, jobs: JobQueue):
-        first_id = next((job.id for job in jobs if self.is_finished(job)), None)
-        while self.count() > 0 and ensure(self.item(0)).data(Qt.ItemDataRole.UserRole) != first_id:
-            self.takeItem(0)
-
     def rebuild(self):
         self.clear()
         for job in filter(self.is_finished, self._jobs):
@@ -226,11 +239,13 @@ class HistoryWidget(QListWidget):
 
     def _image_thumbnail(self, job: Job, index: int):
         image = job.results[index]
+        # Use 2x thumb size for good quality on high-DPI screens
+        thumb = Image.scale_to_fit(image, Extent(self._thumb_size * 2, self._thumb_size * 2))
+        if thumb.extent.height < self._thumb_size:
+            thumb = Image.crop(thumb, Bounds(0, 0, thumb.extent.width, self._thumb_size))
         if job.result_was_used(index):  # add tiny star icon to mark used results
-            thumb = Image.scale_to_fit(image, Extent(96 * 2, 96 * 2))
             thumb.draw_image(self._applied_icon, offset=(-28, 4))
-            return thumb.to_icon()
-        return image.to_icon()
+        return thumb.to_icon()
 
 
 class GenerationWidget(QWidget):
