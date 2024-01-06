@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 import random
 from enum import Enum
 from typing import NamedTuple
@@ -12,7 +13,7 @@ from .client import ClientMessage, ClientEvent, filter_supported_styles, resolve
 from .document import Document, LayerObserver
 from .pose import Pose
 from .style import Style, Styles, SDVersion
-from .workflow import ControlMode, Conditioning, LiveParams
+from .workflow import ControlMode, Conditioning
 from .connection import Connection
 from .properties import Property, ObservableProperties
 from .jobs import Job, JobKind, JobQueue, JobState
@@ -43,6 +44,9 @@ class Model(QObject, ObservableProperties):
     negative_prompt = Property("", persist=True)
     control: ControlLayerList
     strength = Property(1.0, persist=True)
+    batch_count = Property(1, persist=True)
+    seed = Property(0, persist=True)
+    fixed_seed = Property(False, persist=True)
     upscale: "UpscaleWorkspace"
     live: "LiveWorkspace"
     progress = Property(0.0)
@@ -54,6 +58,9 @@ class Model(QObject, ObservableProperties):
     prompt_changed = pyqtSignal(str)
     negative_prompt_changed = pyqtSignal(str)
     strength_changed = pyqtSignal(float)
+    batch_count_changed = pyqtSignal(int)
+    seed_changed = pyqtSignal(int)
+    fixed_seed_changed = pyqtSignal(bool)
     progress_changed = pyqtSignal(float)
     error_changed = pyqtSignal(str)
     has_error_changed = pyqtSignal(bool)
@@ -64,6 +71,7 @@ class Model(QObject, ObservableProperties):
         self._doc = document
         self._image_layers = document.create_layer_observer()
         self._connection = connection
+        self.generate_seed()
         self.jobs = JobQueue()
         self.control = ControlLayerList(self)
         self.upscale = UpscaleWorkspace(self)
@@ -95,6 +103,7 @@ class Model(QObject, ObservableProperties):
                 grow=settings.selection_grow / 100,
                 feather=settings.selection_feather / 100,
                 padding=settings.selection_padding / 100,
+                min_size=64,  # minimum size for area conditioning
             )
             image_bounds = workflow.compute_bounds(
                 extent, mask.bounds if mask else None, self.strength
@@ -109,7 +118,10 @@ class Model(QObject, ObservableProperties):
         control = [c.get_image(image_bounds) for c in self.control]
         conditioning = Conditioning(self.prompt, self.negative_prompt, control)
         conditioning.area = selection_bounds if self.strength == 1.0 else None
-        generator = self._generate(image_bounds, conditioning, self.strength, image, mask)
+        seed = self.seed if self.fixed_seed else workflow.generate_seed()
+        generator = self._generate(
+            image_bounds, conditioning, self.strength, image, mask, seed, self.batch_count
+        )
 
         self.clear_error()
         eventloop.run(_report_errors(self, generator))
@@ -121,7 +133,9 @@ class Model(QObject, ObservableProperties):
         strength: float,
         image: Image | None,
         mask: Mask | None,
-        live=LiveParams(),
+        seed: int = -1,
+        count: int = 1,
+        is_live=False,
     ):
         client = self._connection.client
         style = self.style
@@ -137,33 +151,39 @@ class Model(QObject, ObservableProperties):
 
         if image is None and mask is None:
             assert strength == 1
-            job = workflow.generate(client, style, bounds.extent, conditioning, live)
+            job = workflow.generate(client, style, bounds.extent, conditioning, seed, is_live)
         elif mask is None and strength < 1:
             assert image is not None
-            job = workflow.refine(client, style, image, conditioning, strength, live)
-        elif strength == 1 and not live.is_active:
+            job = workflow.refine(client, style, image, conditioning, strength, seed, is_live)
+        elif strength == 1 and not is_live:
             assert image is not None and mask is not None
-            job = workflow.inpaint(client, style, image, mask, conditioning)
+            job = workflow.inpaint(client, style, image, mask, conditioning, seed)
         else:
             assert image is not None and mask is not None
-            job = workflow.refine_region(client, style, image, mask, conditioning, strength, live)
+            job = workflow.refine_region(
+                client, style, image, mask, conditioning, strength, seed, is_live
+            )
 
-        job_id = await client.enqueue(job)
-        job_kind = JobKind.live_preview if live.is_active else JobKind.diffusion
-        self.jobs.add(job_kind, job_id, conditioning.prompt, bounds)
+        job_kind = JobKind.live_preview if is_live else JobKind.diffusion
+        pos, neg = conditioning.prompt, conditioning.negative_prompt
+        for i in range(count):
+            job_id = await client.enqueue(job)
+            self.jobs.add(job_kind, job_id, pos, neg, bounds, strength, job.seed)
+            job.seed = seed + (i + 1) * settings.batch_size
 
     def upscale_image(self):
+        params = self.upscale.params
         image = self._doc.get_image(Bounds(0, 0, *self._doc.extent))
-        job = self.jobs.add_upscale(Bounds(0, 0, *self.upscale.target_extent))
+        job = self.jobs.add_upscale(Bounds(0, 0, *self.upscale.target_extent), params.seed)
         self.clear_error()
-        eventloop.run(_report_errors(self, self._upscale_image(job, image, self.upscale.params)))
+        eventloop.run(_report_errors(self, self._upscale_image(job, image, params)))
 
     async def _upscale_image(self, job: Job, image: Image, params: UpscaleParams):
         client = self._connection.client
         upscaler = params.upscaler or client.default_upscaler
         if params.use_diffusion:
             work = workflow.upscale_tiled(
-                client, image, upscaler, params.factor, self.style, params.strength
+                client, image, upscaler, params.factor, self.style, params.strength, params.seed
             )
         else:
             work = workflow.upscale_simple(client, image, params.upscaler, params.factor)
@@ -186,7 +206,9 @@ class Model(QObject, ObservableProperties):
 
         control = [c.get_image(bounds) for c in self.control]
         cond = Conditioning(self.prompt, self.negative_prompt, control)
-        generator = self._generate(bounds, cond, self.live.strength, image, mask, self.live.params)
+        generator = self._generate(
+            bounds, cond, self.live.strength, image, mask, self.seed, count=1, is_live=True
+        )
 
         self.clear_error()
         eventloop.run(_report_errors(self, generator))
@@ -261,10 +283,10 @@ class Model(QObject, ObservableProperties):
             elif settings.auto_preview and self._layer is None and job.id:
                 self.jobs.select(job.id, 0)
         elif message.event is ClientEvent.interrupted:
-            job.state = JobState.cancelled
+            self.jobs.notify_cancelled(job)
             self.report_progress(0)
         elif message.event is ClientEvent.error:
-            job.state = JobState.cancelled
+            self.jobs.notify_cancelled(job)
             self.report_error(f"Server execution error: {message.error}")
 
     def update_preview(self):
@@ -276,16 +298,16 @@ class Model(QObject, ObservableProperties):
     def show_preview(self, job_id: str, index: int, name_prefix="Preview"):
         job = self.jobs.find(job_id)
         assert job is not None, "Cannot show preview, invalid job id"
-        name = f"[{name_prefix}] {job.prompt}"
+        name = f"[{name_prefix}] {job.params.prompt}"
         if self._layer and self._layer.parentNode() is None:
             self._layer = None
         if self._layer is not None:
             self._layer.setName(name)
-            self._doc.set_layer_content(self._layer, job.results[index], job.bounds)
+            self._doc.set_layer_content(self._layer, job.results[index], job.params.bounds)
             self._doc.move_to_top(self._layer)
         else:
             self._layer = self._doc.insert_layer(
-                name, job.results[index], job.bounds, make_active=False
+                name, job.results[index], job.params.bounds, make_active=False
             )
             self._layer.setLocked(True)
 
@@ -307,10 +329,10 @@ class Model(QObject, ObservableProperties):
         assert job.kind is JobKind.control_layer and job.control
         if job.control.mode is ControlMode.pose and result is not None:
             pose = Pose.from_open_pose_json(result)
-            pose.scale(job.bounds.extent)
-            return self._doc.insert_vector_layer(job.prompt, pose.to_svg())
+            pose.scale(job.params.bounds.extent)
+            return self._doc.insert_vector_layer(job.params.prompt, pose.to_svg())
         elif len(job.results) > 0:
-            return self._doc.insert_layer(job.prompt, job.results[0], job.bounds)
+            return self._doc.insert_layer(job.params.prompt, job.results[0], job.params.bounds)
         return self.document.active_layer  # Execution was cached and no image was produced
 
     def add_upscale_layer(self, job: Job):
@@ -319,9 +341,9 @@ class Model(QObject, ObservableProperties):
         if self._layer:
             self._layer.remove()
             self._layer = None
-        self._doc.resize(job.bounds.extent)
+        self._doc.resize(job.params.bounds.extent)
         self.upscale.target_extent_changed.emit(self.upscale.target_extent)
-        self._doc.insert_layer(job.prompt, job.results[0], job.bounds)
+        self._doc.insert_layer(job.params.prompt, job.results[0], job.params.bounds)
 
     def set_workspace(self, workspace: Workspace):
         if self.workspace is Workspace.live:
@@ -329,6 +351,12 @@ class Model(QObject, ObservableProperties):
         self._workspace = workspace
         self.workspace_changed.emit(workspace)
         self.modified.emit(self, "workspace")
+
+    def generate_seed(self):
+        self.seed = workflow.generate_seed()
+
+    def save_result(self, job_id: str, index: int):
+        _save_job_result(self, self.jobs.find(job_id), index)
 
     @property
     def history(self):
@@ -361,6 +389,7 @@ class UpscaleParams(NamedTuple):
     use_diffusion: bool
     strength: float
     target_extent: Extent
+    seed: int
 
 
 class UpscaleWorkspace(QObject, ObservableProperties):
@@ -397,13 +426,13 @@ class UpscaleWorkspace(QObject, ObservableProperties):
             use_diffusion=self.use_diffusion,
             strength=self.strength,
             target_extent=self.target_extent,
+            seed=self._model.seed if self._model.fixed_seed else workflow.generate_seed(),
         )
 
 
 class LiveWorkspace(QObject, ObservableProperties):
     is_active = Property(False, setter="toggle")
     strength = Property(0.3, persist=True)
-    seed = Property(0, persist=True)
     has_result = Property(False)
 
     is_active_changed = pyqtSignal(bool)
@@ -420,11 +449,7 @@ class LiveWorkspace(QObject, ObservableProperties):
     def __init__(self, model: Model):
         super().__init__()
         self._model = model
-        self.generate_seed()
         model.jobs.job_finished.connect(self.handle_job_finished)
-
-    def generate_seed(self):
-        self.seed = random.randint(0, 2**31 - 1)
 
     def toggle(self, active: bool):
         if active != self.is_active:
@@ -436,7 +461,7 @@ class LiveWorkspace(QObject, ObservableProperties):
     def handle_job_finished(self, job: Job):
         if job.kind is JobKind.live_preview:
             if len(job.results) > 0:
-                self.set_result(job.results[0], job.bounds)
+                self.set_result(job.results[0], job.params.bounds)
             self.is_active = self._is_active and self._model.document.is_active
             if self.is_active:
                 self._model.generate_live()
@@ -446,7 +471,7 @@ class LiveWorkspace(QObject, ObservableProperties):
         doc = self._model.document
         doc.insert_layer(f"[Live] {self._model.prompt}", self.result, self._result_bounds)
         if settings.new_seed_after_apply:
-            self.generate_seed()
+            self._model.generate_seed()
 
     @property
     def result(self):
@@ -458,10 +483,6 @@ class LiveWorkspace(QObject, ObservableProperties):
         self.result_available.emit(value)
         self.has_result = True
 
-    @property
-    def params(self):
-        return LiveParams(is_active=self.is_active, seed=self.seed)
-
 
 async def _report_errors(parent, coro):
     try:
@@ -470,3 +491,18 @@ async def _report_errors(parent, coro):
         parent.report_error(f"{util.log_error(e)} [url={e.url}, code={e.code}]")
     except Exception as e:
         parent.report_error(util.log_error(e))
+
+
+def _save_job_result(model: Model, job: Job | None, index: int):
+    assert job is not None, "Cannot save result, invalid job id"
+    assert len(job.results) > index, "Cannot save result, invalid result index"
+    assert model.document.filename, "Cannot save result, document is not saved"
+    timestamp = job.timestamp.strftime("%Y%m%d-%H%M%S")
+    prompt = util.sanitize_prompt(job.params.prompt)
+    path = Path(model.document.filename)
+    path = path.parent / f"{path.stem}-generated-{timestamp}-{index}-{prompt}.webp"
+    path = util.find_unused_path(path)
+    base_image = model._get_current_image(Bounds(0, 0, *model.document.extent))
+    result_image = job.results[index]
+    base_image.draw_image(result_image, job.params.bounds.offset)
+    base_image.save(path)

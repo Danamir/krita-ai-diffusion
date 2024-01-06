@@ -81,6 +81,10 @@ class StyleSettings:
         " noise schedule",
     )
 
+    preferred_resolution = Setting(
+        "Preferred Resolution", 0, "Image resolution the checkpoint was trained on"
+    )
+
     sampler = Setting(
         "Sampler",
         "DPM++ 2M Karras",
@@ -123,6 +127,7 @@ class Style:
     vae: str = StyleSettings.vae.default
     clip_skip: int = StyleSettings.clip_skip.default
     v_prediction_zsnr: bool = StyleSettings.v_prediction_zsnr.default
+    preferred_resolution: int = StyleSettings.preferred_resolution.default
     sampler: str = StyleSettings.sampler.default
     sampler_steps: int = StyleSettings.sampler_steps.default
     cfg_scale: float = StyleSettings.cfg_scale.default
@@ -231,6 +236,7 @@ class Styles(QObject):
     def reload(self):
         styles = (Style.load(f) for f in self.folder.iterdir() if f.suffix == ".json")
         self._list = [s for s in styles if s is not None]
+        self._list.sort(key=lambda s: s.name)
         if len(self._list) == 0:
             self.create("default")
         else:

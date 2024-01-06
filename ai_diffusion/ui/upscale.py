@@ -17,7 +17,7 @@ from ..resources import UpscalerName
 from ..model import Model
 from ..root import root
 from .theme import SignalBlocker
-from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget, QueueWidget
+from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget, QueueButton
 
 
 class UpscaleWidget(QWidget):
@@ -84,7 +84,7 @@ class UpscaleWidget(QWidget):
         self.upscale_button.setMinimumHeight(int(self.upscale_button.sizeHint().height() * 1.2))
         self.upscale_button.clicked.connect(self.upscale)
 
-        self.queue_button = QueueWidget(self)
+        self.queue_button = QueueButton(supports_batch=False, parent=self)
         self.queue_button.setMinimumHeight(self.upscale_button.minimumHeight())
 
         actions_layout = QHBoxLayout()
@@ -131,7 +131,7 @@ class UpscaleWidget(QWidget):
                 model.error_changed.connect(self.error_text.setText),
                 model.has_error_changed.connect(self.error_text.setVisible),
             ]
-            self.queue_button.jobs = model.jobs
+            self.queue_button.model = model
             self.update_factor(model.upscale.factor)
             self.update_target_extent()
             self.update_progress()
@@ -140,16 +140,21 @@ class UpscaleWidget(QWidget):
         if client := root.connection.client_if_connected:
             with SignalBlocker(self.model_select):
                 self.model_select.clear()
-                for file in client.upscalers:
+                for file in sorted(client.upscalers, key=_upscaler_order):
                     if file == UpscalerName.default.value:
                         name = f"Default ({file.removesuffix('.pth')})"
-                        self.model_select.insertItem(0, name, file)
+                        self.model_select.addItem(name, file)
+                    elif file == UpscalerName.fast_4x.value:
+                        name = f"Fast ({file.removesuffix('.safetensors')})"
+                        self.model_select.addItem(name, file)
                     elif file == UpscalerName.quality.value:
                         name = f"Quality ({file.removesuffix('.pth')})"
-                        self.model_select.insertItem(1, name, file)
+                        self.model_select.addItem(name, file)
                     elif file == UpscalerName.sharp.value:
                         name = f"Sharp ({file.removesuffix('.pth')})"
-                        self.model_select.insertItem(2, name, file)
+                        self.model_select.addItem(name, file)
+                    elif file in [UpscalerName.fast_2x.value, UpscalerName.fast_3x.value]:
+                        pass
                     else:
                         self.model_select.addItem(file, file)
                 selected = self.model_select.findData(self.model.upscale.upscaler)
@@ -179,3 +184,12 @@ class UpscaleWidget(QWidget):
     def update_target_extent(self):
         e = self.model.upscale.target_extent
         self.target_label.setText(f"Target size: {e.width} x {e.height}")
+
+
+def _upscaler_order(filename: str):
+    return {
+        UpscalerName.default.value: 0,
+        UpscalerName.fast_4x.value: 1,
+        UpscalerName.quality.value: 2,
+        UpscalerName.sharp.value: 3,
+    }.get(filename, 99)

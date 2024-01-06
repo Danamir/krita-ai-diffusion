@@ -1,7 +1,7 @@
 from __future__ import annotations
 import math
-import random
 import json
+from pathlib import Path
 from typing import NamedTuple, Tuple, Literal, overload, Any
 
 from .style import SDVersion
@@ -45,7 +45,9 @@ class ComfyWorkflow:
                             args[k] = default
         return args
 
-    def dump(self, filepath: str):
+    def dump(self, filepath: str | Path):
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
         with open(filepath, "w") as f:
             json.dump(self.root, f, indent=4)
 
@@ -83,6 +85,23 @@ class ComfyWorkflow:
             self._cache[key] = result
         return result
 
+    @property
+    def seed(self):
+        for node in self.root.values():
+            if node["class_type"] == "KSampler":
+                return node["inputs"]["seed"]
+            elif node["class_type"] == "KSamplerAdvanced":
+                return node["inputs"]["noise_seed"]
+        return -1
+
+    @seed.setter
+    def seed(self, value: int):
+        for node in self.root.values():
+            if node["class_type"] == "KSampler":
+                node["inputs"]["seed"] = value
+            elif node["class_type"] == "KSamplerAdvanced":
+                node["inputs"]["noise_seed"] = value
+
     def ksampler(
         self,
         model: Output,
@@ -100,7 +119,7 @@ class ComfyWorkflow:
         return self.add(
             "KSampler",
             1,
-            seed=random.getrandbits(64) if seed == -1 else seed,
+            seed=seed,
             sampler_name=sampler,
             scheduler=scheduler,
             model=model,
@@ -129,6 +148,23 @@ class ComfyWorkflow:
     ):
         self.sample_count += steps - start_at_step
 
+        return self.add(
+            "KSamplerAdvanced",
+            1,
+            noise_seed=seed,
+            sampler_name=sampler,
+            scheduler=scheduler,
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent_image=latent_image,
+            steps=steps,
+            start_at_step=start_at_step,
+            end_at_step=steps,
+            cfg=cfg,
+            add_noise="enable",
+            return_with_leftover_noise="disable",
+        )
         if two_pass:
             first_pass_sampler = first_pass_sampler or sampler
             if ':' in first_pass_sampler:
@@ -139,7 +175,7 @@ class ComfyWorkflow:
             latent_image = self.add(
                 "KSamplerAdvanced",
                 1,
-                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                noise_seed=seed,
                 sampler_name=first_pass_sampler,
                 scheduler=first_pass_scheduler,
                 model=model,
@@ -157,7 +193,7 @@ class ComfyWorkflow:
             return self.add(
                 "KSamplerAdvanced",
                 1,
-                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                noise_seed=seed,
                 sampler_name=sampler,
                 scheduler=scheduler,
                 model=model,
@@ -175,7 +211,7 @@ class ComfyWorkflow:
             return self.add(
                 "KSamplerAdvanced",
                 1,
-                noise_seed=random.getrandbits(64) if seed == -1 else seed,
+                noise_seed=seed,
                 sampler_name=sampler,
                 scheduler=scheduler,
                 model=model,
@@ -377,6 +413,7 @@ class ComfyWorkflow:
         )
 
     def upscale_image(self, upscale_model: Output, image: Output):
+        self.sample_count += 4  # approx, actual number depends on model and image size
         return self.add("ImageUpscaleWithModel", 1, upscale_model=upscale_model, image=image)
 
     def invert_image(self, image: Output):
@@ -457,7 +494,7 @@ class ComfyWorkflow:
             vae=vae,
             upscale_model=upscale_model,
             upscale_by=factor,
-            seed=random.getrandbits(64) if seed == -1 else seed,
+            seed=seed,
             steps=steps,
             cfg=cfg,
             sampler_name=sampler,

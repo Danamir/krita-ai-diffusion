@@ -12,11 +12,12 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QListView,
     QSizePolicy,
+    QMenu,
 )
 
 from ..properties import Binding, bind, Bind
 from ..image import Bounds, Extent, Image
-from ..jobs import Job, JobQueue, JobState, JobKind
+from ..jobs import Job, JobQueue, JobState, JobKind, JobParams
 from ..model import Model
 from ..root import root
 from ..settings import settings
@@ -28,36 +29,38 @@ from .widget import (
     TextPromptWidget,
     StrengthWidget,
     ControlLayerButton,
-    QueueWidget,
+    QueueButton,
     ControlListWidget,
 )
 
 
 class HistoryWidget(QListWidget):
-    _jobs: JobQueue
+    _model: Model
     _connections: list[QMetaObject.Connection]
-    _last_prompt: str | None = None
-    _last_bounds: Bounds | None = None
+    _last_job_params: JobParams | None = None
 
     item_activated = pyqtSignal(QListWidgetItem)
 
     _thumb_size = 96
     _applied_icon = Image.load(theme.icon_path / "star.png")
-    _list_css = f"QListWidget::item:selected {{ border: 1px solid {theme.grey}; }}"
+    _list_css = f"""
+        QListWidget {{ background-color: transparent; }}
+        QListWidget::item:selected {{ border: 1px solid {theme.grey}; }}
+    """
     _button_css = f"""
         QPushButton {{
             border: 1px solid {theme.grey};
-            background: {"rgba(96, 96, 96, 180)" if theme.is_dark else "rgba(192, 192, 192, 180)"};
+            background: {"rgba(64, 64, 64, 170)" if theme.is_dark else "rgba(240, 240, 240, 160)"};
             padding: 2px;
         }}
         QPushButton:hover {{
-            background: {"rgba(96, 96, 96, 220)" if theme.is_dark else "rgba(192, 192, 192, 220)"};
+            background: {"rgba(72, 72, 72, 210)" if theme.is_dark else "rgba(240, 240, 240, 200)"};
         }}
     """
 
     def __init__(self, parent):
         super().__init__(parent)
-        self._jobs = JobQueue()
+        self._model = root.active_model
         self._connections = []
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -68,6 +71,7 @@ class HistoryWidget(QListWidget):
         self.setIconSize(theme.screen_scale(self, QSize(self._thumb_size, self._thumb_size)))
         self.setFrameStyle(QListWidget.NoFrame)
         self.setStyleSheet(self._list_css)
+        self.setDragEnabled(False)
         self.itemClicked.connect(self.handle_preview_click)
         self.itemDoubleClicked.connect(self.item_activated)
 
@@ -75,17 +79,30 @@ class HistoryWidget(QListWidget):
         self._apply_button.setStyleSheet(self._button_css)
         self._apply_button.setVisible(False)
         self._apply_button.clicked.connect(self._activate_selection)
+
+        self._context_button = QPushButton(theme.icon("context"), "", self)
+        self._context_button.setStyleSheet(self._button_css)
+        self._context_button.setVisible(False)
+        self._context_button.clicked.connect(self._show_context_menu_dropdown)
+
+        f = self.fontMetrics()
+        self._apply_button.setFixedHeight(f.height() + 8)
+        self._context_button.setFixedWidth(f.height() + 8)
         if scrollbar := self.verticalScrollBar():
             scrollbar.valueChanged.connect(self.update_apply_button)
 
-    @property
-    def jobs(self):
-        return self._jobs
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
-    @jobs.setter
-    def jobs(self, jobs: JobQueue):
+    @property
+    def model_(self):
+        return self._model
+
+    @model_.setter
+    def model_(self, model: Model):
         Binding.disconnect_all(self._connections)
-        self._jobs = jobs
+        self._model = model
+        jobs = model.jobs
         self._connections = [
             jobs.selection_changed.connect(self.update_selection),
             self.itemSelectionChanged.connect(self.select_item),
@@ -104,16 +121,16 @@ class HistoryWidget(QListWidget):
         scroll_to_bottom = (
             scrollbar and scrollbar.isVisible() and scrollbar.value() >= scrollbar.maximum() - 4
         )
+        prompt = job.params.prompt if job.params.prompt != "" else "<no prompt>"
 
-        if self._last_prompt != job.prompt or self._last_bounds != job.bounds:
-            self._last_prompt = job.prompt
-            self._last_bounds = job.bounds
-            prompt = job.prompt if job.prompt != "" else "<no prompt>"
+        if not JobParams.equal_ignore_seed(self._last_job_params, job.params):
+            self._last_job_params = job.params
+            strength = f"{job.params.strength*100:.0f}% - " if job.params.strength != 1.0 else ""
 
-            header = QListWidgetItem(f"{job.timestamp:%H:%M} - {prompt}")
+            header = QListWidgetItem(f"{job.timestamp:%H:%M} - {strength}{prompt}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             header.setData(Qt.ItemDataRole.UserRole, job.id)
-            header.setData(Qt.ItemDataRole.ToolTipRole, job.prompt)
+            header.setData(Qt.ItemDataRole.ToolTipRole, job.params.prompt)
             header.setSizeHint(QSize(9999, self.fontMetrics().lineSpacing() + 4))
             header.setTextAlignment(Qt.AlignmentFlag.AlignLeft)
             self.addItem(header)
@@ -124,7 +141,8 @@ class HistoryWidget(QListWidget):
             item.setData(Qt.ItemDataRole.UserRole + 1, i)
             item.setData(
                 Qt.ItemDataRole.ToolTipRole,
-                f"{job.prompt}\nClick to toggle preview, double-click to apply.",
+                f"{prompt} @ {job.params.strength*100:.0f}% strength\n"
+                "Click to toggle preview, double-click to apply.",
             )
             self.addItem(item)
 
@@ -143,12 +161,12 @@ class HistoryWidget(QListWidget):
                     item = self.item(i)
                 break
         if item_was_selected:
-            self._jobs.selection = None
+            self._model.jobs.selection = None
         else:
             self.update_apply_button()  # selection may have moved
 
     def update_selection(self):
-        selection = self._jobs.selection
+        selection = self._model.jobs.selection
         if selection is None:
             self.clearSelection()
         elif selection:
@@ -161,29 +179,40 @@ class HistoryWidget(QListWidget):
         selected = self.selectedItems()
         if len(selected) > 0:
             rect = self.visualItemRect(selected[0])
-            self._apply_button.setVisible(True)
-            self._apply_button.move(
-                QPoint(rect.left() + 3, rect.bottom() - self._apply_button.height() - 2)
-            )
-            self._apply_button.resize(QSize(rect.width() - 6, self._apply_button.height()))
-            if rect.width() < 56:
-                self._apply_button.setText("")
+            context_visible = rect.width() >= 0.6 * self.iconSize().width()
+            apply_text_visible = rect.width() >= 0.85 * self.iconSize().width()
+            apply_pos = QPoint(rect.left() + 3, rect.bottom() - self._apply_button.height() - 2)
+            if context_visible:
+                cw = self._context_button.width()
+                context_pos = QPoint(rect.right() - cw - 2, apply_pos.y())
+                context_size = QSize(cw, self._apply_button.height())
             else:
-                self._apply_button.setText("Apply")
+                context_pos = QPoint(rect.right(), apply_pos.y())
+                context_size = QSize(0, 0)
+            apply_size = QSize(context_pos.x() - rect.left() - 5, self._apply_button.height())
+            self._apply_button.setVisible(True)
+            self._apply_button.move(apply_pos)
+            self._apply_button.resize(apply_size)
+            self._apply_button.setText("Apply" if apply_text_visible else "")
+            self._context_button.setVisible(context_visible)
+            if context_visible:
+                self._context_button.move(context_pos)
+                self._context_button.resize(context_size)
         else:
             self._apply_button.setVisible(False)
+            self._context_button.setVisible(False)
 
     def update_image_thumbnail(self, id: JobQueue.Item):
         if item := self._find(id):
-            job = ensure(self._jobs.find(id.job))
+            job = ensure(self._model.jobs.find(id.job))
             item.setIcon(self._image_thumbnail(job, id.image))
 
     def select_item(self):
         items = self.selectedItems()
         if len(items) > 0:
-            self._jobs.selection = self._item_data(items[0])
+            self._model.jobs.selection = self._item_data(items[0])
         else:
-            self._jobs.selection = None
+            self._model.jobs.selection = None
 
     def _activate_selection(self):
         items = self.selectedItems()
@@ -195,11 +224,19 @@ class HistoryWidget(QListWidget):
 
     def rebuild(self):
         self.clear()
-        for job in filter(self.is_finished, self._jobs):
+        for job in filter(self.is_finished, self._model.jobs):
             self.add(job)
 
     def item_info(self, item: QListWidgetItem) -> tuple[str, int]:  # job id, image index
         return item.data(Qt.ItemDataRole.UserRole), item.data(Qt.ItemDataRole.UserRole + 1)
+
+    @property
+    def selected_job(self) -> Job | None:
+        items = self.selectedItems()
+        if len(items) > 0:
+            job_id, _ = self.item_info(items[0])
+            return self._model.jobs.find(job_id)
+        return None
 
     def handle_preview_click(self, item: QListWidgetItem):
         if item.text() != "" and item.text() != "<no prompt>":
@@ -209,7 +246,7 @@ class HistoryWidget(QListWidget):
 
     def mousePressEvent(self, e: QMouseEvent | None) -> None:
         # make single click deselect current item (usually requires Ctrl+click)
-        if e is not None:
+        if e is not None and e.button() == Qt.MouseButton.LeftButton:
             mods = e.modifiers()
             mods |= Qt.KeyboardModifier.ControlModifier
             e = QMouseEvent(
@@ -246,6 +283,49 @@ class HistoryWidget(QListWidget):
         if job.result_was_used(index):  # add tiny star icon to mark used results
             thumb.draw_image(self._applied_icon, offset=(-28, 4))
         return thumb.to_icon()
+
+    def _show_context_menu(self, pos: QPoint):
+        item = self.itemAt(pos)
+        if item is not None:
+            menu = QMenu(self)
+            menu.addAction("Copy Prompt", self._copy_prompt)
+            menu.addAction("Copy Strength", self._copy_strength)
+            menu.addAction("Copy Seed", self._copy_seed)
+            menu.addSeparator()
+            save_action = ensure(menu.addAction("Save Image", self._save_image))
+            if self._model.document.filename == "":
+                save_action.setEnabled(False)
+                save_action.setToolTip(
+                    "Save as separate image to the same folder as the document.\nMust save the"
+                    " document first!"
+                )
+                menu.setToolTipsVisible(True)
+            menu.exec(self.mapToGlobal(pos))
+
+    def _show_context_menu_dropdown(self):
+        pos = self._context_button.pos()
+        pos.setY(pos.y() + self._context_button.height())
+        self._show_context_menu(pos)
+
+    def _copy_prompt(self):
+        if job := self.selected_job:
+            self._model.prompt = job.params.prompt
+            self._model.negative_prompt = job.params.negative_prompt
+
+    def _copy_strength(self):
+        if job := self.selected_job:
+            self._model.strength = job.params.strength
+
+    def _copy_seed(self):
+        if job := self.selected_job:
+            self._model.fixed_seed = True
+            self._model.seed = job.params.seed
+
+    def _save_image(self):
+        items = self.selectedItems()
+        if len(items) > 0:
+            job_id, image_index = self.item_info(items[0])
+            self._model.save_result(job_id, image_index)
 
 
 class GenerationWidget(QWidget):
@@ -295,7 +375,7 @@ class GenerationWidget(QWidget):
 
         self.generate_button = QPushButton("Generate", self)
         self.generate_button.setMinimumHeight(int(self.generate_button.sizeHint().height() * 1.2))
-        self.queue_button = QueueWidget(self)
+        self.queue_button = QueueButton(parent=self)
         self.queue_button.setMinimumHeight(self.generate_button.minimumHeight())
         actions_layout = QHBoxLayout()
         actions_layout.addWidget(self.generate_button)
@@ -343,8 +423,8 @@ class GenerationWidget(QWidget):
                 self.generate_button.clicked.connect(model.generate),
             ]
             self.control_list.model = model
-            self.queue_button.jobs = model.jobs
-            self.history.jobs = model.jobs
+            self.queue_button.model = model
+            self.history.model_ = model
 
     def update_progress(self):
         self.progress_bar.setValue(int(self.model.progress * 100))
