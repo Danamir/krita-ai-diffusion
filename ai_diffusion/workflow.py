@@ -272,7 +272,7 @@ def _sampler_params(
     )
     if advanced:
         if strength < 1.0:
-            params["steps"], params["start_at_step"] = _apply_strength(strength=strength, steps=params["steps"], min_steps=config.steps if live.is_active else 1)
+            params["steps"], params["start_at_step"] = _apply_strength(strength=strength, steps=params["steps"], min_steps=config.steps if is_live else 1)
         else:
             params["start_at_step"] = 0
     if advanced:

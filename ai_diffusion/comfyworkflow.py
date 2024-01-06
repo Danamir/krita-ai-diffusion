@@ -148,23 +148,6 @@ class ComfyWorkflow:
     ):
         self.sample_count += steps - start_at_step
 
-        return self.add(
-            "KSamplerAdvanced",
-            1,
-            noise_seed=seed,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            model=model,
-            positive=positive,
-            negative=negative,
-            latent_image=latent_image,
-            steps=steps,
-            start_at_step=start_at_step,
-            end_at_step=steps,
-            cfg=cfg,
-            add_noise="enable",
-            return_with_leftover_noise="disable",
-        )
         if two_pass:
             first_pass_sampler = first_pass_sampler or sampler
             if ':' in first_pass_sampler:
