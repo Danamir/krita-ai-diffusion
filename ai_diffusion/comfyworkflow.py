@@ -260,10 +260,11 @@ class ComfyWorkflow:
 
     def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None, split_conditioning=False):
         if sd_ver == SDVersion.sdxl:
-            if split_conditioning and " . " in text:
+            if split_conditioning and " . " in text and " -." not in text and "-. " not in text and "-.," not in text:
                 text_g, text_l = text.split(" . ")
             else:
-                text_g, text_l = text, text
+                text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
+                text_l = text_g
 
             return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
         else:
