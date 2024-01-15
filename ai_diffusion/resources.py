@@ -503,7 +503,7 @@ all_resources = (
 
 
 class UpscalerName(Enum):
-    default = "4x_NMKD-Superscale-SP_178000_G.pth"
+    default = "UltraSharp 4x.pth"
     quality = "HAT_SRx4_ImageNet-pretrain.pth"
     sharp = "Real_HAT_GAN_sharper.pth"
     fast_2x = "OmniSR_X2_DIV2K.safetensors"
