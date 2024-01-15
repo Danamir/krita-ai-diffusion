@@ -11,10 +11,10 @@ from typing import Any, List, NamedTuple, Optional, overload
 from .image import Bounds, Extent, Image, Mask, multiple_of
 from .client import Client, resolve_sd_version
 from .style import Style, StyleSettings
-from .resources import ControlMode, SDVersion
+from .resources import ControlMode, SDVersion, UpscalerName
 from .settings import settings
 from .comfyworkflow import ComfyWorkflow, Output
-from .util import client_logger as log
+from .util import ensure, client_logger as log
 
 
 _pattern_lora = re.compile(r"\s*<lora:([^:<>]+)(?::(-?[^:<>]*))?>\s*", re.IGNORECASE)
@@ -342,7 +342,7 @@ def load_model_with_lora(
     w: ComfyWorkflow,
     comfy: Client,
     style: Style,
-    prompt: str,
+    cond: Conditioning,
     is_live=False,
 ):
     checkpoint = style.sd_checkpoint
@@ -358,18 +358,25 @@ def load_model_with_lora(
         else:
             log.warning(f"Style VAE {style.vae} not found, using default VAE from checkpoint")
 
-    for lora in chain(style.loras, _parse_loras(comfy.lora_models, prompt)):
-        if lora["name"] not in comfy.lora_models:
+    for lora in chain(style.loras, _parse_loras(comfy.loras, cond.prompt)):
+        if lora["name"] not in comfy.loras:
             log.warning(f"LoRA {lora['name']} not found, skipping")
             continue
         model, clip = w.load_lora(model, clip, lora["name"], lora["strength"], lora["strength"])
 
+    sdver = resolve_sd_version(style, comfy)
     is_lcm = style.get_sampler_config(is_live=is_live).sampler == "LCM"
     if is_lcm:
-        sdver = resolve_sd_version(style, comfy)
-        if comfy.lcm_model[sdver] is None:
+        if lora := comfy.lora_models["lcm"][sdver]:
+            model = w.load_lora_model(model, lora, 1.0)
+        else:
             raise Exception(f"LCM LoRA model not found for {sdver.value}")
-        model, _ = w.load_lora(model, clip, comfy.lcm_model[sdver], 1.0, 1.0)
+
+    if any(c.mode is ControlMode.face for c in cond.control):
+        if lora := comfy.lora_models["face"][sdver]:
+            model = w.load_lora_model(model, lora, 0.6)
+        else:
+            raise Exception(f"IP-Adapter Face LoRA model not found for {sdver.value}")
 
     if style.v_prediction_zsnr:
         model = w.model_sampling_discrete(model, "v_prediction", zsnr=True)
@@ -485,7 +492,9 @@ def apply_conditioning(
     sd_ver = resolve_sd_version(style, comfy)
     prompt = merge_prompt(_pattern_lora.sub("", cond.prompt), style.style_prompt)
     area = cond.area
-    if area and any(c.mode not in [ControlMode.image, ControlMode.inpaint] for c in cond.control):
+    if area and any(
+        c.mode not in [ControlMode.reference, ControlMode.inpaint] for c in cond.control
+    ):
         area = None  # Don't use area conditioning if there is already a ControlNet
     elif area:
         prompt = merge_prompt("", style.style_prompt)
@@ -511,7 +520,7 @@ def apply_control(
     sd_ver = resolve_sd_version(style, comfy)
 
     # Apply control net to the positive clip conditioning in a chain
-    for control in (c for c in cond.control if c.mode is not ControlMode.image):
+    for control in (c for c in cond.control if c.mode.is_control_net):
         model_file = comfy.control_model[control.mode][sd_ver]
         if model_file is None:
             continue
@@ -530,25 +539,44 @@ def apply_control(
             end_percent=control.end,
         )
 
-    # Encode images with their weights into a batch and apply IP-adapter to the model once
-    if ip_model_file := comfy.ip_adapter_model[sd_ver]:
-        ip_images = []
-        ip_weights = []
-        ip_end_at = 0.1
+    # Create a separate embedding for each face ID (though more than 1 is questionable)
+    face_layers = [c for c in cond.control if c.mode is ControlMode.face]
+    if len(face_layers) > 0:
+        ipadapter_model_name = ensure(comfy.ip_adapter_model[ControlMode.face][sd_ver])
+        clip_vision = w.load_clip_vision(comfy.clip_vision_model)
+        ip_adapter = w.load_ip_adapter(ipadapter_model_name)
+        insight_face = w.load_insight_face()
+        for control in face_layers:
+            model = w.apply_ip_adapter_face(
+                ip_adapter,
+                clip_vision,
+                insight_face,
+                model,
+                control.load_image(w),
+                control.strength,
+                end_at=control.end,
+                faceid_v2="v2" in ipadapter_model_name,
+            )
 
-        for control in (c for c in cond.control if c.mode is ControlMode.image):
-            if len(ip_images) >= 4:
-                raise Exception("Too many control layers of type 'reference image' (maximum is 4)")
-            ip_images.append(control.load_image(w))
-            ip_weights.append(control.strength)
-            ip_end_at = max(ip_end_at, control.end)
-        max_weight = max(ip_weights, default=0.0)
-        if len(ip_images) > 0 and max_weight > 0:
-            ip_weights = [w / max_weight for w in ip_weights]
-            clip_vision = w.load_clip_vision(comfy.clip_vision_model)
-            ip_adapter = w.load_ip_adapter(ip_model_file)
-            embeds = w.encode_ip_adapter(clip_vision, ip_images, ip_weights, noise=0.2)
-            model = w.apply_ip_adapter(ip_adapter, embeds, model, max_weight, ip_end_at)
+    # Encode images with their weights into a batch and apply IP-adapter to the model once
+    ip_images = []
+    ip_weights = []
+    ip_end_at = 0.1
+
+    for control in (c for c in cond.control if c.mode is ControlMode.reference):
+        if len(ip_images) >= 4:
+            raise Exception("Too many control layers of type 'reference image' (maximum is 4)")
+        ip_images.append(control.load_image(w))
+        ip_weights.append(control.strength)
+        ip_end_at = max(ip_end_at, control.end)
+    max_weight = max(ip_weights, default=0.0)
+    if len(ip_images) > 0 and max_weight > 0:
+        ip_weights = [w / max_weight for w in ip_weights]
+        ip_model_name = ensure(comfy.ip_adapter_model[ControlMode.reference][sd_ver])
+        clip_vision = w.load_clip_vision(comfy.clip_vision_model)
+        ip_adapter = w.load_ip_adapter(ip_model_name)
+        embeds = w.encode_ip_adapter(clip_vision, ip_images, ip_weights, noise=0.2)
+        model = w.apply_ip_adapter(ip_adapter, embeds, model, max_weight, end_at=ip_end_at)
 
     return model, positive, negative
 
@@ -567,7 +595,8 @@ def scale(
         assert mode is ScaleMode.upscale_fast
         ratio = target.pixel_count / extent.pixel_count
         factor = max(2, min(4, math.ceil(math.sqrt(ratio))))
-        upscale_model = w.load_upscale_model(comfy.fast_upscaler[factor])
+        upscale_model_name = ensure(comfy.upscale_models[UpscalerName.fast_x(factor)])
+        upscale_model = w.load_upscale_model(upscale_model_name)
         image = w.upscale_image(upscale_model, image)
         image = w.scale_image(image, target)
         return image
@@ -637,7 +666,7 @@ def generate(
     batch = 1 if is_live else batch
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=is_live)
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond, is_live=is_live)
     latent = w.empty_latent_image(extent.initial.width, extent.initial.height, batch)
     model, positive, negative = apply_conditioning(cond, w, comfy, model, clip, style)
     out_latent = w.ksampler_advanced(
@@ -664,7 +693,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     upscale_extent, _ = prepare_extent(target_bounds.extent, sd_ver, style, downscale=False)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt)
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond)
     in_image = w.load_image(scaled_image)
     in_image = scale_to_initial(extent, w, in_image, comfy)
     in_mask = w.load_mask(scaled_mask)
@@ -677,7 +706,7 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     cond_base.area = extent.convert(cond_base.area, "target", "initial")
     image_strength = 0.5 if cond.prompt == "" else 0.3
     image_context = create_inpaint_context(scaled_image, cond_base.area, default=in_image)
-    cond_base.control.append(Control(ControlMode.image, image_context, image_strength))
+    cond_base.control.append(Control(ControlMode.reference, image_context, image_strength))
     cond_base.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     model, positive, negative = apply_conditioning(cond_base, w, comfy, model, clip, style)
 
@@ -745,7 +774,7 @@ def refine(
     sampler_params = _sampler_params(style, strength, seed, is_live=is_live)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=is_live)
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond, is_live=is_live)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, comfy)
     latent = w.vae_encode(vae, in_image)
@@ -786,7 +815,7 @@ def refine_region(
     sampler_params = _sampler_params(style, strength, seed, is_live=is_live)
 
     w = ComfyWorkflow(comfy.nodes_inputs)
-    model, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt, is_live=is_live)
+    model, clip, vae = load_model_with_lora(w, comfy, style, cond, is_live=is_live)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, comfy)
     in_mask = w.load_mask(mask_image)
@@ -811,8 +840,10 @@ def refine_region(
     return w
 
 
-def create_control_image(comfy: Client, image: Image, mode: ControlMode):
-    assert mode not in [ControlMode.image, ControlMode.inpaint]
+def create_control_image(
+    comfy: Client, image: Image, mode: ControlMode, bounds: Bounds | None = None, seed: int = -1
+):
+    assert mode not in [ControlMode.reference, ControlMode.face, ControlMode.inpaint]
 
     target_extent = image.extent
     current_extent = apply_resolution_settings(image.extent)
@@ -825,6 +856,26 @@ def create_control_image(comfy: Client, image: Image, mode: ControlMode):
 
     if mode is ControlMode.canny_edge:
         result = w.add("Canny", 1, image=input, low_threshold=0.4, high_threshold=0.8)
+
+    elif mode is ControlMode.hands:
+        if bounds is None:
+            current_extent = current_extent.multiple_of(64)
+            resolution = current_extent.shortest_side
+        else:
+            input = w.crop_image(input, bounds)
+            resolution = bounds.extent.multiple_of(64).shortest_side
+        result, _ = w.add(
+            "MeshGraphormer-DepthMapPreprocessor",
+            2,
+            image=input,
+            resolution=resolution,
+            mask_type="based_on_depth",
+            rand_seed=seed if seed != -1 else generate_seed(),
+        )
+        if bounds is not None:
+            result = w.scale_image(result, bounds.extent)
+            empty = w.empty_image(current_extent)
+            result = w.composite_image_masked(result, empty, None, bounds.x, bounds.y)
     else:
         current_extent = current_extent.multiple_of(64)
         args = {"image": input, "resolution": current_extent.shortest_side}
@@ -844,6 +895,7 @@ def create_control_image(comfy: Client, image: Image, mode: ControlMode):
             result = w.add("DWPreprocessor", 1, **args, **feat)
         elif mode is ControlMode.segmentation:
             result = w.add("OneFormer-COCO-SemSegPreprocessor", 1, **args)
+
         assert result is not None
 
     if mode.is_lines:
@@ -882,7 +934,7 @@ def upscale_tiled(
 
     w = ComfyWorkflow(comfy.nodes_inputs)
     img = w.load_image(image)
-    checkpoint, clip, vae = load_model_with_lora(w, comfy, style, cond.prompt)
+    checkpoint, clip, vae = load_model_with_lora(w, comfy, style, cond)
     upscale_model = w.load_upscale_model(model)
     if sd_ver.has_controlnet_blur:
         cond.control.append(Control(ControlMode.blur, img))

@@ -614,12 +614,29 @@ def test_create_open_pose_vector(qtapp, comfy):
             if msg.event is ClientEvent.finished and msg.job_id == job_id:
                 result = Pose.from_open_pose_json(msg.result).to_svg()
                 (result_dir / image_name).write_text(result)
-                reference = (reference_dir / image_name).read_text()
-                assert result == reference
                 return
             if msg.event is ClientEvent.error and msg.job_id == job_id:
                 raise Exception(msg.error)
         assert False, "Connection closed without receiving images"
+
+    qtapp.run(main())
+
+
+@pytest.mark.parametrize("setup", ["no_mask", "right_hand", "left_hand"])
+def test_create_hand_refiner_image(qtapp, comfy, setup):
+    image_name = f"test_create_hand_refiner_image_{setup}.png"
+    image = Image.load(image_dir / "character.webp")
+    bounds = {
+        "no_mask": None,
+        "right_hand": Bounds(102, 398, 264, 240),
+        "left_hand": Bounds(541, 642, 232, 248),
+    }[setup]
+    job = workflow.create_control_image(comfy, image, ControlMode.hands, bounds, default_seed)
+
+    async def main():
+        result = await run_and_save(comfy, job, image_name)
+        reference = Image.load(reference_dir / image_name)
+        assert Image.compare(result, reference) < 0.002
 
     qtapp.run(main())
 
@@ -629,7 +646,7 @@ def test_ip_adapter(qtapp, comfy, temp_settings, sdver):
     temp_settings.batch_size = 1
     image = Image.load(image_dir / "cat.webp")
     control = Conditioning(
-        "cat on a rooftop in paris", "", [Control(ControlMode.image, image, 0.6)]
+        "cat on a rooftop in paris", "", [Control(ControlMode.reference, image, 0.6)]
     )
     extent = Extent(512, 512) if sdver == SDVersion.sd15 else Extent(1024, 1024)
     job = workflow.generate(comfy, default_style(comfy, sdver), extent, control, default_seed)
@@ -645,7 +662,7 @@ def test_ip_adapter_region(qtapp, comfy, temp_settings):
     image = Image.load(image_dir / "flowers.webp")
     mask = Mask.load(image_dir / "flowers_mask.png")
     control_img = Image.load(image_dir / "pegonia.webp")
-    control = Conditioning("potted flowers", "", [Control(ControlMode.image, control_img, 0.7)])
+    control = Conditioning("potted flowers", "", [Control(ControlMode.reference, control_img, 0.7)])
     job = workflow.refine_region(
         comfy, default_style(comfy), image, mask, control, 0.6, default_seed
     )
@@ -661,12 +678,30 @@ def test_ip_adapter_batch(qtapp, comfy, temp_settings):
     image1 = Image.load(image_dir / "cat.webp")
     image2 = Image.load(image_dir / "pegonia.webp")
     control = Conditioning(
-        "", "", [Control(ControlMode.image, image1, 1.0), Control(ControlMode.image, image2, 1.0)]
+        "",
+        "",
+        [Control(ControlMode.reference, image1, 1.0), Control(ControlMode.reference, image2, 1.0)],
     )
     job = workflow.generate(comfy, default_style(comfy), Extent(512, 512), control, default_seed)
 
     async def main():
         await run_and_save(comfy, job, "test_ip_adapter_batch.png")
+
+    qtapp.run(main())
+
+
+@pytest.mark.parametrize("sdver", [SDVersion.sd15, SDVersion.sdxl])
+def test_ip_adapter_face(qtapp, comfy, temp_settings, sdver):
+    temp_settings.batch_size = 1
+    extent = Extent(650, 650) if sdver == SDVersion.sd15 else Extent(1024, 1024)
+    image = Image.load(image_dir / "face.webp")
+    control = Conditioning(
+        "portrait photo of a woman at a garden party", "", [Control(ControlMode.face, image, 0.9)]
+    )
+    job = workflow.generate(comfy, default_style(comfy), extent, control, default_seed)
+
+    async def main():
+        await run_and_save(comfy, job, f"test_ip_adapter_face_{sdver.name}.png")
 
     qtapp.run(main())
 

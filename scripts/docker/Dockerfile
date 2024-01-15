@@ -60,7 +60,8 @@ ENV PATH="/venv/bin:$PATH"
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /ComfyUI && \
     pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
     pip3 install -r /ComfyUI/requirements.txt && \
-    pip3 cache purge
+    pip3 cache purge && \
+    echo v1.12.0 > .krita-ai-diffusion.version
 
 # Install ComfyUI Custom Nodes
 RUN git clone https://github.com/ltdrdata/ComfyUI-Manager.git /ComfyUI/custom_nodes/ComfyUI-Manager && \
@@ -68,10 +69,10 @@ RUN git clone https://github.com/ltdrdata/ComfyUI-Manager.git /ComfyUI/custom_no
     git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus /ComfyUI/custom_nodes/ComfyUI_IPAdapter_plus && \
     git clone https://github.com/ssitu/ComfyUI_UltimateSDUpscale /ComfyUI/custom_nodes/ComfyUI_UltimateSDUpscale --recursive && \
     git clone https://github.com/Acly/comfyui-tooling-nodes /ComfyUI/custom_nodes/comfyui-tooling-nodes && \
-    pip3 install -r /ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt && \
+    pip3 install -r /ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt && \    
     pip3 install -r /ComfyUI/custom_nodes/comfyui_controlnet_aux/requirements.txt && \
-    pip3 cache purge && \
-    echo v1.10.0 > .krita-ai-diffusion.version
+    pip3 install insightface onnxruntime && \
+    pip3 cache purge
 
 # Copy models
 RUN mkdir -p models

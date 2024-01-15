@@ -233,6 +233,11 @@ class ComfyWorkflow:
     def load_upscale_model(self, model_name: str):
         return self.add_cached("UpscaleModelLoader", 1, model_name=model_name)
 
+    def load_lora_model(self, model: Output, lora_name: str, strength: float):
+        return self.add(
+            "LoraLoaderModelOnly", 1, model=model, lora_name=lora_name, strength_model=strength
+        )
+
     def load_lora(self, model: Output, clip: Output, lora_name, strength_model, strength_clip):
         return self.add(
             "LoraLoader",
@@ -243,6 +248,9 @@ class ComfyWorkflow:
             strength_model=strength_model,
             strength_clip=strength_clip,
         )
+
+    def load_insight_face(self):
+        return self.add_cached("InsightFaceLoader", 1, provider="CPU")
 
     def empty_latent_image(self, width: int, height: int, batch_size=1):
         return self.add("EmptyLatentImage", 1, width=width, height=height, batch_size=batch_size)
@@ -320,6 +328,7 @@ class ComfyWorkflow:
         embeds: Output,
         model: Output,
         weight: float,
+        start_at=0.0,
         end_at=1.0,
     ):
         return self.add(
@@ -330,7 +339,37 @@ class ComfyWorkflow:
             model=model,
             weight=weight,
             weight_type="linear",
+            start_at=start_at,
             end_at=end_at,
+        )
+
+    def apply_ip_adapter_face(
+        self,
+        ipadapter: Output,
+        clip_vision: Output,
+        insightface: Output,
+        model: Output,
+        image: Output,
+        weight=1.0,
+        end_at=1.0,
+        faceid_v2=False,
+    ):
+        return self.add(
+            "IPAdapterApplyFaceID",
+            1,
+            ipadapter=ipadapter,
+            clip_vision=clip_vision,
+            insightface=insightface,
+            image=image,
+            model=model,
+            weight=weight,
+            weight_type="original",
+            start_at=0.0,
+            end_at=end_at,
+            noise=0.0,
+            faceid_v2=faceid_v2,
+            weight_v2=weight,
+            unfold_batch=False,
         )
 
     def inpaint_preprocessor(self, image: Output, mask: Output):
@@ -373,9 +412,14 @@ class ComfyWorkflow:
             crop="disabled",
         )
 
+    def empty_image(self, extent: Extent, color=0):
+        return self.add(
+            "EmptyImage", 1, width=extent.width, height=extent.height, color=color, batch_size=1
+        )
+
     def crop_image(self, image: Output, bounds: Bounds):
         return self.add(
-            "ETN_CropImage",
+            "ImageCrop",
             1,
             image=image,
             x=bounds.x,
@@ -423,6 +467,20 @@ class ComfyWorkflow:
 
     def image_to_mask(self, image: Output):
         return self.add("ImageToMask", 1, image=image, channel="red")
+
+    def composite_image_masked(
+        self, source: Output, destination: Output, mask: Output | None, x=0, y=0
+    ):
+        return self.add(
+            "ImageCompositeMasked",
+            1,
+            source=source,
+            destination=destination,
+            mask=mask,
+            x=x,
+            y=y,
+            resize_source=False,
+        )
 
     def mask_to_image(self, mask: Output):
         return self.add("MaskToImage", 1, mask=mask)

@@ -351,11 +351,20 @@ class ServerWidget(QWidget):
                 is_checkable=True,
                 parent=self,
             ),
-            "control": PackageGroupWidget(
-                "Control extensions", resources.optional_models, is_checkable=True, parent=self
+            "control_sd15": PackageGroupWidget(
+                "Control extensions for SD 1.5",
+                [m for m in resources.optional_models if m.sd_version is SDVersion.sd15],
+                is_checkable=True,
+                parent=self,
+            ),
+            "control_sdxl": PackageGroupWidget(
+                "Control extensions for SD XL",
+                [m for m in resources.optional_models if m.sd_version is SDVersion.sdxl],
+                is_checkable=True,
+                parent=self,
             ),
         }
-        for group in ["checkpoints", "upscalers", "control"]:
+        for group in ["checkpoints", "upscalers", "control_sd15", "control_sdxl"]:
             self._packages[group].changed.connect(self.update_ui)
             package_layout.addWidget(self._packages[group])
 
@@ -419,9 +428,9 @@ class ServerWidget(QWidget):
             self._status_label.setText("Server running - Connecting...")
             self._status_label.setStyleSheet(f"color:{yellow};font-weight:bold")
             await root.connection._connect(url)
+            self.update_ui()
         except Exception as e:
-            self._error = str(e)
-        self.update_ui()
+            self.show_error(str(e))
 
     async def _stop(self):
         self._launch_button.setEnabled(False)
@@ -431,9 +440,9 @@ class ServerWidget(QWidget):
             if root.connection.state is ConnectionState.connected:
                 await root.connection.disconnect()
             await self._server.stop()
+            self.update_ui()
         except Exception as e:
-            self._error = str(e)
-        self.update_ui()
+            self.show_error(str(e))
 
     async def _install(self):
         try:
@@ -453,10 +462,10 @@ class ServerWidget(QWidget):
             self.update_ui()
 
             await self._start()
+            self.update_ui()
 
         except Exception as e:
-            self._error = str(e)
-        self.update_ui()
+            self.show_error(str(e))
 
     async def _upgrade(self):
         try:
@@ -467,10 +476,10 @@ class ServerWidget(QWidget):
             await self._server.upgrade(self._handle_progress)
             self.update_ui()
             await self._start()
+            self.update_ui()
 
         except Exception as e:
-            self._error = str(e)
-        self.update_ui()
+            self.show_error(str(e))
 
     async def _prepare_for_install(self):
         if self._server.state is ServerState.running:
@@ -575,6 +584,10 @@ class ServerWidget(QWidget):
             else:
                 self._launch_button.setEnabled(True)
 
+        self.show_error(self._error)
+
+    def show_error(self, error: str):
+        self._error = error
         if self._error:
             self._status_label.setText(f"<b>Error:</b> {self._error}")
             self._status_label.setStyleSheet(f"color:{red}")

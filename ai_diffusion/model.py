@@ -1,6 +1,6 @@
 from __future__ import annotations
+from contextlib import nullcontext
 from pathlib import Path
-import random
 from enum import Enum
 from typing import NamedTuple
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -10,7 +10,7 @@ from .settings import settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds
 from .client import ClientMessage, ClientEvent, filter_supported_styles, resolve_sd_version
-from .document import Document, LayerObserver
+from .document import Document, LayerObserver, RestoreActiveLayer
 from .pose import Pose
 from .style import Style, Styles, SDVersion
 from .workflow import ControlMode, Conditioning
@@ -215,7 +215,7 @@ class Model(QObject, ObservableProperties):
 
     def _get_current_image(self, bounds: Bounds):
         exclude = [  # exclude control layers from projection
-            c.layer for c in self.control if c.mode not in [ControlMode.image, ControlMode.blur]
+            c.layer for c in self.control if c.mode not in [ControlMode.reference, ControlMode.blur]
         ]
         if self._layer:  # exclude preview layer
             exclude.append(self._layer)
@@ -228,14 +228,20 @@ class Model(QObject, ObservableProperties):
             return
 
         image = self._doc.get_image(Bounds(0, 0, *self._doc.extent))
+        mask, _ = self.document.create_mask_from_selection(0, 0, padding=0.25, multiple=64)
+        bounds = mask.bounds if mask else None
+
         job = self.jobs.add_control(control, Bounds(0, 0, *image.extent))
+        generator = self._generate_control_layer(job, image, control.mode, bounds)
         self.clear_error()
-        eventloop.run(_report_errors(self, self._generate_control_layer(job, image, control.mode)))
+        eventloop.run(_report_errors(self, generator))
         return job
 
-    async def _generate_control_layer(self, job: Job, image: Image, mode: ControlMode):
+    async def _generate_control_layer(
+        self, job: Job, image: Image, mode: ControlMode, bounds: Bounds | None
+    ):
         client = self._connection.client
-        work = workflow.create_control_image(client, image, mode)
+        work = workflow.create_control_image(client, image, mode, bounds)
         job.id = await client.enqueue(work)
 
     def cancel(self, active=False, queued=False):
@@ -432,10 +438,12 @@ class UpscaleWorkspace(QObject, ObservableProperties):
 
 class LiveWorkspace(QObject, ObservableProperties):
     is_active = Property(False, setter="toggle")
+    is_recording = Property(False, setter="toggle_record")
     strength = Property(0.3, persist=True)
     has_result = Property(False)
 
     is_active_changed = pyqtSignal(bool)
+    is_recording_changed = pyqtSignal(bool)
     strength_changed = pyqtSignal(float)
     seed_changed = pyqtSignal(int)
     has_result_changed = pyqtSignal(bool)
@@ -445,18 +453,33 @@ class LiveWorkspace(QObject, ObservableProperties):
     _model: Model
     _result: Image | None = None
     _result_bounds: Bounds | None = None
+    _recording_layer: krita.Node | None = None
+    _keyframes: list[tuple[Image, Bounds]]
 
     def __init__(self, model: Model):
         super().__init__()
         self._model = model
+        self._keyframes = []
         model.jobs.job_finished.connect(self.handle_job_finished)
 
     def toggle(self, active: bool):
-        if active != self.is_active:
+        if self.is_active != active:
             self._is_active = active
             self.is_active_changed.emit(active)
             if active:
                 self._model.generate_live()
+            else:
+                self.is_recording = False
+
+    def toggle_record(self, active: bool):
+        if self.is_recording != active:
+            self._is_recording = active
+            self.is_active = active
+            self.is_recording_changed.emit(active)
+            if active:
+                self._add_recording_layer()
+            else:
+                self._insert_frames()
 
     def handle_job_finished(self, job: Job):
         if job.kind is JobKind.live_preview:
@@ -483,8 +506,54 @@ class LiveWorkspace(QObject, ObservableProperties):
         self.result_available.emit(value)
         self.has_result = True
 
+        if self.is_recording:
+            self._keyframes.append((value, bounds))
 
-async def _report_errors(parent, coro):
+    def _add_recording_layer(self, restore_active=True):
+        doc = self._model.document
+        if self._recording_layer and self._recording_layer.parentNode() is None:
+            self._recording_layer = None
+        if self._recording_layer is None:
+            with RestoreActiveLayer(doc) if restore_active else nullcontext():
+                self._recording_layer = doc.insert_layer(
+                    f"[Recording] {self._model.prompt}", below=doc.active_layer
+                )
+                self._recording_layer.enableAnimation()
+                self._recording_layer.setPinnedToTimeline(True)
+        return self._recording_layer
+
+    def _insert_frames(self):
+        if len(self._keyframes) > 0:
+            layer = self._add_recording_layer(restore_active=False)
+            eventloop.run(
+                _report_errors(
+                    self._model, self._insert_frames_into_timeline(layer, self._keyframes)
+                )
+            )
+            self._keyframes = []
+
+    async def _insert_frames_into_timeline(
+        self, layer: krita.Node, frames: list[tuple[Image, Bounds]]
+    ):
+        doc = self._model.document
+        doc.current_time = doc.find_last_keyframe(layer)
+        add_keyframe_action = krita.Krita.instance().action("add_duplicate_frame")
+
+        # Try to avoid ASSERT (krita): "row >= 0" in KisAnimCurvesChannelsModel.cpp, line 181
+        await eventloop.process_events()
+
+        with RestoreActiveLayer(doc):
+            doc.active_layer = layer
+            for frame in frames:
+                image, bounds = frame
+                doc.set_layer_content(layer, image, bounds)
+                add_keyframe_action.trigger()
+                await eventloop.wait_until(lambda: layer.hasKeyframeAtTime(doc.current_time))
+                doc.current_time += 1
+        doc.end_time = doc.current_time
+
+
+async def _report_errors(parent: Model, coro):
     try:
         return await coro
     except NetworkError as e:

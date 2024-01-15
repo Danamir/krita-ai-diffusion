@@ -1,9 +1,9 @@
 from __future__ import annotations
 from PyQt5.QtCore import QObject, pyqtSignal, QUuid, Qt
 
-from . import model, jobs
+from . import model, jobs, resources
 from .settings import settings
-from .resources import ControlMode
+from .resources import ControlMode, ResourceKind
 from .client import resolve_sd_version
 from .properties import Property, ObservableProperties
 from .image import Bounds
@@ -11,7 +11,7 @@ from .workflow import Control
 
 
 class ControlLayer(QObject, ObservableProperties):
-    mode = Property(ControlMode.image, persist=True)
+    mode = Property(ControlMode.reference, persist=True)
     layer_id = Property(QUuid(), persist=True)
     strength = Property(100, persist=True)
     end = Property(1.0, persist=True)
@@ -63,7 +63,7 @@ class ControlLayer(QObject, ObservableProperties):
 
     def get_image(self, bounds: Bounds | None = None):
         layer = self.layer
-        if self.mode is ControlMode.image and not layer.bounds().isEmpty():
+        if self.mode.is_ip_adapter and not layer.bounds().isEmpty():
             bounds = None  # ignore mask bounds, use layer bounds
         image = self._model.document.get_layer_image(layer, bounds)
         if self.mode.is_lines or self.mode is ControlMode.stencil:
@@ -80,14 +80,18 @@ class ControlLayer(QObject, ObservableProperties):
         is_supported = True
         if client := root.connection.client_if_connected:
             sdver = resolve_sd_version(self._model.style, client)
-            if self.mode is ControlMode.image:
-                if client.ip_adapter_model[sdver] is None:
+            if self.mode is ControlMode.reference:
+                if client.ip_adapter_model[ControlMode.reference][sdver] is None:
                     self.error_text = f"The server is missing the IP-Adapter model"
                     is_supported = False
-            elif client.control_model[self.mode][sdver] is None:
-                filenames = self.mode.filenames(sdver)
-                if filenames:
-                    self.error_text = f"The ControlNet model is not installed {filenames}"
+            elif self.mode is ControlMode.face:
+                if client.ip_adapter_model[ControlMode.face][sdver] is None:
+                    self.error_text = f"The server is missing the IP-Adapter FaceID model"
+                    is_supported = False
+            if self.mode.is_control_net and client.control_model[self.mode][sdver] is None:
+                search_path = resources.search_path(ResourceKind.controlnet, sdver, self.mode)
+                if search_path:
+                    self.error_text = f"The ControlNet model is not installed {search_path}"
                 else:
                     self.error_text = f"Not supported for {sdver.value}"
                 is_supported = False
@@ -95,7 +99,8 @@ class ControlLayer(QObject, ObservableProperties):
         self.is_supported = is_supported
         self.show_end = self.is_supported and settings.show_control_end
         self.can_generate = is_supported and self.mode not in [
-            ControlMode.image,
+            ControlMode.reference,
+            ControlMode.face,
             ControlMode.stencil,
         ]
 
