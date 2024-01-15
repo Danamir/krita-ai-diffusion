@@ -1029,7 +1029,6 @@ class DiffusionSettings(SettingsTab):
         self.add_separator("Experimental settings", 36)
         self.add("use_refiner_pass", SwitchSetting(S._use_refiner_pass, ("Refiner pass", "Single pass"), self))
         self.add("first_pass_sampler", TextSetting(S._first_pass_sampler, self))
-        self.add("override_upscaler", TextSetting(S._override_upscaler, self))
         self.add("split_conditioning_sdxl", SwitchSetting(S._split_conditioning_sdxl, ("Split", "Don't split"), self))
 
         self._layout.addStretch()

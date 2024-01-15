@@ -113,9 +113,6 @@ class Settings(QObject):
     first_pass_sampler: str
     _first_pass_sampler = Setting("First Pass Sampler", "dpmpp_sde", "First pass sampler, only used if refiner pass is activated")
 
-    override_upscaler: str
-    _override_upscaler = Setting("Override Upscaler", "UltraSharp 4x", "Override default upscaler (requires restart)")
-
     split_conditioning_sdxl: bool
     _split_conditioning_sdxl = Setting("SDXL split conditioning", False, "Split the conditioning prompts G ang L on ' . ' token for SDXL")
 
