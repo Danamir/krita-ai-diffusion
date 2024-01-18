@@ -15,8 +15,9 @@ from .websockets.src.websockets import client as websockets_client
 from .websockets.src.websockets import exceptions as websockets_exceptions
 from .style import Style, Styles
 from .resources import ControlMode, MissingResource, ResourceKind, SDVersion, UpscalerName
-from . import resources
+from .settings import settings
 from .util import ensure, is_windows, client_logger as log
+from . import resources, util
 
 
 class ClientEvent(Enum):
@@ -167,11 +168,7 @@ class Client:
         # Retrieve upscale models
         client.upscalers = nodes["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
         client.upscale_models = _find_upscalers(client.upscalers)
-        if client.device_info.type == "privateuseone":  # DirectML: OmniSR causes a crash (?)
-            for n in [2, 3, 4]:
-                client.upscale_models[UpscalerName.fast_x(n)] = client.upscale_models[
-                    UpscalerName.default
-                ]
+
         # Retrieve LoRA models
         loras = nodes["LoraLoader"]["input"]["required"]["lora_name"][0]
         client.lora_models = _find_loras(loras)
@@ -184,6 +181,18 @@ class Client:
         client.supported_sd_versions = [ver for ver, miss in missing.items() if len(miss) == 0]
         if len(client.supported_sd_versions) == 0:
             raise missing[SDVersion.sd15][0]
+
+        # Workarounds for DirectML
+        if client.device_info.type == "privateuseone":
+            # OmniSR causes a crash
+            for n in [2, 3, 4]:
+                client.upscale_models[UpscalerName.fast_x(n)] = client.upscale_models[
+                    UpscalerName.default
+                ]
+            # IP-Adapter doesn't work https://github.com/cubiq/ComfyUI_IPAdapter_plus/issues/108
+            for versions in client.ip_adapter_model.values():
+                for key in versions:
+                    versions[key] = None
 
         _ensure_supported_style(client)
         return client
@@ -200,6 +209,8 @@ class Client:
         return await self._requests.post(f"{self.url}/{op}", data)
 
     async def enqueue(self, workflow: ComfyWorkflow):
+        if settings.debug_dump_workflow:
+            workflow.dump(util.log_path)
         data = {"prompt": workflow.root, "client_id": self._id}
         result = await self._post("prompt", data)
         job_id = result["prompt_id"]
@@ -344,6 +355,10 @@ class Client:
     @property
     def default_upscaler(self):
         return ensure(self.upscale_models[UpscalerName.default])
+
+    @property
+    def supports_ip_adapter(self):
+        return self.device_info.type != "privateuseone"
 
     def _get_active_job(self, id: str) -> Optional[JobInfo]:
         if self._active and self._active.id == id:
