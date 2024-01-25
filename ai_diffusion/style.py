@@ -22,6 +22,7 @@ sampler_options = [
     "LCM",
     "Euler",
     "Euler a",
+    "Euler a Karras",
 ]
 
 

@@ -261,6 +261,7 @@ def _sampler_params(
         "LCM": "lcm",
         "Euler": "euler",
         "Euler a": "euler_ancestral",
+        "Euler a Karras": "euler_ancestral",
     }[config.sampler]
     sampler_scheduler = {
         "DDIM": "ddim_uniform",
@@ -275,6 +276,7 @@ def _sampler_params(
         "LCM": "sgm_uniform",
         "Euler": "normal",
         "Euler a": "normal",
+        "Euler a Karras": "karras",
     }[config.sampler]
     params: dict[str, Any] = dict(
         sampler=sampler_name,
