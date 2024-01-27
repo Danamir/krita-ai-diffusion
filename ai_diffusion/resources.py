@@ -212,9 +212,6 @@ required_models = [
                 "models/ipadapter/ip-adapter_sd15.safetensors"
             ): "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15.safetensors"
         },
-        alternatives=[
-            Path("custom_nodes/ComfyUI_IPAdapter_plus/models/ip-adapter_sd15.safetensors")
-        ],
     ),
     ModelResource(
         "IP-Adapter (SDXL)",
@@ -225,9 +222,6 @@ required_models = [
                 "models/ipadapter/ip-adapter_sdxl_vit-h.safetensors"
             ): "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter_sdxl_vit-h.safetensors",
         },
-        alternatives=[
-            Path("custom_nodes/ComfyUI_IPAdapter_plus/models/ip-adapter_sdxl_vit-h.safetensors")
-        ],
     ),
     ModelResource(
         "LCM-LoRA (SD1.5)",
@@ -259,7 +253,7 @@ default_checkpoints = [
         {
             Path(
                 "models/checkpoints/realisticVisionV51_v51VAE.safetensors"
-            ): "https://civitai.com/api/download/models/130072?type=Model&format=SafeTensor&size=pruned&fp=fp16",
+            ): "https://huggingface.co/lllyasviel/fav_models/resolve/main/fav/realisticVisionV51_v51VAE.safetensors",
         },
     ),
     ModelResource(
@@ -269,7 +263,7 @@ default_checkpoints = [
         {
             Path(
                 "models/checkpoints/dreamshaper_8.safetensors"
-            ): "https://civitai.com/api/download/models/128713?type=Model&format=SafeTensor&size=pruned&fp=fp16",
+            ): "https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors",
         },
     ),
     ModelResource(
@@ -279,7 +273,7 @@ default_checkpoints = [
         {
             Path(
                 "models/checkpoints/juggernautXL_version6Rundiffusion.safetensors"
-            ): "https://civitai.com/api/download/models/198530"
+            ): "https://huggingface.co/lllyasviel/fav_models/resolve/main/fav/juggernautXL_version6Rundiffusion.safetensors"
         },
     ),
 ]
@@ -559,6 +553,10 @@ class ControlMode(Enum):
     @property
     def is_part_of_image(self):  # not only used a guidance hint
         return self in [ControlMode.reference, ControlMode.line_art, ControlMode.blur]
+
+    @property
+    def is_structural(self):  # strong impact on image composition/structure
+        return self not in [ControlMode.reference, ControlMode.face, ControlMode.inpaint]
 
     @property
     def text(self):
