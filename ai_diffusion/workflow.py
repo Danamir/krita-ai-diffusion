@@ -503,20 +503,18 @@ def merge_prompt(prompt: str, style_prompt: str):
     return f"{prompt}, {style_prompt}"
 
 
-def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, style: Style):
-    sd_ver = resolve_sd_version(style, comfy)
+def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, style: Style, sd_version: SDVersion):
     prompt = merge_prompt(cond.prompt, style.style_prompt)
     if cond.area:
         prompt = merge_prompt("", style.style_prompt)
-    positive = w.clip_text_encode(clip, prompt, sd_ver, split_conditioning=settings.split_conditioning_sdxl)
-    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_ver, split_conditioning=settings.split_conditioning_sdxl)
+    positive = w.clip_text_encode(clip, prompt, sd_version, split_conditioning=settings.split_conditioning_sdxl)
+    negative = w.clip_text_encode(clip, merge_prompt(cond.negative_prompt, style.negative_prompt), sd_version, split_conditioning=settings.split_conditioning_sdxl)
     return positive, negative
 
 
-def apply_area(w: ComfyWorkflow, positive: Output, cond: Conditioning, clip: Output):
-    sd_ver = resolve_sd_version(style, comfy)
+def apply_area(w: ComfyWorkflow, positive: Output, cond: Conditioning, clip: Output, sd_version: SDVersion):
     if cond.area and cond.prompt != "":
-        positive_area = w.clip_text_encode(clip, cond.prompt, sd_ver, split_conditioning=settings.split_conditioning_sdxl)
+        positive_area = w.clip_text_encode(clip, cond.prompt, sd_version, split_conditioning=settings.split_conditioning_sdxl)
         positive_area = w.conditioning_area(positive_area, cond.area)
         positive = w.conditioning_combine(positive, positive_area)
     return positive
@@ -696,7 +694,7 @@ def generate(
     model, clip, vae = load_model_with_lora(w, comfy, style, cond, is_live=is_live)
     model = apply_ip_adapter(w, model, cond.control, comfy, sd_ver)
     latent = w.empty_latent_image(extent.initial, batch)
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style, sd_ver)
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.initial, comfy, sd_ver
     )
@@ -739,11 +737,11 @@ def inpaint(comfy: Client, style: Style, image: Image, mask: Mask, cond: Conditi
     cond_base.control.append(Control(ControlMode.reference, image_context, image_strength))
     cond_base.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     model = apply_ip_adapter(w, model, cond_base.control, comfy, sd_ver)
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond_base, clip, style)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond_base, clip, style, sd_ver)
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond_base.control, extent.initial, comfy, sd_ver
     )
-    positive = apply_area(w, positive, cond_base, clip)
+    positive = apply_area(w, positive, cond_base, clip, sd_ver)
 
     batch = compute_batch_size(Extent.largest(extent.initial, upscale_extent.desired))
     latent = w.vae_encode_inpaint(vae, in_image, in_mask)
@@ -817,7 +815,7 @@ def refine(
     latent = w.vae_encode(vae, in_image)
     if batch > 1 and not is_live:
         latent = w.batch_latent(latent, batch)
-    positive, negative = encode_text_prompt(w, cond, clip, style)
+    positive, negative = encode_text_prompt(w, cond, clip, style, sd_ver)
     positive, negative = apply_control(
         w, positive, negative, cond.control, extent.desired, comfy, sd_ver
     )
@@ -867,7 +865,7 @@ def refine_region(
         latent = w.batch_latent(latent, batch)
     if not is_live:
         cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style, sd_ver)
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.initial, comfy, sd_ver
     )
@@ -981,7 +979,7 @@ def upscale_tiled(
     checkpoint, clip, vae = load_model_with_lora(w, comfy, style, cond)
     checkpoint = apply_ip_adapter(w, checkpoint, cond.control, comfy, sd_ver)
     upscale_model = w.load_upscale_model(model)
-    positive, negative = encode_text_prompt(w, cond, clip, style)
+    positive, negative = encode_text_prompt(w, cond, clip, style, sd_ver)
     if sd_ver.has_controlnet_blur:
         blur = [Control(ControlMode.blur, img)]
         positive, negative = apply_control(w, positive, negative, blur, image.extent, comfy, sd_ver)
