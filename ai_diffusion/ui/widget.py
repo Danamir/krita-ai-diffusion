@@ -58,11 +58,13 @@ class QueuePopup(QMenu):
 
         palette = self.palette()
         self.setObjectName("QueuePopup")
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QWidget#QueuePopup {{
                 background-color: {palette.window().color().name()}; 
                 border: 1px solid {palette.dark().color().name()};
-            }}""")
+            }}"""
+        )
 
         self._layout = QGridLayout()
         self.setLayout(self._layout)
@@ -229,9 +231,7 @@ class ControlWidget(QWidget):
         self.setLayout(layout)
 
         self.mode_select = QComboBox(self)
-        self.mode_select.setStyleSheet(
-            "QComboBox { border:none; background-color:transparent; padding: 1px 12px 1px 2px;}"
-        )
+        self.mode_select.setStyleSheet(theme.flat_combo_stylesheet)
         for mode in (m for m in ControlMode if m is not ControlMode.inpaint):
             icon = theme.icon(f"control-{mode.name}")
             self.mode_select.addItem(icon, mode.text, mode)
@@ -242,7 +242,7 @@ class ControlWidget(QWidget):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
         )
         self._update_layers()
-        self._model.image_layers.changed.connect(self._update_layers)
+        self._model.layers.changed.connect(self._update_layers)
 
         self.generate_button = QToolButton(self)
         self.generate_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -315,7 +315,7 @@ class ControlWidget(QWidget):
         Binding.disconnect_all(self._connections)
 
     def _update_layers(self):
-        layers: reversed[krita.Node] = reversed(self._model.image_layers)
+        layers: reversed[krita.Node] = reversed(self._model.layers.images)
         with SignalBlocker(self.layer_select):
             self.layer_select.clear()
             index = -1
