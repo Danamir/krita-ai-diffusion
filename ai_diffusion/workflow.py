@@ -862,7 +862,7 @@ def inpaint(
             cond_upscale.control.append(
                 Control(ControlMode.inpaint, Image.crop(image, target_bounds), mask=cropped_mask)
             )
-        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip, style)
+        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip, style, sd_ver)
         positive_up, negative_up = apply_control(
             w, positive_up, negative_up, cond_upscale.control, upscale_extent.desired, comfy, sd_ver
         )
@@ -956,7 +956,7 @@ def refine_region(
     in_image = scale_to_initial(extent, w, in_image, comfy)
     in_mask = w.load_mask(mask_image)
     in_mask = scale_to_initial(extent, w, in_mask, comfy, is_mask=True)
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, style, sd_ver)
     if params.use_inpaint_control:
         cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     positive, negative = apply_control(
