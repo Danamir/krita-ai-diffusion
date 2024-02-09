@@ -274,8 +274,20 @@ class ComfyWorkflow:
 
     def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None, split_conditioning=False):
         if sd_ver == SDVersion.sdxl:
-            if split_conditioning and " . " in text and " -." not in text and "-. " not in text and "-.," not in text:
-                text_g, text_l = text.split(" . ")
+            if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
+                if " . " in text:
+                    text_g, text_l = text.split(" . ")
+                else:
+                    text_g = text
+                    text_l = ""
+            elif " . " in text and (" -." in text or "-. " in text or "-.," in text):
+                text_g = text.replace(" . ", "").replace(" -.", "").replace("-. ", "").replace("-.,", "")
+                if "," in text_g:  # deduplicate terms
+                    items_g = list(map(lambda x: x.strip(), text_g.split(",")))
+                    items_g = dict.fromkeys(items_g).keys()
+                    text_g = ", ".join(items_g)
+                text_l = text_g
+
             else:
                 text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
                 text_l = text_g
