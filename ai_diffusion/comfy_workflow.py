@@ -6,6 +6,7 @@ from uuid import uuid4
 import math
 import json
 
+from .client import ModelDict
 from .style import SDVersion
 from .image import Bounds, Extent, Image
 
@@ -275,8 +276,8 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str, sd_ver: SDVersion = None, split_conditioning=False):
-        if sd_ver == SDVersion.sdxl:
+    def clip_text_encode(self, clip: Output, text: str, models: ModelDict = None, split_conditioning=False):
+        if models and models.version == SDVersion.sdxl:
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
                     text_g, text_l = text.split(" . ")

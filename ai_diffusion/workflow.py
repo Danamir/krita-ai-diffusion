@@ -237,16 +237,16 @@ def downscale_control_images(
                 control.image = Image.scale(control.image, target)
 
 
-def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, sd_version: SDVersion):
+def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, models: ModelDict):
     prompt = cond.prompt
     if prompt != "" and cond.mask:
         prompt = merge_prompt("", cond.style_prompt)
     elif prompt != "":
         prompt = merge_prompt(prompt, cond.style_prompt)
-    positive = w.clip_text_encode(clip, prompt)
-    negative = w.clip_text_encode(clip, cond.negative_prompt)
+    positive = w.clip_text_encode(clip, prompt, models)
+    negative = w.clip_text_encode(clip, cond.negative_prompt, models)
     if cond.mask and cond.prompt != "":
-        masked = w.clip_text_encode(clip, cond.prompt, sd_version, split_conditioning=settings.split_conditioning_sdxl)
+        masked = w.clip_text_encode(clip, cond.prompt, models, split_conditioning=settings.split_conditioning_sdxl)
         masked = w.conditioning_set_mask(masked, cond.mask)
         positive = w.conditioning_combine(positive, masked)
     return positive, negative
@@ -414,12 +414,10 @@ def generate(
     batch_count: int,
     models: ModelDict,
 ):
-    # sd_ver = resolve_sd_version(style, comfy)
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
-    # prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, sd_ver)
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.initial, models
     )
@@ -527,7 +525,7 @@ def inpaint(
     in_image = fill_masked(w, in_image, in_mask, params.fill, models)
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
-    positive, negative = encode_text_prompt(w, cond_base, clip)
+    positive, negative = encode_text_prompt(w, cond_base, clip, models)
     positive, negative = apply_control(
         w, positive, negative, cond_base.control, extent.initial, models
     )
@@ -568,7 +566,7 @@ def inpaint(
                 Control(ControlMode.inpaint, ensure(images.hires_image), mask=cropped_mask)
             )
         res = upscale_extent.desired
-        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip)
+        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip, models)
         positive_up, negative_up = apply_control(
             w, positive_up, negative_up, cond_upscale.control, res, models
         )
@@ -611,7 +609,7 @@ def refine(
     latent = w.vae_encode(vae, in_image)
     if batch_count > 1:
         latent = w.batch_latent(latent, batch_count)
-    positive, negative = encode_text_prompt(w, cond, clip)
+    positive, negative = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(w, positive, negative, cond.control, extent.desired, models)
     sampler = w.ksampler_advanced(
         model,
@@ -620,7 +618,7 @@ def refine(
         latent,
         two_pass=settings.use_refiner_pass,
         first_pass_sampler=settings.first_pass_sampler,
-        *_sampler_params(sampling)
+        **_sampler_params(sampling)
     )
     out_image = w.vae_decode(vae, sampler)
     out_image = scale_to_target(extent, w, out_image, models)
@@ -648,7 +646,7 @@ def refine_region(
     in_mask = w.load_mask(ensure(images.initial_mask))
     in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     if inpaint.use_inpaint_model and models.version is SDVersion.sd15:
         cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     positive, negative = apply_control(
@@ -777,7 +775,7 @@ def upscale_tiled(
     model = apply_ip_adapter(w, model, cond.control, models)
     img = w.load_image(image)
     upscale_model = w.load_upscale_model(upscale_model_name)
-    positive, negative = encode_text_prompt(w, cond, clip)
+    positive, negative = encode_text_prompt(w, cond, clip, models)
     if models.control.find(ControlMode.blur) is not None:
         blur = [Control(ControlMode.blur, img)]
         positive, negative = apply_control(w, positive, negative, blur, extent.input, models)
@@ -833,7 +831,7 @@ def prepare(
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models()
-    i.models.loras += extra_loras
+    i.models.loras += [LoraInput.from_dict(l) for l in extra_loras]
     _check_server_has_models(i.models, models, style.name)
 
     sd_version = models.version_of(style.sd_checkpoint)

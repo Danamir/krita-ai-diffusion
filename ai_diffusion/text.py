@@ -4,9 +4,21 @@ from pathlib import Path
 from typing import Tuple, List
 
 from .util import client_logger as log
+from .settings import settings
 
 
 def merge_prompt(prompt: str, style_prompt: str):
+    if settings.split_conditioning_sdxl and (" . " in prompt or " . " in style_prompt):
+        if " . " not in prompt:
+            prompt += " . "
+        if " . " not in style_prompt:
+            style_prompt += " . "
+
+        prompt_g, prompt_l = prompt.split(" . ")
+        style_prompt_g, style_prompt_l = style_prompt.split(" . ")
+
+        return f"{merge_prompt(prompt_g, style_prompt_g)} . {merge_prompt(prompt_l, style_prompt_l)}"
+
     if style_prompt == "":
         return prompt
     elif "{prompt}" in style_prompt:
