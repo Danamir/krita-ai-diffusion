@@ -1,6 +1,6 @@
 <h1><img width="64px" src="ai_diffusion/icons/logo-128.png"> Generative AI <i>for Krita</i></h1>
 
-✨[Features](#features) | ⭳ [Download](https://github.com/Acly/krita-ai-diffusion/releases/latest) | 🛠️[Installation](#installation) | 🎞️ [Video](https://youtu.be/Ly6USRwTHe0) | 🖼️[Screenshots](#screenshots) | 📖[Wiki](https://github.com/Acly/krita-ai-diffusion/wiki) | 💬[Discussion](https://github.com/Acly/krita-ai-diffusion/discussions)
+✨[Features](#features) | ⭳ [Download](https://github.com/Acly/krita-ai-diffusion/releases/latest) | 🛠️[Installation](https://www.interstice.cloud/plugin) | 🎞️ [Video](https://youtu.be/Ly6USRwTHe0) | 🖼️[Screenshots](#screenshots) | 📖[Wiki](https://github.com/Acly/krita-ai-diffusion/wiki) | 💬[Discussion](https://github.com/Acly/krita-ai-diffusion/discussions)
 
 Generate images from within Krita with minimal fuss: Select an area, push a button,
 and new content that matches your image will be generated. Or expand your canvas and
@@ -35,7 +35,9 @@ tool while painting. They are meant to synergize with traditional tools and the 
 
 ## <a name="installation"></a> Getting Started
 
-The plugin comes with an integrated installer for the Stable Diffusion backend.
+See the [Plugin Installation Guide](https://www.interstice.cloud/plugin) for instructions.
+
+A concise (more technical) version is below:
 
 ### Requirements
 
@@ -53,21 +55,19 @@ To run locally a powerful graphics card with at least 6 GB VRAM is recommended. 
 <tr><td>AMD GPU</td><td>supported via DirectML on Windows, ROCm on Linux (only custom server)</td></tr>
 <tr><td>Apple M1/M2</td><td>supported via MPS on macOS</td></tr>
 <tr><td>CPU</td><td>supported, but very slow</td></tr>
-<tr><td>Cloud GPU</td><td>supported, rent a GPU on an hourly basis, see <a href="#gpu-cloud">below</a></td></tr>
 </table>
 
 ### Installation
 
 1. If you haven't yet, go and install [Krita](https://krita.org/)! _Required version: 5.2.0 or newer_
-1. [Download the plugin](https://github.com/Acly/krita-ai-diffusion/releases/latest). Unpack the archive into your `pykrita` folder.
-    * _Windows:_ Usually `C:\Users\<user>\AppData\Roaming\krita\pykrita`
-    * _Linux:_ Usually `~/.local/share/krita/pykrita`
-    * _MacOS:_ Usually `~/Library/Application Support/krita/pykrita`
-    * Check [Krita's official documentation](https://docs.krita.org/en/user_manual/python_scripting/install_custom_python_plugin.html) if you have trouble locating it.
-1. Enable the plugin in Krita (Settings ‣ Configure Krita ‣ Python Plugins Manager) and restart.
-1. Create a new document or open an existing image.
-1. To show the plugin docker: Settings ‣ Dockers ‣ AI Image Generation.
-1. In the plugin docker, click "Configure" to start server installation. _Requires 10+ GB free disk space._
+1. [Download the plugin](https://github.com/Acly/krita-ai-diffusion/releases/latest).
+2. Start Krita and install the plugin via Tools ▸ Scripts ▸ Import Python Plugin from File...
+    * Point it to the ZIP archive you downloaded in the previous step.
+    * ⚠ _This will delete any previous install of the plugin._ If you are updating from 1.14 or older please read [updating to a new version](https://github.com/Acly/krita-ai-diffusion/wiki/Common-Issues#how-do-i-update-to-a-new-version-of-the-plugin).
+    * Check [Krita's official documentation](https://docs.krita.org/en/user_manual/python_scripting/install_custom_python_plugin.html) for more options.
+3. Restart Krita and create a new document or open an existing image.
+4. To show the plugin docker: Settings ‣ Dockers ‣ AI Image Generation.
+5. In the plugin docker, click "Configure" to start local server installation or connect.
 
 > [!NOTE]
 > If you encounter problems please check the [FAQ / list of common issues](https://github.com/Acly/krita-ai-diffusion/wiki/Common-Issues) for solutions.
@@ -88,7 +88,7 @@ If you're looking for a way to easily select objects in the image, there is a [s
 
 You can also rent a GPU instead of running locally. In that case, step 6 is not needed. Instead use the plugin to connect to a remote server.
 
-There is a [step by step guide](https://github.com/Acly/krita-ai-diffusion/wiki/Cloud-GPU) on how to setup cloud GPU on [runpod.io](https://www.runpod.io) or [vast.ai](https://vast.ai).
+There is a [step by step guide](https://github.com/Acly/krita-ai-diffusion/wiki/Cloud-GPU) on how to setup cloud GPU on [runpod.io](https://www.runpod.io) or [vast.ai](https://vast.ai) or [sailflow.ai](https://www.sailflowai.com).
 
 
 ## <a name="screenshots"></a> Screenshots

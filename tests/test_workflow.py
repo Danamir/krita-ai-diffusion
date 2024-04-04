@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from ai_diffusion import workflow
-from ai_diffusion.api import WorkflowKind, WorkflowInput, ControlInput, InpaintMode, FillMode
-from ai_diffusion.api import TextInput
+from ai_diffusion.api import LoraInput, WorkflowKind, WorkflowInput, ControlInput
+from ai_diffusion.api import InpaintMode, FillMode, TextInput
+from ai_diffusion.client import ClientModels, CheckpointInfo
 from ai_diffusion.comfy_client import ComfyClient
 from ai_diffusion.cloud_client import CloudClient
 from ai_diffusion.resources import ControlMode
@@ -146,6 +147,30 @@ def test_inpaint_params():
     assert e.use_condition_mask == False
 
 
+def test_prepare_lora():
+    models = ClientModels()
+    models.checkpoints = {"CP": CheckpointInfo("CP", SDVersion.sd15)}
+    models.loras = ["PINK_UNICORNS", "MOTHER_OF_PEARL"]
+    style = Style(Path("default.json"))
+    style.sd_checkpoint = "CP"
+    style.loras.append(dict(name="MOTHER_OF_PEARL", strength=0.33))
+    job = workflow.prepare(
+        WorkflowKind.generate,
+        canvas=Extent(512, 512),
+        text=TextInput("test <lora:PINK_UNICORNS:0.77>"),
+        style=style,
+        seed=29,
+        models=models,
+        perf=default_perf,
+    )
+    assert job.text and job.text.positive == "test"
+    assert (
+        job.models
+        and LoraInput("PINK_UNICORNS", 0.77) in job.models.loras
+        and LoraInput("MOTHER_OF_PEARL", 0.33) in job.models.loras
+    )
+
+
 @pytest.mark.parametrize("extent", [Extent(256, 256), Extent(800, 800), Extent(512, 1024)])
 def test_generate(qtapp, client, extent: Extent):
     prompt = TextInput("ship")
@@ -193,6 +218,7 @@ def test_inpaint_upscale(qtapp, client, sdver):
         client,
         canvas=image,
         mask=mask,
+        style=default_style(client, sdver),
         text=prompt,
         perf=PerformanceSettings(batch_size=3),  # 2 images for 1.5, 1 image for XL
         inpaint=detect_inpaint(
@@ -243,6 +269,22 @@ def test_inpaint_area_conditioning(qtapp, client):
         ),
     )
     run_and_save(qtapp, client, job, "test_inpaint_area_conditioning", image, mask)
+
+
+def test_inpaint_remove_object(qtapp, client):
+    image = Image.load(image_dir / "owls_inpaint.webp")
+    mask = Mask.load(image_dir / "owls_mask_remove.webp")
+    job = create(
+        WorkflowKind.inpaint,
+        client,
+        canvas=image,
+        mask=mask,
+        text=TextInput("tree branch"),
+        inpaint=detect_inpaint(
+            InpaintMode.remove_object, mask.bounds, SDVersion.sd15, "tree", [], 1.0
+        ),
+    )
+    run_and_save(qtapp, client, job, "test_inpaint_remove_object", image, mask)
 
 
 @pytest.mark.parametrize("setup", ["sd15", "sdxl"])

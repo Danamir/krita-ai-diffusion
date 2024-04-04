@@ -409,6 +409,9 @@ class ComfyWorkflow:
             end_at=range[1],
         )
 
+    def apply_self_attention_guidance(self, model: Output):
+        return self.add("SelfAttentionGuidance", 1, model=model)
+
     def inpaint_preprocessor(self, image: Output, mask: Output):
         return self.add("InpaintPreprocessor", 1, image=image, mask=mask)
 
@@ -504,7 +507,9 @@ class ComfyWorkflow:
         return self.add("ImageBatch", 1, image1=batch, image2=image)
 
     def inpaint_image(self, model: Output, image: Output, mask: Output):
-        return self.add("INPAINT_InpaintWithModel", 1, inpaint_model=model, image=image, mask=mask)
+        return self.add(
+            "INPAINT_InpaintWithModel", 1, inpaint_model=model, image=image, mask=mask, seed=834729
+        )
 
     def crop_mask(self, mask: Output, bounds: Bounds):
         return self.add(

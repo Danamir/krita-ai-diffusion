@@ -23,7 +23,7 @@ from .properties import Property, ObservableProperties
 from .jobs import Job, JobKind, JobParams, JobQueue, JobState
 from .control import ControlLayer, ControlLayerList
 from .resources import ControlMode
-from .resolution import compute_bounds
+from .resolution import compute_bounds, compute_relative_bounds
 import krita
 
 
@@ -112,7 +112,7 @@ class Model(QObject, ObservableProperties):
         inpaint = None
         extent = self._doc.extent
         mask = self._doc.create_mask_from_selection(
-            **get_selection_modifiers(self.inpaint.mode), min_size=64
+            **get_selection_modifiers(self.inpaint.mode, self.strength), min_size=64
         )
         bounds = compute_bounds(extent, mask.bounds if mask else None, self.strength)
         bounds = self.inpaint.get_context(self, mask) or bounds
@@ -128,9 +128,7 @@ class Model(QObject, ObservableProperties):
             elif workflow_kind is WorkflowKind.refine:
                 workflow_kind = WorkflowKind.refine_region
 
-            mask_relative_to_image = mask.bounds.relative_to(bounds)
-            bounds = mask.bounds  # Image bounds inside the canvas
-            mask.bounds = mask_relative_to_image  # Mask bounds inside the image
+            bounds, mask.bounds = compute_relative_bounds(bounds, mask.bounds)
 
             sd_version = client.models.version_of(self.style.sd_checkpoint)
             inpaint_mode = self.resolve_inpaint_mode()
@@ -233,7 +231,7 @@ class Model(QObject, ObservableProperties):
         bounds = Bounds(0, 0, *self._doc.extent)
         if mask is not None:
             workflow_kind = WorkflowKind.refine_region
-            bounds = mask.bounds
+            bounds, mask.bounds = compute_relative_bounds(mask.bounds, mask.bounds)
         if mask is not None or self.live.strength < 1.0:
             image = self._get_current_image(bounds)
 
@@ -599,7 +597,7 @@ class LiveWorkspace(QObject, ObservableProperties):
             eventloop.run(_report_errors(self._model, self._continue_generating()))
 
     async def _continue_generating(self):
-        while self.is_active:
+        while self.is_active and self._model.document.is_active:
             new_input = await self._model._generate_live(self._last_input)
             if new_input is not None:  # frame was scheduled
                 self._last_input = new_input
@@ -653,6 +651,8 @@ class LiveWorkspace(QObject, ObservableProperties):
         self._keyframes.append(filename)
 
     def _import_animation(self):
+        if len(self._keyframes) == 0:
+            return  # button toggled without recording a frame in between
         self._model.document.import_animation(self._keyframes, self._keyframe_start)
         start, end = self._keyframe_start, self._keyframe_start + len(self._keyframes)
         self._model.document.active_layer.setName(f"[Rec] {start}-{end}: {self._model.prompt}")
@@ -812,18 +812,18 @@ class AnimationWorkspace(QObject, ObservableProperties):
             self.target_image_changed.emit(image)
 
 
-def get_selection_modifiers(inpaint_mode: InpaintMode) -> dict[str, Any]:
+def get_selection_modifiers(inpaint_mode: InpaintMode, strength: float) -> dict[str, Any]:
     grow = settings.selection_grow / 100
     feather = settings.selection_feather / 100
     padding = settings.selection_padding / 100
     invert = False
 
-    if inpaint_mode is InpaintMode.remove_object:
+    if inpaint_mode is InpaintMode.remove_object and strength == 1.0:
         # avoid leaving any border pixels of the object to be removed within the
         # area where the mask is 1.0, it will confuse inpainting models
         feather = min(feather, grow * 0.5)
 
-    if inpaint_mode is InpaintMode.replace_background:
+    if inpaint_mode is InpaintMode.replace_background and strength == 1.0:
         # only minimal grow/feather as there is often no desired transition between
         # forground object and background (to be replaced by something else entirely)
         grow = min(grow, 0.01)

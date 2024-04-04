@@ -145,6 +145,9 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     elif is_lcm:
         model = w.model_sampling_discrete(model, "lcm")
 
+    if checkpoint.self_attention_guidance:
+        model = w.apply_self_attention_guidance(model)
+
     return model, clip, vae
 
 
@@ -834,7 +837,7 @@ def prepare(
     i.models.loras += [LoraInput.from_dict(l) for l in extra_loras]
     _check_server_has_models(i.models, models, style.name)
 
-    sd_version = models.version_of(style.sd_checkpoint)
+    sd_version = i.models.version = models.version_of(style.sd_checkpoint)
     model_set = models.for_version(sd_version)
     has_ip_adapter = model_set.ip_adapter.find(ControlMode.reference) is not None
     if i.sampling.sampler == "lcm":
