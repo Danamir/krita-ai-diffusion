@@ -19,10 +19,12 @@ is_windows = sys.platform.startswith("win")
 is_macos = sys.platform == "darwin"
 is_linux = not is_windows and not is_macos
 
+plugin_dir = dir = Path(__file__).parent
+
 
 def _get_user_data_dir():
     if importlib.util.find_spec("krita") is None:
-        dir = Path(__file__).parent.parent / ".appdata"
+        dir = plugin_dir.parent / ".appdata"
         dir.mkdir(exist_ok=True)
         return dir
     try:
@@ -45,7 +47,7 @@ def _get_log_dir():
     dir = user_data_dir / "logs"
     dir.mkdir(exist_ok=True)
 
-    legacy_dir = Path(__file__).parent / ".logs"
+    legacy_dir = plugin_dir / ".logs"
     try:  # Move logs from old location (v1.14 and earlier)
         if legacy_dir.exists():
             for file in legacy_dir.iterdir():
@@ -128,27 +130,6 @@ def find_unused_path(path: Path):
     return new_path
 
 
-def get_path_dict(paths: Sequence[str]) -> dict:
-    """Builds a tree like structure out of a list of paths. The leaf nodes point to the original
-    path string. It's important the string remains unchanged, see #307"""
-
-    def _recurse(dic: dict, chain: tuple[str, ...] | list[str], full_path: str):
-        if len(chain) == 0:
-            return
-        if len(chain) == 1:
-            dic[chain[0]] = full_path
-            return
-        key, *new_chain = chain
-        _recurse(dic.setdefault(key, {}), new_chain, full_path)
-        return
-
-    new_path_dict = {}
-    for path in paths:
-        parts = Path(path.replace("\\", "/")).parts
-        _recurse(new_path_dict, parts, path)
-    return new_path_dict
-
-
 if is_linux:
     import signal
     import ctypes
@@ -185,9 +166,12 @@ async def create_process(
         program, *args, cwd=cwd, stdout=out, stderr=err, env=env, **platform_args
     )
     if is_windows:
-        from . import win32
+        try:
+            from . import win32
 
-        win32.attach_process_to_job(p.pid)
+            win32.attach_process_to_job(p.pid)
+        except Exception as e:
+            client_logger.error(f"Failed to attach process to job: {e}")
     return p
 
 

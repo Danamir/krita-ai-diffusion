@@ -13,7 +13,7 @@
    version="1.1"
    id="svg1446"
    inkscape:version="1.0.2-2 (e86c870879, 2021-01-15)"
-   sodipodi:docname="remove-dark.svg">
+   sodipodi:docname="filter-light.svg">
   <defs
      id="defs1440" />
   <sodipodi:namedview
@@ -23,11 +23,11 @@
      borderopacity="1.0"
      inkscape:pageopacity="0.0"
      inkscape:pageshadow="2"
-     inkscape:zoom="0.7"
-     inkscape:cx="358.64563"
-     inkscape:cy="441.25592"
+     inkscape:zoom="0.64"
+     inkscape:cx="140.13791"
+     inkscape:cy="275.3241"
      inkscape:document-units="mm"
-     inkscape:current-layer="layer1"
+     inkscape:current-layer="text842"
      inkscape:document-rotation="0"
      showgrid="false"
      units="px"
@@ -52,13 +52,14 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1">
-    <path
-       style="fill:none;stroke:#c8c8c8;stroke-width:13.22916667;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1"
-       d="M 35.241826,31.948288 106.24653,102.953"
-       id="path2009" />
-    <path
-       style="fill:none;stroke:#c8c8c8;stroke-width:13.22916667;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1"
-       d="M 35.473113,102.25915 105.78396,31.948288"
-       id="path2011" />
+    <g
+       aria-label="*"
+       id="text842"
+       style="font-size:205.024px;line-height:1.25;font-family:sans-serif;stroke-width:0.265;stroke-miterlimit:4;stroke-dasharray:none">
+      <path
+         style="fill:#3d3d3d;stroke:#3d3d3d;stroke-width:8.46666667;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1;stroke-miterlimit:4;stroke-dasharray:none;fill-opacity:1"
+         d="M 17.156575,24.391276 H 119.47591 L 78.754882,65.112304 V 122.36979 L 57.877603,101.49251 V 62.838541 Z"
+         id="path861" />
+    </g>
   </g>
 </svg>

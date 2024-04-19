@@ -14,7 +14,7 @@ from .util import ensure, client_logger as log
 from .settings import settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds
-from .client import ClientMessage, ClientEvent, filter_supported_styles
+from .client import ClientMessage, ClientEvent, filter_supported_styles, resolve_sd_version
 from .document import Document, LayerObserver
 from .pose import Pose
 from .style import Style, Styles, SDVersion
@@ -92,12 +92,17 @@ class Model(QObject, ObservableProperties):
 
         self.jobs.selection_changed.connect(self.update_preview)
         self.error_changed.connect(lambda: self.has_error_changed.emit(self.has_error))
+        connection.state_changed.connect(self._init_on_connect)
+        Styles.list().changed.connect(self._init_on_connect)
+        self._init_on_connect()
 
-        if client := connection.client_if_connected:
-            self.style = next(
-                iter(filter_supported_styles(Styles.list().filtered(), client)), self.style
-            )
-            self.upscale.upscaler = client.models.default_upscaler
+    def _init_on_connect(self):
+        if client := self._connection.client_if_connected:
+            styles = filter_supported_styles(Styles.list().filtered(), client)
+            if self.style not in styles and len(styles) > 0:
+                self.style = styles[0]
+            if self.upscale.upscaler == "":
+                self.upscale.upscaler = client.models.default_upscaler
 
     def generate(self):
         """Enqueue image generation for the current setup."""
@@ -157,7 +162,7 @@ class Model(QObject, ObservableProperties):
             return
         self.clear_error()
         enqueue_jobs = self.enqueue_jobs(
-            input, JobKind.diffusion, JobParams(bounds), self.batch_count
+            input, JobKind.diffusion, JobParams(bounds, self.prompt), self.batch_count
         )
         eventloop.run(_report_errors(self, enqueue_jobs))
 
@@ -165,7 +170,6 @@ class Model(QObject, ObservableProperties):
         self, input: WorkflowInput, kind: JobKind, params: JobParams, count: int = 1
     ):
         sampling = ensure(input.sampling)
-        params.prompt = ensure(input.text).positive
         params.negative_prompt = ensure(input.text).negative
         params.strength = sampling.denoise_strength
 
@@ -251,7 +255,7 @@ class Model(QObject, ObservableProperties):
         )
         if input != last_input:
             self.clear_error()
-            await self.enqueue_jobs(input, JobKind.live_preview, JobParams(bounds))
+            await self.enqueue_jobs(input, JobKind.live_preview, JobParams(bounds, self.prompt))
             return input
 
         return None
@@ -414,6 +418,10 @@ class Model(QObject, ObservableProperties):
         return self.inpaint.mode
 
     @property
+    def sd_version(self):
+        return resolve_sd_version(self.style, self._connection.client_if_connected)
+
+    @property
     def history(self):
         return (job for job in self.jobs if job.state is JobState.finished)
 
@@ -554,6 +562,7 @@ class LiveWorkspace(QObject, ObservableProperties):
     _last_input: WorkflowInput | None = None
     _result: Image | None = None
     _result_bounds: Bounds | None = None
+    _result_seed: int | None = None
     _keyframes_folder: Path | None = None
     _keyframe_start = 0
     _keyframe_index = 0
@@ -592,7 +601,7 @@ class LiveWorkspace(QObject, ObservableProperties):
     def handle_job_finished(self, job: Job):
         if job.kind is JobKind.live_preview:
             if len(job.results) > 0:
-                self.set_result(job.results[0], job.params.bounds)
+                self.set_result(job.results[0], job.params.bounds, job.params.seed)
             self.is_active = self._is_active and self._model.document.is_active
             eventloop.run(_report_errors(self._model, self._continue_generating()))
 
@@ -608,7 +617,8 @@ class LiveWorkspace(QObject, ObservableProperties):
     def copy_result_to_layer(self):
         assert self.result is not None and self._result_bounds is not None
         doc = self._model.document
-        doc.insert_layer(f"[Live] {self._model.prompt}", self.result, self._result_bounds)
+        name = f"{self._model.prompt} ({self._result_seed})"
+        doc.insert_layer(name, self.result, self._result_bounds)
         if settings.new_seed_after_apply:
             self._model.generate_seed()
 
@@ -616,9 +626,10 @@ class LiveWorkspace(QObject, ObservableProperties):
     def result(self):
         return self._result
 
-    def set_result(self, value: Image, bounds: Bounds):
+    def set_result(self, value: Image, bounds: Bounds, seed: int):
         self._result = value
         self._result_bounds = bounds
+        self._result_seed = seed
         self.result_available.emit(value)
         self.has_result = True
 
@@ -719,7 +730,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         canvas = m._get_current_image(bounds) if m.strength < 1.0 else bounds.extent
         seed = m.seed if m.fixed_seed else workflow.generate_seed()
         inputs = self._prepare_input(canvas, seed)
-        params = JobParams(bounds, frame=(m.document.current_time, 0, 0))
+        params = JobParams(bounds, self._model.prompt, frame=(m.document.current_time, 0, 0))
         await m.enqueue_jobs(inputs, JobKind.animation_frame, params)
 
     def generate_batch(self):
@@ -760,7 +771,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
                     )
 
                 inputs = self._prepare_input(canvas, seed)
-                params = JobParams(bounds)
+                params = JobParams(bounds, self._model.prompt)
                 params.frame = (frame, start_frame, end_frame)
                 params.animation_id = animation_id
                 await self._model.enqueue_jobs(inputs, JobKind.animation_batch, params)
@@ -849,7 +860,7 @@ def _save_job_result(model: Model, job: Job | None, index: int):
     timestamp = job.timestamp.strftime("%Y%m%d-%H%M%S")
     prompt = util.sanitize_prompt(job.params.prompt)
     path = Path(model.document.filename)
-    path = path.parent / f"{path.stem}-generated-{timestamp}-{index}-{prompt}.webp"
+    path = path.parent / f"{path.stem}-generated-{timestamp}-{index}-{prompt}.png"
     path = util.find_unused_path(path)
     base_image = model._get_current_image(Bounds(0, 0, *model.document.extent))
     result_image = job.results[index]

@@ -8,10 +8,10 @@ from base64 import b64encode
 from datetime import datetime
 from dataclasses import dataclass
 
-from .api import WorkflowInput
+from .api import WorkflowInput, WorkflowKind
 from .client import Client, ClientEvent, ClientMessage, ClientModels, DeviceInfo, CheckpointInfo
 from .client import User
-from .image import Image, ImageCollection
+from .image import Extent, ImageCollection
 from .network import RequestManager, NetworkError
 from .resources import SDVersion
 from .settings import PerformanceSettings
@@ -30,7 +30,8 @@ class JobInfo:
 
 
 class CloudClient(Client):
-    default_url = os.getenv("INTERSTICE_URL", "https://interstice.cloud")
+    default_api_url = os.getenv("INTERSTICE_URL", "https://api.interstice.cloud")
+    default_web_url = os.getenv("INTERSTICE_WEB_URL", "https://www.interstice.cloud")
 
     _requests = RequestManager()
     _queue: asyncio.Queue[JobInfo]
@@ -53,10 +54,10 @@ class CloudClient(Client):
         self._queue = asyncio.Queue()
 
     async def _get(self, op: str):
-        return await self._requests.get(f"{self.url}/api/{op}", bearer=self._token)
+        return await self._requests.get(f"{self.url}/{op}", bearer=self._token)
 
     async def _post(self, op: str, data: dict):
-        return await self._requests.post(f"{self.url}/api/{op}", data, bearer=self._token)
+        return await self._requests.post(f"{self.url}/{op}", data, bearer=self._token)
 
     async def sign_in(self):
         client_id = str(uuid.uuid4())
@@ -64,8 +65,9 @@ class CloudClient(Client):
         log.info(f"Sending authorization request for {info} to {self.url}")
         init = await self._post("auth/initiate", dict(client_id=client_id, client_info=info))
 
-        log.info(f"Waiting for completion of authorization at {self.url}{init['url']}")
-        yield f"{self.url}{init['url']}"
+        sign_in_url = f"{self.default_web_url}{init['url']}"
+        log.info(f"Waiting for completion of authorization at {sign_in_url}")
+        yield sign_in_url
 
         auth_confirm = await self._post("auth/confirm", dict(client_id=client_id))
         time = datetime.now()
@@ -220,6 +222,13 @@ class CloudClient(Client):
             return ImageCollection.from_base64(b64, offsets)
         else:
             raise ValueError(f"No result images found in server response: {str(images)[:80]}")
+
+    async def compute_cost(
+        self, kind: WorkflowKind, sd_version: SDVersion, batch: int, extent: Extent, steps: int
+    ):
+        op = f"admin/cost/{kind.name}/{sd_version.name}/{batch}/{extent.width}/{extent.height}/{steps}"
+        response = await self._get(op)
+        return int(response.decode())
 
     def _process_http_error(self, e: NetworkError):
         message = e.message

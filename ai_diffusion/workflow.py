@@ -11,7 +11,7 @@ from .api import ControlInput, ImageInput, CheckpointInput, SamplingInput, Workf
 from .api import ExtentInput, InpaintMode, InpaintParams, FillMode, TextInput, WorkflowKind
 from .image import Bounds, Extent, Image, Mask
 from .client import Client, ClientModels, ModelDict
-from .style import Style, StyleSettings
+from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, get_inpaint_reference
 from .resources import ControlMode, SDVersion, UpscalerName
 from .settings import PerformanceSettings, settings
@@ -34,47 +34,16 @@ def generate_seed():
     return random.randint(0, 2**31 - 1)
 
 
-_sampler_map = {
-    "DDIM": "ddim",
-    "DPM++ 2M": "dpmpp_2m",
-    "DPM++ 2M Karras": "dpmpp_2m",
-    "DPM++ 2M SDE": "dpmpp_2m_sde_gpu",
-    "DPM++ 2M SDE Karras": "dpmpp_2m_sde_gpu",
-    "DPM++ SDE": "dpmpp_sde",
-    "DPM++ SDE Karras": "dpmpp_sde",
-    "UniPC BH2": "uni_pc_bh2",
-    "LCM": "lcm",
-    "Lightning": "euler",
-    "Euler": "euler",
-    "Euler a": "euler_ancestral",
-    "Euler a Karras": "euler_ancestral",
-}
-_scheduler_map = {
-    "DDIM": "ddim_uniform",
-    "DPM++ 2M": "normal",
-    "DPM++ 2M Karras": "karras",
-    "DPM++ 2M SDE": "normal",
-    "DPM++ 2M SDE Karras": "karras",
-    "DPM++ SDE": "normal",
-    "DPM++ SDE Karras": "karras",
-    "UniPC BH2": "ddim_uniform",
-    "LCM": "sgm_uniform",
-    "Lightning": "sgm_uniform",
-    "Euler": "normal",
-    "Euler a": "normal",
-    "Euler a Karras": "karras",
-}
-
-
 def _sampling_from_style(style: Style, strength: float, is_live: bool):
     sampler_name = style.live_sampler if is_live else style.sampler
     cfg = style.live_cfg_scale if is_live else style.cfg_scale
     total_steps = style.live_sampler_steps if is_live else style.sampler_steps
+    preset = SamplerPresets.instance()[sampler_name]
     result = SamplingInput(
-        sampler=_sampler_map[sampler_name],
-        scheduler=_scheduler_map[sampler_name],
-        cfg_scale=cfg,
-        total_steps=total_steps,
+        sampler=preset.sampler,
+        scheduler=preset.scheduler,
+        cfg_scale=cfg or preset.cfg,
+        total_steps=total_steps or preset.steps,
     )
     if strength < 1.0:
         # Unless we have something like a 1-step turbo model, ensure there are at least 4 steps
@@ -82,6 +51,17 @@ def _sampling_from_style(style: Style, strength: float, is_live: bool):
         min_steps = min(4, total_steps)
         result.total_steps, result.start_step = _apply_strength(strength, total_steps, min_steps)
     return result
+
+
+def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
+    start_at_step = round(steps * (1 - strength))
+
+    if min_steps and steps - start_at_step < min_steps:
+        steps = math.floor(min_steps * 1 / strength)
+        start_at_step = steps - min_steps
+
+    return steps, start_at_step
+
 
 def _sampler_params(sampling: SamplingInput, strength: float | None = None, advanced=True):
     """Assemble the parameters which are passed to ComfyUI's KSampler/KSamplerAdvanced node.
@@ -103,16 +83,6 @@ def _sampler_params(sampling: SamplingInput, strength: float | None = None, adva
                 strength, sampling.total_steps
             )
     return params
-
-
-def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
-    start_at_step = round(steps * (1 - strength))
-
-    if min_steps and steps - start_at_step < min_steps:
-        steps = math.floor(min_steps * 1 / strength)
-        start_at_step = steps - min_steps
-
-    return steps, start_at_step
 
 
 def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, models: ClientModels):
@@ -306,21 +276,32 @@ def apply_ip_adapter(
             )
 
     # Encode images with their weights into a batch and apply IP-adapter to the model once
-    if any(c.mode is ControlMode.reference for c in control_layers):
+    def encode_and_apply_ip_adapter(model: Output, control_layers: list[Control], weight_type: str):
         clip_vision = w.load_clip_vision(models.clip_vision)
         ip_adapter = w.load_ip_adapter(models[ControlMode.reference])
-        embeds = []
+        embeds: list[Output] = []
         range = (0.99, 0.01)
 
-        for control in (c for c in control_layers if c.mode is ControlMode.reference):
+        for control in control_layers:
             if len(embeds) >= 5:
-                raise Exception("Too many control layers of type 'reference image' (maximum is 5)")
+                raise Exception(f"Too many control layers of type '{mode.text}' (maximum is 5)")
             img = control.load_image(w)
             embeds.append(w.encode_ip_adapter(img, control.strength, ip_adapter, clip_vision)[0])
             range = (min(range[0], control.range[0]), max(range[1], control.range[1]))
 
         combined = w.combine_ip_adapter_embeds(embeds) if len(embeds) > 1 else embeds[0]
-        model = w.apply_ip_adapter(model, ip_adapter, clip_vision, combined, 1.0, range)
+        return w.apply_ip_adapter(model, ip_adapter, clip_vision, combined, 1.0, weight_type, range)
+
+    modes = [
+        (ControlMode.reference, "linear"),
+        (ControlMode.style, "style transfer"),
+        (ControlMode.composition, "composition"),
+    ]
+    # Chain together different IP-adapter weight types.
+    for mode, weight_type in modes:
+        ref_layers = [c for c in control_layers if c.mode is mode]
+        if len(ref_layers) > 0:
+            model = encode_and_apply_ip_adapter(model, ref_layers, weight_type)
 
     return model
 
@@ -840,8 +821,7 @@ def prepare(
     sd_version = i.models.version = models.version_of(style.sd_checkpoint)
     model_set = models.for_version(sd_version)
     has_ip_adapter = model_set.ip_adapter.find(ControlMode.reference) is not None
-    if i.sampling.sampler == "lcm":
-        i.models.loras.append(LoraInput(model_set.lora["lcm"], 1.0))
+    i.models.loras += _get_sampling_lora(style, is_live, model_set, models)
     face_weight = median_or_zero(c.strength for c in i.control if c.mode is ControlMode.face)
     if face_weight > 0:
         i.models.loras.append(LoraInput(model_set.lora["face"], 0.65 * face_weight))
@@ -1011,6 +991,19 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
         )
     else:
         raise ValueError(f"Unsupported workflow kind: {i.kind}")
+
+
+def _get_sampling_lora(style: Style, is_live: bool, model_set: ModelDict, models: ClientModels):
+    sampler_name = style.live_sampler if is_live else style.sampler
+    preset = SamplerPresets.instance()[sampler_name]
+    if preset.lora:
+        file = model_set.lora.find(preset.lora)
+        if file is None and not preset.lora in models.loras:
+            raise ValueError(
+                f"Could not find LoRA '{preset.lora}' used by sampler preset '{sampler_name}'"
+            )
+        return [LoraInput(file or preset.lora, 1.0)]
+    return []
 
 
 def _check_server_has_models(input: CheckpointInput, models: ClientModels, style_name: str):

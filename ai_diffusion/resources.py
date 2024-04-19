@@ -6,10 +6,10 @@ from typing import NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.16.0"
+version = "1.17.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "40e124c6be01195eada95e8c319ca6ddf4fd1a17"
+comfy_version = "45ec1cbe963055798765645c4f727122a7d3e35e"
 
 
 class CustomNode(NamedTuple):
@@ -32,7 +32,7 @@ required_custom_nodes = [
         "IP-Adapter",
         "ComfyUI_IPAdapter_plus",
         "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
-        "bf627aafd0dfcc59b945cc84d1f088d457780c4a",
+        "0d0a7b3693baf8903fe2028ff218b557d619a93d",
         ["IPAdapterModelLoader", "IPAdapter"],
     ),
     CustomNode(
@@ -58,7 +58,7 @@ required_custom_nodes = [
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "fac56ec7de904ab5926228f71dd563c34fd0d6be",
+        "8469f5531116475abb6d7e9c04720d0a29485a66",
         ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint"],
     ),
 ]
@@ -134,6 +134,8 @@ class UpscalerName(Enum):
 
 class ControlMode(Enum):
     reference = 0
+    style = 14
+    composition = 15
     face = 13
     inpaint = 1
     scribble = 2
@@ -171,15 +173,20 @@ class ControlMode(Enum):
 
     @property
     def is_ip_adapter(self):
-        return self in [ControlMode.reference, ControlMode.face]
+        return self in [
+            ControlMode.reference,
+            ControlMode.face,
+            ControlMode.style,
+            ControlMode.composition,
+        ]
 
     @property
-    def is_part_of_image(self):  # not only used a guidance hint
+    def is_part_of_image(self):  # not only used as guidance hint
         return self in [ControlMode.reference, ControlMode.line_art, ControlMode.blur]
 
     @property
     def is_structural(self):  # strong impact on image composition/structure
-        return self not in [ControlMode.reference, ControlMode.face, ControlMode.inpaint]
+        return not (self.is_ip_adapter or self is ControlMode.inpaint)
 
     @property
     def text(self):
@@ -687,6 +694,8 @@ def all_models():
 _control_text = {
     ControlMode.reference: "Reference",
     ControlMode.inpaint: "Inpaint",
+    ControlMode.style: "Style",
+    ControlMode.composition: "Composition",
     ControlMode.face: "Face",
     ControlMode.scribble: "Scribble",
     ControlMode.line_art: "Line Art",
@@ -754,6 +763,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.clip_vision, SDVersion.all, "ip_adapter"): ["sd1.5/pytorch_model.bin", "sd1.5/model.safetensors", "clip-vision_vit-h.safetensors", "clip-vit-h-14-laion2b-s32b-b79k"],
     resource_id(ResourceKind.lora, SDVersion.sd15, "lcm"): ["lcm-lora-sdv1-5.safetensors", "lcm/sd1.5/pytorch_lora_weights.safetensors"],
     resource_id(ResourceKind.lora, SDVersion.sdxl, "lcm"): ["lcm-lora-sdxl.safetensors", "lcm/sdxl/pytorch_lora_weights.safetensors"],
+    resource_id(ResourceKind.lora, SDVersion.sdxl, "lightning"): ["sdxl_lightning_8step_lora"],
     resource_id(ResourceKind.lora, SDVersion.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15_lora", "ip-adapter-faceid-plus_sd15_lora"],
     resource_id(ResourceKind.lora, SDVersion.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.upscaler, SDVersion.all, UpscalerName.default): [UpscalerName.default.value],

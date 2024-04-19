@@ -369,6 +369,7 @@ class ComfyWorkflow:
         clip_vision: Output,
         embeds: Output,
         weight: float,
+        weight_type: str = "linear",
         range: tuple[float, float] = (0.0, 1.0),
     ):
         return self.add(
@@ -379,7 +380,8 @@ class ComfyWorkflow:
             pos_embed=embeds,
             clip_vision=clip_vision,
             weight=weight,
-            weight_type="linear",
+            weight_type=weight_type,
+            embeds_scaling="V only",
             start_at=range[0],
             end_at=range[1],
         )
