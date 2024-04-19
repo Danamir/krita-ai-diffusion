@@ -31,7 +31,7 @@ from ..connection import ConnectionState, apply_performance_preset
 from ..properties import Binding
 from .. import eventloop, util, __version__
 from .server import ServerWidget
-from .settings_widgets import SpinBoxSetting, SliderSetting, SwitchSetting
+from .settings_widgets import SpinBoxSetting, SliderSetting, SwitchSetting, TextSetting
 from .settings_widgets import SettingsTab
 from .style import StylePresets
 from .theme import add_header, red, yellow, green, grey

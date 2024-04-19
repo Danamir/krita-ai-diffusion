@@ -389,6 +389,7 @@ _sampler_map = {
     "Lightning": "euler",
     "Euler": "euler",
     "Euler a": "euler_ancestral",
+    "Euler a Karras": "euler_ancestral",
 }
 _scheduler_map = {
     "DDIM": "ddim_uniform",
@@ -402,6 +403,7 @@ _scheduler_map = {
     "Lightning": "sgm_uniform",
     "Euler": "normal",
     "Euler a": "normal",
+    "Euler a Karras": "karras",
 }
 _sampler_presets_stub = {
     "DPM++ 3M (Example custom sampler)": {

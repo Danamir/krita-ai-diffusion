@@ -815,7 +815,7 @@ def prepare(
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models()
-    i.models.loras += [LoraInput.from_dict(l) for l in extra_loras]
+    i.models.loras += extra_loras
     _check_server_has_models(i.models, models, style.name)
 
     sd_version = i.models.version = models.version_of(style.sd_checkpoint)

@@ -347,6 +347,12 @@ class SettingsTab(QWidget):
         self._widgets[name] = widget
         widget.value_changed.connect(self.write)
 
+    def add_separator(self, text: str = "", space: int = 6):
+        label = QLabel(text, self)
+        label.setStyleSheet("font-weight:bold")
+        self._layout.addSpacing(space)
+        self._layout.addWidget(label)
+
     def _read(self):
         pass
 
