@@ -8,7 +8,8 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from .api import CheckpointInput, LoraInput
 from .settings import Setting, settings
 from .resources import SDVersion
-from .util import encode_json, plugin_dir, user_data_dir, client_logger as log
+from .util import encode_json, read_json_with_comments
+from .util import plugin_dir, user_data_dir, client_logger as log
 
 
 class StyleSettings:
@@ -78,7 +79,7 @@ class StyleSettings:
         "Preferred Resolution", 0, "Image resolution the checkpoint was trained on"
     )
 
-    sampler = Setting("Sampler", "Default", "The sampling strategy and scheduler")
+    sampler = Setting("Sampler", "Default - DPM++ 2M", "The sampling strategy and scheduler")
 
     sampler_steps = Setting(
         "Sampler Steps",
@@ -92,7 +93,7 @@ class StyleSettings:
         "Value which indicates how closely image generation follows the text prompt",
     )
 
-    live_sampler = Setting("Sampler", "Realtime LCM", sampler.desc)
+    live_sampler = Setting("Sampler", "Realtime - LCM", sampler.desc)
     live_sampler_steps = Setting("Sampler Steps", 6, sampler_steps.desc)
     live_cfg_scale = Setting("Guidance Strength (CFG Scale)", 1.8, cfg_scale.desc)
 
@@ -325,9 +326,10 @@ class SamplerPresets:
 
     def load(self, file: Path):
         try:
-            presets = json.loads(file.read_text())
+            presets = read_json_with_comments(file)
             presets = {name: SamplerPreset(**preset) for name, preset in presets.items()}
             self._presets.update(presets)
+            log.info(f"Loaded {len(presets)} sampler presets from {file}")
         except Exception as e:
             log.error(f"Failed to load sampler presets from {file}: {e}")
 
@@ -349,7 +351,7 @@ class SamplerPresets:
     def write_stub(self):
         if not self._user_preset_file.exists():
             self._user_preset_file.parent.mkdir(parents=True, exist_ok=True)
-            self._user_preset_file.write_text(json.dumps(_sampler_presets_stub, indent=4))
+            self._user_preset_file.write_text(_sampler_presets_stub)
         return self._user_preset_file
 
     def __len__(self):
@@ -370,12 +372,19 @@ class SamplerPresets:
 
 
 _legacy_map = {
-    "DPM++ 2M Karras": "Default",
-    "DPM++ 2M SDE Karras": "Creative",
-    "DPM++ SDE Karras": "Turbo/Lightning Merge",
-    "UniPC BH2": "Fast",
-    "LCM": "Realtime LCM",
-    "Lightning": "Realtime Lightning",
+    "DPM++ 2M Karras": "Default - DPM++ 2M",
+    "DPM++ 2M SDE Karras": "Creative - DPM++ 2M SDE",
+    "Euler a": "Alternative - Euler A",
+    "DPM++ SDE Karras": "Turbo/Lightning Checkpoint - DPM++ SDE",
+    "UniPC BH2": "Fast - UniPC BH2",
+    "LCM": "Realtime - LCM",
+    "Lightning": "Realtime - Lightning",
+    "Default": "Default - DPM++ 2M",
+    "Creative": "Creative - DPM++ 2M SDE",
+    "Turbo/Lightning Merge": "Turbo/Lightning Merge - DPM++ SDE",
+    "Fast": "Fast - UniPC BH2",
+    "Realtime LCM": "Realtime - LCM",
+    "Realtime Lightning": "Realtime - Lightning",
 }
 _sampler_map = {
     "DDIM": "ddim",
@@ -405,11 +414,16 @@ _scheduler_map = {
     "Euler a": "normal",
     "Euler a Karras": "karras",
 }
-_sampler_presets_stub = {
-    "DPM++ 3M (Example custom sampler)": {
+_sampler_presets_stub = """// Custom sampler presets - add your own sampler presets here!
+// https://github.com/Acly/krita-ai-diffusion/wiki/Samplers
+//
+// *** You have to restart Krita for the changes to take effect! ***
+{
+    "My Custom Sampler - DPM++ 3M": {
         "sampler": "dpmpp_3m_sde",
         "scheduler": "exponential",
-        "steps": 30,
-        "cfg": 7.0,
+        "steps": 20,
+        "cfg": 7.0
     }
 }
+"""
