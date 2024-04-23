@@ -264,6 +264,7 @@ def apply_attention(
     cond: Conditioning,
     clip: Output,
     extent: Extent,
+    models: ModelDict,
 ):
     control_layers = cond.control
     controls = [c for c in control_layers if c.mode is ControlMode.attention]
@@ -284,7 +285,7 @@ def apply_attention(
         mask_sum = (
             mask if mask_sum == OutputNull else w.attention_mask_composite(mask, mask_sum, "or")
         )
-        conds.append(encode_text_prompt(w, control_cond, clip)[0])
+        conds.append(encode_text_prompt(w, control_cond, clip, models)[0])
         masks.append(mask)
 
     # subtract lower masks for each mask
@@ -483,7 +484,7 @@ def generate(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
-    model, cond = apply_attention(w, model, cond, clip, extent.initial)
+    model, cond = apply_attention(w, model, cond, clip, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
