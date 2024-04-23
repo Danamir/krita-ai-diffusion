@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import re
 from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,7 +18,7 @@ from .resolution import ScaledExtent, ScaleMode, get_inpaint_reference
 from .resources import ControlMode, SDVersion, UpscalerName
 from .settings import PerformanceSettings, settings
 from .text import merge_prompt, extract_loras
-from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Output
+from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Output, OutputNull
 from .util import ensure, median_or_zero, client_logger as log
 
 
@@ -225,6 +227,87 @@ def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, model
     return positive, negative
 
 
+regex_attention_line = re.compile(r"^((?:PROMPT|ZONE|ATT|BREAK)\s*\d* )(.*)$")
+
+
+def attention_cond_prompt(cond: Conditioning, index: int):
+    if not cond.prompt:
+        return cond, cond
+
+    updated_prompt_lines = []
+    att_prompts_lines = []
+    i = 0
+    for line in cond.prompt.splitlines():
+        match = regex_attention_line.match(line)
+        if not match:
+            att_prompts_lines.append(line)
+            updated_prompt_lines.append(line)
+        else:
+            if i == index:
+                att_prompts_lines.append(match.group(2))
+                updated_prompt_lines.append(match.group(1))
+            else:
+                updated_prompt_lines.append(line)
+
+            i += 1
+
+    att_cond = copy(cond)
+    att_cond.prompt = "\n".join(att_prompts_lines)
+    cond.prompt = "\n".join(updated_prompt_lines)
+
+    return att_cond, cond
+
+
+def apply_attention(
+    w: ComfyWorkflow,
+    model: Output,
+    cond: Conditioning,
+    clip: Output,
+    extent: Extent,
+):
+    control_layers = cond.control
+    controls = [c for c in control_layers if c.mode is ControlMode.attention]
+    if not len(controls):
+        return model, cond
+
+    base_mask = w.solid_mask(extent, 1.0)
+    conds: list[Output] = []
+    masks: list[Output] = []
+    mask_sum: Output = OutputNull
+
+    # load masks, compute sum of all masks
+    for i in range(len(controls)):
+        control = controls[i]
+        mask = w.load_image_mask(control.image)
+        control_cond, cond = attention_cond_prompt(cond, i)
+
+        mask_sum = (
+            mask if mask_sum == OutputNull else w.attention_mask_composite(mask, mask_sum, "or")
+        )
+        conds.append(encode_text_prompt(w, control_cond, clip)[0])
+        masks.append(mask)
+
+    # subtract lower masks for each mask
+    for i in range(len(masks)):
+        sub_mask_sum: Output = OutputNull
+        for j in range(len(masks)):
+            if i > j:
+                sub_mask_sum = (
+                    masks[j]
+                    if sub_mask_sum == OutputNull
+                    else w.attention_mask_composite(masks[j], sub_mask_sum, "or")
+                )
+
+        if sub_mask_sum != OutputNull:
+            masks[i] = w.attention_mask_composite(masks[i], sub_mask_sum, "subtract")
+
+    base_mask = w.attention_mask_composite(base_mask, mask_sum, "subtract")
+    cond, _ = attention_cond_prompt(cond, len(controls))
+    model = w.apply_attention_couple(model, base_mask, conds, masks)
+
+    return model, cond
+
+
 def apply_control(
     w: ComfyWorkflow,
     positive: Output,
@@ -400,6 +483,7 @@ def generate(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
+    model, cond = apply_attention(w, model, cond, clip, extent.initial)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
@@ -588,6 +672,7 @@ def refine(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
+    model, cond = apply_attention(w, model, cond, clip, extent.initial)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
