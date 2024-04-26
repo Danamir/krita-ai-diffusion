@@ -216,8 +216,8 @@ def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, model
         prompt = merge_prompt("", cond.style_prompt)
     elif prompt != "":
         prompt = merge_prompt(prompt, cond.style_prompt)
-    positive = w.clip_text_encode(clip, prompt, models)
-    negative = w.clip_text_encode(clip, cond.negative_prompt, models)
+    positive = w.clip_text_encode(clip, prompt, models, split_conditioning=settings.split_conditioning_sdxl)
+    negative = w.clip_text_encode(clip, cond.negative_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
     if cond.mask and cond.prompt != "":
         masked = w.clip_text_encode(clip, cond.prompt, models, split_conditioning=settings.split_conditioning_sdxl)
         masked = w.conditioning_set_mask(masked, cond.mask)
