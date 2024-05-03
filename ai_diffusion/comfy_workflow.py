@@ -509,7 +509,7 @@ class ComfyWorkflow:
             image=image,
             width=extent.width,
             height=extent.height,
-            upscale_method="bilinear",
+            upscale_method="lanczos",
             crop="disabled",
         )
 

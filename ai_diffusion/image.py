@@ -497,7 +497,7 @@ class ImageCollection:
         for i, offset in enumerate(offsets):
             buffer.seek(offset)
             img = QImage()
-            if img.load(buffer, "WEBP"):
+            if img.load(buffer, None):
                 images.append(Image(img))
             else:
                 raise Exception(f"Failed to load image {i} from buffer")
@@ -537,11 +537,11 @@ class Mask:
             assert len(data) == bounds.width * bounds.height
             self._data = data
             self.image = QImage(
-                self._data.data(),
+                data.data(),
                 bounds.width,
                 bounds.height,
                 bounds.width,
-                QImage.Format_Grayscale8,
+                QImage.Format.Format_Grayscale8,
             )
             assert not self.image.isNull()
 
