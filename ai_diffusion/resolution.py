@@ -106,7 +106,7 @@ class ScaledExtent(NamedTuple):
     def initial_scaling(self):
         ratio = Extent.ratio(self.input, self.initial)
         if ratio < 1:
-            return ScaleMode.resize
+            return ScaleMode.upscale_fast
         else:
             return ScaleMode.none
 

@@ -334,7 +334,7 @@ def scale(
 def scale_to_initial(
     extent: ScaledExtent, w: ComfyWorkflow, image: Output, models: ModelDict, is_mask=False
 ):
-    if is_mask and extent.initial_scaling is ScaleMode.resize:
+    if is_mask and extent.initial_scaling in (ScaleMode.resize, ScaleMode.upscale_fast):
         return w.scale_mask(image, extent.initial)
     elif not is_mask:
         return scale(extent.input, extent.initial, extent.initial_scaling, w, image, models)
