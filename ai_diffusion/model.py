@@ -9,13 +9,21 @@ from PyQt5.QtGui import QImage
 import uuid
 
 from . import eventloop, workflow, util
-from .api import TextInput, WorkflowKind, WorkflowInput, InpaintMode, InpaintParams, FillMode
+from .api import (
+    ConditioningInput,
+    RegionInput,
+    WorkflowKind,
+    WorkflowInput,
+    InpaintMode,
+    InpaintParams,
+    FillMode,
+)
 from .util import ensure, client_logger as log
 from .settings import settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds
 from .client import ClientMessage, ClientEvent, filter_supported_styles, resolve_sd_version
-from .document import Document, LayerObserver
+from .document import Document, LayerObserver, KritaDocument
 from .pose import Pose
 from .style import Style, Styles, SDVersion
 from .connection import Connection
@@ -34,6 +42,219 @@ class Workspace(Enum):
     animation = 3
 
 
+class Region(QObject, ObservableProperties):
+    _tree: "RegionTree"
+
+    layer_id = Property("", persist=True)
+    prompt = Property("", persist=True)
+    negative_prompt = Property("", persist=True)
+    control: ControlLayerList
+
+    layer_id_changed = pyqtSignal(str)
+    prompt_changed = pyqtSignal(str)
+    negative_prompt_changed = pyqtSignal(str)
+    modified = pyqtSignal(QObject, str)  # TODO: hook this up
+
+    def __init__(self, tree: "RegionTree", model: "Model", layer_id: QUuid | str | None = None):
+        super().__init__()
+        self._tree = tree
+        self.layer_id = _layer_id_str(layer_id)
+        self.control = ControlLayerList(model)
+
+    @property
+    def layer(self):
+        if not self.is_root:
+            layer = self._tree._model.layers.updated().find(QUuid(self.layer_id))
+            assert layer is not None, f"Region layer not found ({self.layer_id} {self.prompt})"
+            return layer
+        return None  # root region, no group layer
+
+    @property
+    def siblings(self):
+        return self._tree.siblings(self)
+
+    @property
+    def is_root(self):
+        return self.layer_id == ""
+
+    @property
+    def name(self):
+        if layer := self.layer:
+            return layer.name()
+        return "Root"
+
+    def to_api(self, bounds: Bounds | None = None):
+        doc = self._tree._model.document
+        layer = ensure(self.layer, "Non-root region required")
+        return RegionInput(
+            mask=doc.get_layer_mask(layer, bounds),
+            positive=self.prompt,
+            negative=self.negative_prompt,
+            control=[c.to_api(bounds) for c in self.control],
+        )
+
+
+class RegionTree(QObject):
+    _model: "Model"
+    _root: Region
+    _regions: list[Region]
+    _active: Region | None = None
+    _active_layer: QUuid | None = None
+
+    active_changed = pyqtSignal(Region)
+    added = pyqtSignal(Region)
+    removed = pyqtSignal(Region)
+
+    def __init__(self, model: Model):
+        super().__init__()
+        self._model = model
+        self._root = Region(self, model)
+        self._regions = []
+        model.layers.active_changed.connect(self._update_active)
+        model.layers.changed.connect(self._update_layers)
+
+    @property
+    def root(self):
+        return self._root
+
+    def _lookup_region(self, layer_id: QUuid | None = None):
+        layer_id_str = _layer_id_str(layer_id)
+        region = next((r for r in self._regions if r.layer_id == layer_id_str), None)
+        if region is None:
+            region = self._add(layer_id)
+        return region
+
+    def emplace(self):
+        region = Region(self, self._model)
+        self._regions.append(region)
+        return region
+
+    @property
+    def active(self):
+        self._update_active()
+        return self._active or Region(self, self._model)
+
+    @active.setter
+    def active(self, region: Region):
+        if self._active != region:
+            self._active = region
+            if layer := region.layer:
+                non_group = (l for l in reversed(layer.childNodes()) if l.type() != "grouplayer")
+                top_non_group = next(non_group, None)
+                self._model.document.active_layer = top_non_group or layer
+            self.active_changed.emit(region)
+
+    def add_control(self):
+        self.active.control.add()
+
+    def to_api(self, parent_layer_id: QUuid | None, bounds: Bounds | None = None):
+        # Assemble all regions by finding group layers which are direct children of the parent layer.
+        # Ignore regions with no prompt or control layers.
+        layers = self._model.layers
+        parent_layer = layers.find(parent_layer_id) if parent_layer_id else layers.root
+        api_regions: list[RegionInput] = []
+        for layer in layers:
+            if layer.type() == "grouplayer" and layer.parentNode() == parent_layer:
+                region = self._lookup_region(layer.uniqueId())
+                if region.prompt != "" or len(region.control) > 0:
+                    api_regions.append(region.to_api(bounds))
+
+        # Remove from each region mask any overlapping areas from regions above it.
+        accumulated_mask = None
+        for region in reversed(api_regions):
+            if accumulated_mask is None:
+                accumulated_mask = Image.mask_add(region.mask, region.mask)
+            else:
+                current = region.mask
+                region.mask = Image.mask_subtract(region.mask, accumulated_mask)
+                accumulated_mask = Image.mask_add(accumulated_mask, current)
+
+        # If the regions don't cover the entire image, add a final region for the remaining area.
+        if accumulated_mask is not None:
+            average = Image.scale(accumulated_mask, Extent(1, 1)).pixel(0, 0)
+            fully_covered = isinstance(average, tuple) and average[0] >= 254
+            if not fully_covered:
+                accumulated_mask.invert()
+                api_regions.append(RegionInput(accumulated_mask, self.root.prompt))
+
+        return ConditioningInput(
+            positive=self.root.prompt,
+            negative=self.root.negative_prompt,
+            control=[c.to_api(bounds) for c in self.root.control],
+            regions=api_regions,
+        )
+
+    def siblings(self, region: Region):
+        def get_regions(layers: list[krita.Node]):
+            return [self._lookup_region(l.uniqueId()) for l in layers]
+
+        below, above = self._model.layers.siblings(region.layer, "grouplayer")
+        return get_regions(below), get_regions(above)
+
+    def _update_layers(self):
+        self._prune()
+        for layer in self._model.layers:
+            if layer.type() == "grouplayer":
+                self._lookup_region(layer.uniqueId())
+
+    def _update_active(self):
+        if not isinstance(self._model.document, KritaDocument):
+            return
+        layer = self._model.document.active_layer
+        if layer.uniqueId() == self._active_layer:
+            return
+        self._active_layer = layer.uniqueId()
+
+        region = self.root
+        while layer is not None and layer.type() != "grouplayer":
+            layer = layer.parentNode()
+        if layer is not None and layer.parentNode() is not None:
+            assert layer.type() == "grouplayer"
+            region = self._lookup_region(layer.uniqueId())
+        if region != self._active:
+            self._active = region
+            self.active_changed.emit(region)
+
+    def _add(self, layer_id: str):
+        region = Region(self, self._model, layer_id)
+        self._regions.append(region)
+        self.added.emit(region)
+        # handle new group for active layer
+        if layer := region.layer:
+            if layer.type() == "grouplayer":
+                self._active_layer = None  # force check for new region
+                self._update_active()
+        return region
+
+    def _prune(self):
+        layers = self._model.layers.updated()
+        new_regions, removed = [], []
+        for region in self._regions:
+            if region.layer_id == "" or layers.find(QUuid(region.layer_id)):
+                new_regions.append(region)
+            else:
+                removed.append(region)
+        self._regions = new_regions
+        for region in removed:
+            self.removed.emit(region)
+
+    def __len__(self):
+        self._prune()
+        return len(self._regions)
+
+    def __iter__(self):
+        self._prune()
+        return iter(self._regions)
+
+
+def _layer_id_str(a: QUuid | str | None):
+    if isinstance(a, QUuid):
+        return a.toString()
+    if a is None:
+        return ""
+    return a
+
+
 class Model(QObject, ObservableProperties):
     """Represents diffusion workflows for a specific Krita document. Stores all inputs related to
     image generation. Launches generation jobs. Listens to server messages and keeps a
@@ -46,10 +267,8 @@ class Model(QObject, ObservableProperties):
     _layers: LayerObserver
 
     workspace = Property(Workspace.generation, setter="set_workspace", persist=True)
+    regions: "RegionTree"
     style = Property(Styles.list().default, persist=True)
-    prompt = Property("", persist=True)
-    negative_prompt = Property("", persist=True)
-    control: ControlLayerList
     strength = Property(1.0, persist=True)
     batch_count = Property(1, persist=True)
     seed = Property(0, persist=True)
@@ -65,8 +284,6 @@ class Model(QObject, ObservableProperties):
 
     workspace_changed = pyqtSignal(Workspace)
     style_changed = pyqtSignal(Style)
-    prompt_changed = pyqtSignal(str)
-    negative_prompt_changed = pyqtSignal(str)
     strength_changed = pyqtSignal(float)
     batch_count_changed = pyqtSignal(int)
     seed_changed = pyqtSignal(int)
@@ -84,8 +301,8 @@ class Model(QObject, ObservableProperties):
         self._connection = connection
         self.generate_seed()
         self.jobs = JobQueue()
+        self.regions = RegionTree(self)
         self.inpaint = CustomInpaint()
-        self.control = ControlLayerList(self)
         self.upscale = UpscaleWorkspace(self)
         self.live = LiveWorkspace(self)
         self.animation = AnimationWorkspace(self)
@@ -115,6 +332,7 @@ class Model(QObject, ObservableProperties):
         client = self._connection.client
         image = None
         inpaint = None
+        region = self.regions.root
         extent = self._doc.extent
         mask = self._doc.create_mask_from_selection(
             **get_selection_modifiers(self.inpaint.mode, self.strength), min_size=64
@@ -122,10 +340,10 @@ class Model(QObject, ObservableProperties):
         bounds = compute_bounds(extent, mask.bounds if mask else None, self.strength)
         bounds = self.inpaint.get_context(self, mask) or bounds
 
-        control = [c.get_image(bounds) for c in self.control]
+        conditioning = self.regions.to_api(None, bounds)
 
         if mask is not None or self.strength < 1.0:
-            image = self._get_current_image(bounds)
+            image = self._get_current_image(region, bounds)
 
         if mask is not None:
             if workflow_kind is WorkflowKind.generate:
@@ -140,21 +358,21 @@ class Model(QObject, ObservableProperties):
             if inpaint_mode is InpaintMode.custom:
                 inpaint = self.inpaint.get_params(mask)
             else:
+                control = conditioning.control
                 inpaint = workflow.detect_inpaint(
-                    inpaint_mode, mask.bounds, sd_version, self.prompt, control, self.strength
+                    inpaint_mode, mask.bounds, sd_version, region.prompt, control, self.strength
                 )
         try:
             input = workflow.prepare(
                 workflow_kind,
                 image or extent,
-                TextInput(self.prompt, self.negative_prompt, self.style.style_prompt),
+                conditioning,
                 self.style,
                 self.seed if self.fixed_seed else workflow.generate_seed(),
                 client.models,
                 client.performance_settings,
                 mask=mask,
                 strength=self.strength,
-                control=control,
                 inpaint=inpaint,
             )
         except Exception as e:
@@ -162,7 +380,7 @@ class Model(QObject, ObservableProperties):
             return
         self.clear_error()
         enqueue_jobs = self.enqueue_jobs(
-            input, JobKind.diffusion, JobParams(bounds, self.prompt), self.batch_count
+            input, JobKind.diffusion, JobParams(bounds, region.prompt), self.batch_count
         )
         eventloop.run(_report_errors(self, enqueue_jobs))
 
@@ -170,7 +388,7 @@ class Model(QObject, ObservableProperties):
         self, input: WorkflowInput, kind: JobKind, params: JobParams, count: int = 1
     ):
         sampling = ensure(input.sampling)
-        params.negative_prompt = ensure(input.text).negative
+        params.negative_prompt = ensure(input.conditioning).negative
         params.strength = sampling.denoise_strength
 
         for i in range(count):
@@ -196,7 +414,7 @@ class Model(QObject, ObservableProperties):
                 inputs = workflow.prepare(
                     WorkflowKind.upscale_tiled,
                     image,
-                    TextInput("4k uhd"),
+                    ConditioningInput("4k uhd"),
                     self.style,
                     params.seed,
                     client.models,
@@ -223,6 +441,7 @@ class Model(QObject, ObservableProperties):
         workflow_kind = WorkflowKind.generate if strength == 1.0 else WorkflowKind.refine
         client = self._connection.client
         ver = client.models.version_of(self.style.sd_checkpoint)
+        region = self.regions.root
 
         image = None
         mask = self._doc.create_mask_from_selection(
@@ -237,32 +456,31 @@ class Model(QObject, ObservableProperties):
             workflow_kind = WorkflowKind.refine_region
             bounds, mask.bounds = compute_relative_bounds(mask.bounds, mask.bounds)
         if mask is not None or self.live.strength < 1.0:
-            image = self._get_current_image(bounds)
+            image = self._get_current_image(region, bounds)
 
         input = workflow.prepare(
             workflow_kind,
             image or bounds.extent,
-            TextInput(self.prompt, self.negative_prompt, self.style.style_prompt),
+            self.regions.to_api(None, mask.bounds if mask else None),
             self.style,
             self.seed,
             client.models,
             client.performance_settings,
             mask=mask,
-            control=[c.get_image(bounds) for c in self.control],
             strength=self.live.strength,
             inpaint=InpaintParams(InpaintMode.fill, mask.bounds) if mask else None,
             is_live=True,
         )
         if input != last_input:
             self.clear_error()
-            await self.enqueue_jobs(input, JobKind.live_preview, JobParams(bounds, self.prompt))
+            await self.enqueue_jobs(input, JobKind.live_preview, JobParams(bounds, region.prompt))
             return input
 
         return None
 
-    def _get_current_image(self, bounds: Bounds):
+    def _get_current_image(self, region: Region, bounds: Bounds):
         exclude = [  # exclude control layers from projection
-            c.layer for c in self.control if not c.mode.is_part_of_image
+            c.layer for c in region.control if not c.mode.is_part_of_image
         ]
         if self._layer:  # exclude preview layer
             exclude.append(self._layer)
@@ -617,7 +835,7 @@ class LiveWorkspace(QObject, ObservableProperties):
     def copy_result_to_layer(self):
         assert self.result is not None and self._result_bounds is not None
         doc = self._model.document
-        name = f"{self._model.prompt} ({self._result_seed})"
+        name = f"{self._model.regions.active.prompt} ({self._result_seed})"
         doc.insert_layer(name, self.result, self._result_bounds)
         if settings.new_seed_after_apply:
             self._model.generate_seed()
@@ -666,7 +884,8 @@ class LiveWorkspace(QObject, ObservableProperties):
             return  # button toggled without recording a frame in between
         self._model.document.import_animation(self._keyframes, self._keyframe_start)
         start, end = self._keyframe_start, self._keyframe_start + len(self._keyframes)
-        self._model.document.active_layer.setName(f"[Rec] {start}-{end}: {self._model.prompt}")
+        prompt = self._model.regions.active.prompt
+        self._model.document.active_layer.setName(f"[Rec] {start}-{end}: {prompt}")
         self._keyframes = []
 
 
@@ -714,23 +933,23 @@ class AnimationWorkspace(QObject, ObservableProperties):
         return workflow.prepare(
             WorkflowKind.generate if m.strength == 1.0 else WorkflowKind.refine,
             canvas,
-            TextInput(m.prompt, m.negative_prompt, m.style.style_prompt),
+            m.regions.to_api(None, bounds),
             style=m.style,
             seed=seed,
             perf=m._connection.client.performance_settings,
             models=m._connection.client.models,
-            control=[c.get_image(bounds) for c in m.control],
             strength=m.strength,
             is_live=self.sampling_quality is SamplingQuality.fast,
         )
 
     async def _generate_frame(self):
         m = self._model
+        region = m.regions.root
         bounds = Bounds(0, 0, *m.document.extent)
-        canvas = m._get_current_image(bounds) if m.strength < 1.0 else bounds.extent
+        canvas = m._get_current_image(region, bounds) if m.strength < 1.0 else bounds.extent
         seed = m.seed if m.fixed_seed else workflow.generate_seed()
         inputs = self._prepare_input(canvas, seed)
-        params = JobParams(bounds, self._model.prompt, frame=(m.document.current_time, 0, 0))
+        params = JobParams(bounds, region.prompt, frame=(m.document.current_time, 0, 0))
         await m.enqueue_jobs(inputs, JobKind.animation_frame, params)
 
     def generate_batch(self):
@@ -771,7 +990,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
                     )
 
                 inputs = self._prepare_input(canvas, seed)
-                params = JobParams(bounds, self._model.prompt)
+                params = JobParams(bounds, self._model.regions.active.prompt)
                 params.frame = (frame, start_frame, end_frame)
                 params.animation_id = animation_id
                 await self._model.enqueue_jobs(inputs, JobKind.animation_batch, params)
@@ -862,7 +1081,7 @@ def _save_job_result(model: Model, job: Job | None, index: int):
     path = Path(model.document.filename)
     path = path.parent / f"{path.stem}-generated-{timestamp}-{index}-{prompt}.png"
     path = util.find_unused_path(path)
-    base_image = model._get_current_image(Bounds(0, 0, *model.document.extent))
+    base_image = model._get_current_image(model.regions.root, Bounds(0, 0, *model.document.extent))
     result_image = job.results[index]
     base_image.draw_image(result_image, job.params.bounds.offset)
     base_image.save(path)

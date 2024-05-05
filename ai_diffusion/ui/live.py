@@ -162,13 +162,13 @@ class LiveWidget(QWidget):
                 bind(model, "style", self.style_select, "value"),
                 bind(model.live, "strength", self.strength_slider, "value"),
                 bind(model, "seed", self.seed_input, "value"),
-                bind(model, "prompt", self.prompt_textbox, "text"),
-                bind(model, "negative_prompt", self.negative_textbox, "text"),
+                bind(model.regions.active, "prompt", self.prompt_textbox, "text"),
+                bind(model.regions.active, "negative_prompt", self.negative_textbox, "text"),
                 model.live.is_active_changed.connect(self.update_is_active),
                 model.live.is_recording_changed.connect(self.update_is_recording),
                 model.live.has_result_changed.connect(self.apply_button.setEnabled),
                 self.apply_button.clicked.connect(model.live.copy_result_to_layer),
-                self.add_control_button.clicked.connect(model.control.add),
+                self.add_control_button.clicked.connect(model.regions.add_control),
                 self.random_seed_button.clicked.connect(model.generate_seed),
                 model.error_changed.connect(self.error_text.setText),
                 model.has_error_changed.connect(self.error_text.setVisible),
@@ -177,7 +177,6 @@ class LiveWidget(QWidget):
             ]
             self.update_is_active()
             self.update_is_recording()
-            self.control_list.model = model
             self.preview_area.clear()
 
     def update_settings(self, key: str, value):
