@@ -467,7 +467,7 @@ def scale_refine_and_decode(
     params = _sampler_params(sampling, strength=0.4)
 
     if use_attention:
-        model, cond = apply_attention(w, model, cond, clip, extent.desired)
+        model, cond = apply_attention(w, model, cond, clip, extent.desired, models)
 
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.desired, models
