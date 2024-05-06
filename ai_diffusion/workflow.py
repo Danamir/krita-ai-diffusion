@@ -273,37 +273,6 @@ def encode_attention_text_prompt(w: ComfyWorkflow, cond: Conditioning, positive:
     return positive, negative
 
 
-regex_attention_line = re.compile(r"^((?:PROMPT|ZONE|ATT|BREAK)\s*\d* )(.*)$")
-
-
-def attention_cond_prompt(cond: Conditioning, index: int):
-    if not cond.positive:
-        return cond, cond
-
-    updated_prompt_lines = []
-    att_prompts_lines = []
-    i = 0
-    for line in cond.positive.splitlines():
-        match = regex_attention_line.match(line)
-        if not match:
-            att_prompts_lines.append(line)
-            updated_prompt_lines.append(line)
-        else:
-            if i == index:
-                att_prompts_lines.append(match.group(2))
-                updated_prompt_lines.append(match.group(1))
-            else:
-                updated_prompt_lines.append(line)
-
-            i += 1
-
-    att_cond = copy(cond)
-    att_cond.positive = "\n".join(att_prompts_lines)
-    cond.positive = "\n".join(updated_prompt_lines)
-
-    return att_cond, cond
-
-
 def apply_attention(
     w: ComfyWorkflow,
     model: Output,
@@ -315,15 +284,12 @@ def apply_attention(
     if not cond.regions:
         return model, cond
 
-    regions = cond.regions
-    regions.reverse()
-
     base_mask = w.solid_mask(extent, 0.0)
     conds: list[Output] = []
     masks: list[Output] = []
 
-    for region in regions:
-        mask = w.image_to_mask(w.mask_to_image(region.load_mask(w)))
+    for region in reversed(cond.regions):
+        mask = w.scale_mask(region.load_mask(w), extent)
         masks.append(mask)
         if region.positive == cond.positive:
             positive = region.positive.replace("{prompt}", "")
@@ -473,8 +439,10 @@ def scale_refine_and_decode(
     prompt_pos: Output,
     prompt_neg: Output,
     model: Output,
+    clip: Output,
     vae: Output,
     models: ModelDict,
+    use_attention: bool = False,
 ):
     """Handles scaling images from `initial` to `desired` resolution.
     If it is a substantial upscale, runs a high-res SD refinement pass.
@@ -498,6 +466,9 @@ def scale_refine_and_decode(
     upscale = w.vae_encode(vae, upscale)
     params = _sampler_params(sampling, strength=0.4)
 
+    if use_attention:
+        model, cond = apply_attention(w, model, cond, clip, extent.desired)
+
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.desired, models
     )
@@ -517,6 +488,7 @@ def generate(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
+    model_orig = copy(model)
     model, cond = apply_attention(w, model, cond, clip, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
@@ -533,7 +505,7 @@ def generate(
         **_sampler_params(sampling)
     )
     out_image = scale_refine_and_decode(
-        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model, vae, models
+        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model_orig, clip, vae, models, True
     )
     out_image = scale_to_target(extent, w, out_image, models)
     w.send_image(out_image)
@@ -628,7 +600,8 @@ def inpaint(
     in_image = fill_masked(w, in_image, in_mask, params.fill, models)
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
-    positive, negative = encode_text_prompt(w, cond_base, clip, models)
+    region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
+    positive, negative = encode_attention_text_prompt(w, cond_base, region_pos, region_neg, clip, models)
     positive, negative = apply_control(
         w, positive, negative, cond_base.control, extent.initial, models
     )
@@ -730,6 +703,40 @@ def refine(
     return w
 
 
+def find_region_prompts(
+    cond: Conditioning,
+    mask: Image,
+):
+    prompts = []
+
+    for region in reversed(cond.regions):
+        if region.positive == cond.positive:
+            region.positive = ""  # skip prompt already covered in global prompt
+            continue
+
+        mask_diff = Image.mask_subtract(region.mask, mask)
+        average = Image.scale(region.mask, Extent(1, 1)).pixel(0, 0)
+        covering = isinstance(average, tuple) and average[0] >= 10
+        if not covering:
+            log.debug(f"removing prompt: {region.positive}")
+            region.positive = ""
+            region.negative = ""
+        else:
+            prompts.append({
+                "positive": region.positive,
+                "negative": region.negative,
+                "score": average[0],
+            })
+
+    prompts.sort(key=lambda x: x.get("score"), reverse=True)
+
+    positive = "\n".join(map(lambda x: x.get("positive"), prompts))
+    positive = merge_prompt(positive, cond.positive)
+    negative = "\n".join(chain(map(lambda x: x.get("negative"), prompts), [cond.negative]))
+
+    return positive, negative
+
+
 def refine_region(
     w: ComfyWorkflow,
     images: ImageInput,
@@ -750,7 +757,8 @@ def refine_region(
     in_mask = w.load_mask(ensure(images.initial_mask))
     in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
+    region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
+    prompt_pos, prompt_neg = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
     if inpaint.use_inpaint_model and models.version is SDVersion.sd15:
         cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     positive, negative = apply_control(
@@ -774,7 +782,7 @@ def refine_region(
         inpaint_model, positive, negative, latent, **_sampler_params(sampling), two_pass=False
     )
     out_image = scale_refine_and_decode(
-        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model, vae, models
+        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model, clip, vae, models, False
     )
     out_image = scale_to_target(extent, w, out_image, models)
     if extent.target != inpaint.target_bounds.extent:
