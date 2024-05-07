@@ -648,10 +648,10 @@ def inpaint(
     if extent.refinement_scaling in [ScaleMode.upscale_small, ScaleMode.upscale_quality]:
         if params.use_single_region:
             region_pos, region_neg = find_region_prompts(cond_orig, images.initial_mask)
-            positive_up, negative_up = encode_attention_text_prompt(w, cond_orig, region_pos, region_neg, clip)
+            positive_up, negative_up = encode_attention_text_prompt(w, cond_orig, region_pos, region_neg, clip, models)
         else:
-            model_orig, cond_orig, upscale_extent, applied_attention = apply_attention(w, model_orig, cond_orig, clip, upscale_extent, "desired")
-            positive_up, negative_up = encode_text_prompt(w, cond_orig, clip)
+            model_orig, cond_orig, upscale_extent, applied_attention = apply_attention(w, model_orig, cond_orig, clip, upscale_extent, models, "desired")
+            positive_up, negative_up = encode_text_prompt(w, cond_orig, clip, models)
 
         if extent.refinement_scaling is ScaleMode.upscale_small:
             upscaler = models.upscale[UpscalerName.fast_2x]
