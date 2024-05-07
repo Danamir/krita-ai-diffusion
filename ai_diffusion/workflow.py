@@ -279,8 +279,8 @@ def apply_attention(
     cond: Conditioning,
     clip: Output,
     extent: ScaledExtent,
+    models: ModelDict,
     extent_name: str = "initial",
-    models: ModelDict = None,
 ):
     if not cond.regions:
         return model, cond, extent, False
@@ -456,7 +456,7 @@ def scale_refine_and_decode(
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
     if use_attention:
-        model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, "desired", models)
+        model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models, "desired")
 
     if mode is ScaleMode.upscale_small:
         upscaler = models.upscale[UpscalerName.fast_2x]
@@ -698,7 +698,7 @@ def refine(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
-    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models=models)
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
@@ -774,8 +774,8 @@ def refine_region(
     model = w.differential_diffusion(model)
     model = apply_ip_adapter(w, model, cond.control, models)
 
-    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models=models)
-    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip)
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
 
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
