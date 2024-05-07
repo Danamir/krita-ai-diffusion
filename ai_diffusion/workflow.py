@@ -278,18 +278,20 @@ def apply_attention(
     model: Output,
     cond: Conditioning,
     clip: Output,
-    extent: Extent,
-    models: ModelDict,
+    extent: ScaledExtent,
+    extent_name: str = "initial",
+    models: ModelDict = None,
 ):
     if not cond.regions:
-        return model, cond
+        return model, cond, extent, False
 
-    base_mask = w.solid_mask(extent, 0.0)
+    extent = attention_extent(extent)
+    base_mask = w.solid_mask(getattr(extent, extent_name), 0.0)
     conds: list[Output] = []
     masks: list[Output] = []
 
     for region in reversed(cond.regions):
-        mask = w.scale_mask(region.load_mask(w), extent)
+        mask = w.scale_mask(region.load_mask(w), getattr(extent, extent_name))
         masks.append(mask)
         if region.positive == cond.positive:
             positive = region.positive.replace("{prompt}", "")
@@ -305,7 +307,7 @@ def apply_attention(
 
     model = w.apply_attention_couple(model, base_mask, conds, masks)
     cond.positive = cond.positive.replace("{prompt}", "")
-    return model, cond
+    return model, cond, extent, True
 
 
 def apply_control(
@@ -453,6 +455,9 @@ def scale_refine_and_decode(
         decoded = w.vae_decode(vae, latent)
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
+    if use_attention:
+        model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, "desired", models)
+
     if mode is ScaleMode.upscale_small:
         upscaler = models.upscale[UpscalerName.fast_2x]
     else:
@@ -466,15 +471,22 @@ def scale_refine_and_decode(
     upscale = w.vae_encode(vae, upscale)
     params = _sampler_params(sampling, strength=0.4)
 
-    if use_attention:
-        model, cond = apply_attention(w, model, cond, clip, extent.desired, models)
-
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.desired, models
     )
     result = w.ksampler_advanced(model, positive, negative, upscale, **params, two_pass=False)
     image = w.vae_decode(vae, result)
     return image
+
+
+def attention_extent(extent: ScaledExtent):
+    extent = ScaledExtent(
+        extent.input,
+        extent.initial.closest_multiple_of(64),
+        extent.desired.closest_multiple_of(64),
+        extent.target
+    )
+    return extent
 
 
 def generate(
@@ -489,7 +501,7 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
-    model, cond = apply_attention(w, model, cond, clip, extent.initial, models)
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
@@ -573,13 +585,18 @@ def inpaint(
 ):
     target_bounds = params.target_bounds
     extent = ScaledExtent.from_input(images.extent)  # for initial generation with large context
+
+    model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
+    model = w.differential_diffusion(model)
+    model_orig = copy(model)
+    cond_orig = copy(cond)
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+
     upscale_extent = ScaledExtent(  # after crop to the masked region
         Extent(0, 0), Extent(0, 0), crop_upscale_extent, target_bounds.extent
     )
     initial_bounds = extent.convert(target_bounds, "target", "initial")
 
-    model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
-    model = w.differential_diffusion(model)
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.initial_mask))
@@ -600,8 +617,9 @@ def inpaint(
     in_image = fill_masked(w, in_image, in_mask, params.fill, models)
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
-    region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
-    positive, negative = encode_attention_text_prompt(w, cond_base, region_pos, region_neg, clip, models)
+    # region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
+    # positive, negative = encode_attention_text_prompt(w, cond_base, region_pos, region_neg, clip, models)
+    positive, negative = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
         w, positive, negative, cond_base.control, extent.initial, models
     )
@@ -635,7 +653,7 @@ def inpaint(
         latent = w.vae_encode(vae, upscale)
         latent = w.set_latent_noise_mask(latent, cropped_mask)
 
-        cond_upscale = cond.copy()
+        cond_upscale = cond_orig.copy()
         cond_upscale.crop(target_bounds)
         if params.use_inpaint_model and models.version is SDVersion.sd15:
             cond_upscale.control.append(
@@ -646,7 +664,7 @@ def inpaint(
         positive_up, negative_up = apply_control(
             w, positive_up, negative_up, cond_upscale.control, res, models
         )
-        out_latent = w.ksampler_advanced(model, positive_up, negative_up, latent, **sampler_params, two_pass=False)
+        out_latent = w.ksampler_advanced(model_orig, positive_up, negative_up, latent, **sampler_params, two_pass=False)
         out_image = w.vae_decode(vae, out_latent)
         out_image = scale_to_target(upscale_extent, w, out_image, models)
     else:
@@ -680,7 +698,7 @@ def refine(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
-    model, cond = apply_attention(w, model, cond, clip, extent.initial, models)
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models=models)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
@@ -755,13 +773,18 @@ def refine_region(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = w.differential_diffusion(model)
     model = apply_ip_adapter(w, model, cond.control, models)
+
+    model, cond, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models=models)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip)
+
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.initial_mask))
     in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
-    prompt_pos, prompt_neg = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
+    # region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
+    # prompt_pos, prompt_neg = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
+
     if inpaint.use_inpaint_model and models.version is SDVersion.sd15:
         cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
     positive, negative = apply_control(
