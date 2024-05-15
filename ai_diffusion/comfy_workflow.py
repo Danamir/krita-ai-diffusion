@@ -412,7 +412,7 @@ class ComfyWorkflow:
         )
 
     def apply_self_attention_guidance(self, model: Output):
-        return self.add("SelfAttentionGuidance", 1, model=model)
+        return self.add("SelfAttentionGuidance", 1, model=model, scale=0.5, blur_sigma=2.0)
 
     def inpaint_preprocessor(self, image: Output, mask: Output):
         return self.add("InpaintPreprocessor", 1, image=image, mask=mask)
@@ -477,14 +477,14 @@ class ComfyWorkflow:
             height=bounds.height,
         )
 
-    def scale_image(self, image: Output, extent: Extent):
+    def scale_image(self, image: Output, extent: Extent, method="lanczos"):
         return self.add(
             "ImageScale",
             1,
             image=image,
             width=extent.width,
             height=extent.height,
-            upscale_method="lanczos",
+            upscale_method=method,
             crop="disabled",
         )
 
@@ -526,7 +526,7 @@ class ComfyWorkflow:
 
     def scale_mask(self, mask: Output, extent: Extent):
         img = self.mask_to_image(mask)
-        scaled = self.scale_image(img, extent)
+        scaled = self.scale_image(img, extent, method="bilinear")
         return self.image_to_mask(scaled)
 
     def image_to_mask(self, image: Output):
@@ -558,7 +558,7 @@ class ComfyWorkflow:
     def blur_masked(self, image: Output, mask: Output, blur: int, falloff: int = 0):
         return self.add("INPAINT_MaskedBlur", 1, image=image, mask=mask, blur=blur, falloff=falloff)
 
-    def denoise_to_compositing_mask(self, mask: Output, offset=0.15, threshold=0.25):
+    def denoise_to_compositing_mask(self, mask: Output, offset=0.05, threshold=0.35):
         return self.add(
             "INPAINT_DenoiseToCompositingMask", 1, mask=mask, offset=offset, threshold=threshold
         )
