@@ -326,9 +326,6 @@ class ComfyWorkflow:
     def conditioning_combine(self, a: Output, b: Output):
         return self.add("ConditioningCombine", 1, conditioning_1=a, conditioning_2=b)
 
-    def attention_mask(self, image: Output):
-        return self.add("ImageToMask", 1, image=image, channel="red")
-
     def attention_mask_composite(self, destination: Output, source: Output, operation: str):
         return self.add(
             "MaskComposite",
@@ -534,9 +531,6 @@ class ComfyWorkflow:
     def invert_image(self, image: Output):
         return self.add("ImageInvert", 1, image=image)
 
-    def invert_mask(self, mask: Output):
-        return self.add("InvertMask", 1, mask=mask)
-
     def batch_image(self, batch: Output, image: Output):
         return self.add("ImageBatch", 1, image1=batch, image2=image)
 
@@ -602,17 +596,6 @@ class ComfyWorkflow:
         if self._run_mode is ComfyRunMode.runtime:
             return self.add("ETN_InjectImage", 1, id=self._add_image(image))
         return self.add("ETN_LoadImageBase64", 1, image=image.to_base64())
-
-    def load_image_mask(self, image: Image):
-        if self._run_mode is ComfyRunMode.runtime:
-            mask = self.add("ETN_InjectImage", 2, id=self._add_image(image))[1]
-        else:
-            mask = self.add("ETN_LoadImageBase64", 2, image=image.to_base64())[1]
-
-        mask = self.invert_mask(mask)
-        img = self.add("MaskToImage", 1, mask=mask)
-        mask = self.add("ImageToMask", 1, image=img, channel="red")
-        return mask
 
     def load_mask(self, mask: Image):
         if self._run_mode is ComfyRunMode.runtime:
