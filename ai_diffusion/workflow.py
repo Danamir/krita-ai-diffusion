@@ -284,10 +284,8 @@ def apply_attention(
     extent_name: str = "initial",
 ):
     if not cond.regions:
-        return model, extent, False
+        return model, False
 
-    extent = attention_extent(extent)
-    base_mask = w.solid_mask(getattr(extent, extent_name), 0.0)
     conds: list[Output] = []
     masks: list[Output] = []
 
@@ -297,8 +295,8 @@ def apply_attention(
 
         conds.append(encode_attention_text_prompt(w, cond, region.positive, None, clip, models)[0])
 
-    model = w.apply_attention_couple(model, base_mask, conds, masks)
-    return model, extent, True
+    model = w.apply_attention_couple(model, conds, masks)
+    return model, True
 
 
 def apply_control(
@@ -447,7 +445,7 @@ def scale_refine_and_decode(
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
     if use_attention:
-        model, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models, "desired")
+        model, applied_attention = apply_attention(w, model, cond, clip, extent, models, "desired")
 
     if mode is ScaleMode.upscale_small:
         upscaler = models.upscale[UpscalerName.fast_2x]
@@ -470,16 +468,6 @@ def scale_refine_and_decode(
     return image
 
 
-def attention_extent(extent: ScaledExtent):
-    extent = ScaledExtent(
-        extent.input,
-        extent.initial.closest_multiple_of(64),
-        extent.desired.closest_multiple_of(64),
-        extent.target
-    )
-    return extent
-
-
 def generate(
     w: ComfyWorkflow,
     checkpoint: CheckpointInput,
@@ -492,7 +480,7 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
-    model, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+    model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
@@ -582,7 +570,7 @@ def inpaint(
     model_orig = copy(model)
 
     if not params.use_single_region:
-        model, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+        model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
 
     upscale_extent = ScaledExtent(  # after crop to the masked region
         Extent(0, 0), Extent(0, 0), crop_upscale_extent, target_bounds.extent
@@ -639,7 +627,7 @@ def inpaint(
             region_pos, region_neg = find_region_prompts(cond, images.initial_mask)
             positive_up, negative_up = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
         else:
-            model_orig, upscale_extent, applied_attention = apply_attention(w, model_orig, cond, clip, upscale_extent, models, "desired")
+            model_orig, applied_attention = apply_attention(w, model_orig, cond, clip, upscale_extent, models, "desired")
             positive_up, negative_up = encode_text_prompt(w, cond, clip, models)
 
         if extent.refinement_scaling is ScaleMode.upscale_small:
@@ -700,7 +688,7 @@ def refine(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
-    model, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+    model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
@@ -782,7 +770,7 @@ def refine_region(
         prompt_pos, prompt_neg = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
         applied_attention = False
     else:
-        model, extent, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+        model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
         prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
 
     in_image = w.load_image(ensure(images.initial_image))
