@@ -325,7 +325,7 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
 
     # Get region masks. Filter out regions with:
     # * no content (empty mask)
-    # * less than 10% overlap (estimate based on bounding box)
+    # * less than 5% overlap (estimate based on bounding box)
     result_regions: list[tuple[RegionInput, JobRegion]] = []
     for layer, region in layer_regions:
         layer_bounds = layer.compute_bounds()
@@ -334,7 +334,7 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
             continue
 
         overlap_rough = Bounds.intersection(bounds, layer_bounds).area / bounds.area
-        if overlap_rough < 0.1:
+        if overlap_rough < 0.05:
             print(f"Skipping region {region.positive[:10]}: overlap is {overlap_rough}")
             continue
 
@@ -360,8 +360,8 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
             print(f"Using single region {region.positive[:10]}: coverage is {coverage}")
             result.control += region.control
             return result, [job_region]
-        elif coverage < 0.1:
-            # Region has less than 10% coverage, remove it.
+        elif coverage < 0.05:
+            # Region has less than 5% coverage, remove it.
             print(f"Skipping region {region.positive[:10]}: coverage is {coverage}")
             result_regions.pop(i)
         else:
