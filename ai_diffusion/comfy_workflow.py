@@ -610,6 +610,25 @@ class ComfyWorkflow:
     def save_image(self, image: Output, prefix: str):
         return self.add("SaveImage", 1, images=image, filename_prefix=prefix)
 
+    def create_tile_layout(self, image: Output, tile_size: int, padding: int, blending: int):
+        return self.add(
+            "ETN_TileLayout",
+            1,
+            image=image,
+            min_tile_size=tile_size,
+            padding=padding,
+            blending=blending,
+        )
+
+    def extract_image_tile(self, image: Output, layout: Output, index: int):
+        return self.add("ETN_ExtractImageTile", 1, image=image, layout=layout, index=index)
+
+    def merge_image_tile(self, image: Output, layout: Output, index: int, tile: Output):
+        return self.add("ETN_MergeImageTile", 1, layout=layout, index=index, tile=tile, image=image)
+
+    def generate_tile_mask(self, layout: Output, index: int):
+        return self.add("ETN_GenerateTileMask", 1, layout=layout, index=index)
+
     def estimate_pose(self, image: Output, resolution: int):
         feat = dict(detect_hand="enable", detect_body="enable", detect_face="enable")
         mdls = dict(bbox_detector="yolox_l.onnx", pose_estimator="dw-ll_ucoco_384.onnx")
@@ -617,54 +636,3 @@ class ComfyWorkflow:
             # use smaller model, but it requires onnxruntime, see #630
             mdls["bbox_detector"] = "yolo_nas_l_fp16.onnx"
         return self.add("DWPreprocessor", 1, image=image, resolution=resolution, **feat, **mdls)
-
-    def upscale_tiled(
-        self,
-        image: Output,
-        model: Output,
-        vae: Output,
-        positive: Output,
-        negative: Output,
-        upscale_model: Output,
-        original_extent: Extent,
-        factor: float,
-        tile_extent: Extent,
-        steps: int,
-        cfg: float,
-        sampler: str,
-        scheduler: str,
-        denoise: float,
-        seed=-1,
-    ):
-        target_extent = original_extent * factor
-        tiles_w = int(math.ceil(target_extent.width / tile_extent.width))
-        tiles_h = int(math.ceil(target_extent.height / tile_extent.height))
-        self.sample_count += 4 + tiles_w * tiles_h * steps  # approx, ignores padding
-        return self.add(
-            "UltimateSDUpscale",
-            1,
-            image=image,
-            model=model,
-            positive=positive,
-            negative=negative,
-            vae=vae,
-            upscale_model=upscale_model,
-            upscale_by=factor,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            denoise=denoise,
-            tile_width=tile_extent.width,
-            tile_height=tile_extent.height,
-            mode_type="Linear",
-            mask_blur=8,
-            tile_padding=32,
-            seam_fix_mode="None",
-            seam_fix_denoise=1.0,
-            seam_fix_width=64,
-            seam_fix_mask_blur=8,
-            seam_fix_padding=16,
-            force_uniform_tiles="enable",
-        )

@@ -36,13 +36,6 @@ required_custom_nodes = [
         ["IPAdapterModelLoader", "IPAdapter"],
     ),
     CustomNode(
-        "Ultimate SD Upscale",
-        "ComfyUI_UltimateSDUpscale",
-        "https://github.com/Acly/krita-ai-diffusion/releases/download/v0.1.0/ComfyUI_UltimateSDUpscale-6ea48202a76ccf5904ddfa85f826efa80dd50520-repack.zip",
-        "6ea48202a76ccf5904ddfa85f826efa80dd50520",
-        ["UltimateSDUpscale"],
-    ),
-    CustomNode(
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
@@ -573,6 +566,15 @@ optional_models = [
         },
     ),
     ModelResource(
+        "ControlNet Unblur (XL)",
+        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur),
+        {
+            Path(
+                "models/controlnet/TTPLANET_Controlnet_Tile_realistic_v2_fp16.safetensors"
+            ): "https://huggingface.co/TTPlanet/TTPLanet_SDXL_Controlnet_Tile_Realistic/resolve/main/TTPLANET_Controlnet_Tile_realistic_v2_fp16.safetensors",
+        },
+    ),
+    ModelResource(
         "IP-Adapter Face (XL)",
         ResourceId(ResourceKind.ip_adapter, SDVersion.sdxl, ControlMode.face),
         {
@@ -705,7 +707,7 @@ _control_text = {
     ControlMode.normal: "Normal",
     ControlMode.pose: "Pose",
     ControlMode.segmentation: "Segment",
-    ControlMode.blur: "Blur",
+    ControlMode.blur: "Unblur",
     ControlMode.stencil: "Stencil",
     ControlMode.hands: "Hands",
 }
@@ -752,7 +754,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose): ["control-lora-openposexl2-rank", "thibaud_xl_openpose"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.segmentation): ["control_v11p_sd15_seg", "control_lora_rank128_v11p_sd15_seg"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.blur): ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur): ["ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur): ["ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic", "ttplanet_controlnet_tile_realistic"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.stencil): ["control_v1p_sd15_qrcode_monster"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.hands): ["control_sd15_inpaint_depth_hand"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.hands): ["control-lora-depth-rank", "sai_xl_depth_"],
