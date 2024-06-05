@@ -9,22 +9,12 @@ from itertools import product
 from pathlib import Path
 
 from .settings import settings
-from .util import is_linux, client_logger as log
+from .util import clamp, is_linux, client_logger as log
 
 
 def multiple_of(number, multiple):
     """Round up to the nearest multiple of a number."""
     return ((number + multiple - 1) // multiple) * multiple
-
-
-def closest_multiple_of(number, multiple):
-    """Round up to the nearest multiple of a number."""
-    num1 = ((number + multiple - 1) // multiple) * multiple
-    num2 = ((number - multiple - 1) // multiple) * multiple
-    if abs(number - num1) < abs(number - num2):
-        return num1
-    else:
-        return num2
 
 
 class Extent(NamedTuple):
@@ -36,11 +26,6 @@ class Extent(NamedTuple):
 
     def multiple_of(self, multiple: int):
         return Extent(multiple_of(self.width, multiple), multiple_of(self.height, multiple))
-
-    def closest_multiple_of(self, multiple: int):
-        return Extent(
-            closest_multiple_of(self.width, multiple), closest_multiple_of(self.height, multiple)
-        )
 
     def is_multiple_of(self, multiple: int):
         return self.width % multiple == 0 and self.height % multiple == 0
@@ -74,16 +59,26 @@ class Extent(NamedTuple):
         return self.width * self.height
 
     @staticmethod
+    def from_points(start: Point, end: Point):
+        return Extent(end.x - start.x, end.y - start.y)
+
+    @staticmethod
     def from_qsize(qsize: QSize):
         return Extent(qsize.width(), qsize.height())
 
     @staticmethod
-    def largest(a, b):
+    def largest(a: "Extent", b: "Extent"):
         return a if a.width * a.height > b.width * b.height else b
 
     @staticmethod
     def ratio(a: "Extent", b: "Extent"):
         return sqrt(a.pixel_count / b.pixel_count)
+
+    def __add__(self, other: "Extent"):
+        return Extent(self.width + other.width, self.height + other.height)
+
+    def __sub__(self, other: "Extent"):
+        return Extent(self.width - other.width, self.height - other.height)
 
     def __mul__(self, scale: float | SupportsIndex):
         if isinstance(scale, (float, int)):
@@ -94,11 +89,47 @@ class Extent(NamedTuple):
         return Extent(self.width // div, self.height // div)
 
 
+class Point(NamedTuple):
+    x: int
+    y: int
+
+    def __add__(self, other: "Point | Extent"):
+        if isinstance(other, Extent):
+            other = Point(other.width, other.height)
+        return Point(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Point"):
+        return Point(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, other: "Point"):
+        return Point(self.x * other.x, self.y * other.y)
+
+    def __floordiv__(self, div: int):
+        return Point(self.x // div, self.y // div)
+
+    def __eq__(self, other):
+        return isinstance(other, Point) and self.x == other.x and self.y == other.y
+
+    def clamp(self, bounds: Bounds):
+        return Point(
+            clamp(self.x, bounds.x, bounds.x + bounds.width),
+            clamp(self.y, bounds.y, bounds.y + bounds.height),
+        )
+
+
 class Bounds(NamedTuple):
     x: int
     y: int
     width: int
     height: int
+
+    @staticmethod
+    def from_extent(extent: Extent):
+        return Bounds(0, 0, extent.width, extent.height)
+
+    @staticmethod
+    def from_points(start: Point, end: Point):
+        return Bounds(start.x, start.y, end.x - start.x, end.y - start.y)
 
     @property
     def offset(self):
@@ -324,6 +355,8 @@ class Image:
 
     @staticmethod
     def scale(img: "Image", target: Extent):
+        if isinstance(img, DummyImage):
+            return DummyImage(target)
         mode = Qt.AspectRatioMode.IgnoreAspectRatio
         quality = Qt.TransformationMode.SmoothTransformation
         scaled = img._qimage.scaled(target.width, target.height, mode, quality)
@@ -494,6 +527,28 @@ class Image:
 
     def __eq__(self, other):
         return isinstance(other, Image) and self._qimage == other._qimage
+
+
+class DummyImage(Image):
+    _extent: Extent
+
+    def __init__(self, extent: Extent):
+        super().__init__(QImage())
+        self._extent = extent
+
+    @property
+    def width(self):
+        return self._extent.width
+
+    @property
+    def height(self):
+        return self._extent.height
+
+    def __eq__(self, other):
+        return isinstance(other, DummyImage) and self.extent == other.extent
+
+    def __hash__(self):
+        return hash(self.extent)
 
 
 class ImageCollection:

@@ -107,11 +107,20 @@ def batched(iterable, n):
         yield batch
 
 
+def clamp(value: int, min_value: int, max_value: int):
+    return max(min(value, max_value), min_value)
+
+
 def median_or_zero(values: Iterable[float]) -> float:
     try:
         return statistics.median(values)
     except statistics.StatisticsError:
         return 0
+
+
+def unique(seq: Sequence[T], key) -> list[T]:
+    seen = set()
+    return [x for x in seq if (k := key(x)) not in seen and not seen.add(k)]
 
 
 def encode_json(obj):

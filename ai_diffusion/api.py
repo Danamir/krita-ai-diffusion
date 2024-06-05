@@ -89,7 +89,8 @@ class ControlInput:
 
 @dataclass
 class RegionInput:
-    mask: Image
+    mask: Image | None
+    bounds: Bounds
     positive: str
     negative: str = ""
     control: list[ControlInput] = field(default_factory=list)
@@ -177,9 +178,12 @@ class WorkflowInput:
             return batch * extent.pixel_count * math.sqrt(extent.pixel_count) * steps
 
         base = 1 if ensure(self.models).version is SDVersion.sd15 else 2
-        steps = ensure(self.sampling).actual_steps
-        unit = cost_factor(2, Extent(1024, 1024), 20)
-        cost = cost_factor(self.batch_count, self.extent.desired, steps)
+        extent = self.extent.desired
+        if crop_extent := self.crop_upscale_extent:
+            extent = Extent.largest(self.extent.initial, crop_extent)
+        steps = max(8, ensure(self.sampling).actual_steps)
+        unit = cost_factor(2, Extent(1024, 1024), 24)
+        cost = cost_factor(self.batch_count, extent, steps)
         return base + round((10 * cost) / unit)
 
 

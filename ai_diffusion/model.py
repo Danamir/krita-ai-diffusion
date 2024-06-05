@@ -14,7 +14,7 @@ from .api import InpaintMode, InpaintParams, FillMode
 from .util import ensure, client_logger as log
 from .settings import settings
 from .network import NetworkError
-from .image import Extent, Image, Mask, Bounds
+from .image import Extent, Image, Mask, Bounds, DummyImage
 from .client import ClientMessage, ClientEvent, filter_supported_styles, resolve_sd_version
 from .document import Document, Layer, LayerType
 from .pose import Pose
@@ -47,7 +47,7 @@ class Model(QObject, ObservableProperties):
 
     workspace = Property(Workspace.generation, setter="set_workspace", persist=True)
     regions: "RootRegion"
-    style = Property(Styles.list().default, persist=True)
+    style = Property(Styles.list().default, setter="set_style", persist=True)
     strength = Property(1.0, persist=True)
     region_only = Property(False, persist=True)
     batch_count = Property(1, persist=True)
@@ -108,6 +108,16 @@ class Model(QObject, ObservableProperties):
             self.report_error(msg)
             return
 
+        try:
+            input, job_params = self._prepare_workflow()
+        except Exception as e:
+            self.report_error(util.log_error(e))
+            return
+        self.clear_error()
+        jobs = self.enqueue_jobs(input, JobKind.diffusion, job_params, self.batch_count)
+        eventloop.run(_report_errors(self, jobs))
+
+    def _prepare_workflow(self, dryrun=False):
         workflow_kind = WorkflowKind.generate if self.strength == 1.0 else WorkflowKind.refine
         client = self._connection.client
         image = None
@@ -115,35 +125,33 @@ class Model(QObject, ObservableProperties):
         inpaint = None
         region_layer = self.layers.root
         extent = self._doc.extent
+        region_layer = None
+
         mask = self._doc.create_mask_from_selection(
             **get_selection_modifiers(self.inpaint.mode, self.strength), min_size=64
         )
         bounds = Bounds(0, 0, *extent)
-        if mask is None:
-            # Check for region inpaint
-            target = Region.link_target(self.layers.active)
-            if self.regions.is_linked(target):
-                region_layer = target
+        if mask is None:  # Check for region inpaint
+            region_layer = self.regions.get_active_region_layer(use_parent=not self.region_only)
             if not region_layer.is_root:
+                bounds = region_layer.compute_bounds()
+                bounds = Bounds.pad(bounds, settings.selection_padding, multiple=64)
+                bounds = Bounds.clamp(bounds, extent)
+                mask_img = region_layer.get_mask(bounds)
+                mask = Mask(bounds, mask_img._qimage)
                 inpaint_mode = InpaintMode.add_object
-                if not (self.region_only or region_layer.parent_layer is None):
-                    region_layer = region_layer.parent_layer
-                if not region_layer.is_root:
-                    bounds = region_layer.compute_bounds()
-                    bounds = Bounds.pad(bounds, settings.selection_padding, multiple=64)
-                    bounds = Bounds.clamp(bounds, extent)
-                    mask_img = region_layer.get_mask(bounds)
-                    mask = Mask(bounds, mask_img._qimage)
-        else:
-            # Selection inpaint
+        else:  # Selection inpaint
             bounds = compute_bounds(extent, mask.bounds if mask else None, self.strength)
             bounds = self.inpaint.get_context(self, mask) or bounds
             inpaint_mode = self.resolve_inpaint_mode()
 
-        conditioning, job_regions = process_regions(self.regions, bounds, region_layer)
+        if not dryrun:
+            conditioning, job_regions = process_regions(self.regions, bounds, region_layer)
+        else:
+            conditioning, job_regions = ConditioningInput("", ""), []
 
         if mask is not None or self.strength < 1.0:
-            image = self._get_current_image(bounds)
+            image = self._get_current_image(bounds) if not dryrun else DummyImage(extent)
 
         if mask is not None:
             if workflow_kind is WorkflowKind.generate:
@@ -157,34 +165,25 @@ class Model(QObject, ObservableProperties):
             if inpaint_mode is InpaintMode.custom:
                 inpaint = self.inpaint.get_params(mask)
             else:
+                pos, ctrl = conditioning.positive, conditioning.control
                 inpaint = workflow.detect_inpaint(
-                    inpaint_mode,
-                    mask.bounds,
-                    sd_version,
-                    conditioning.positive,
-                    conditioning.control,
-                    self.strength,
+                    inpaint_mode, mask.bounds, sd_version, pos, ctrl, self.strength
                 )
-        try:
-            input = workflow.prepare(
-                workflow_kind,
-                image or extent,
-                conditioning,
-                self.style,
-                self.seed if self.fixed_seed else workflow.generate_seed(),
-                client.models,
-                client.performance_settings,
-                mask=mask,
-                strength=self.strength,
-                inpaint=inpaint,
-            )
-        except Exception as e:
-            self.report_error(util.log_error(e))
-            return
-        self.clear_error()
+
+        input = workflow.prepare(
+            workflow_kind,
+            image or extent,
+            conditioning,
+            self.style,
+            self.seed if self.fixed_seed else workflow.generate_seed(),
+            client.models,
+            client.performance_settings,
+            mask=mask,
+            strength=self.strength,
+            inpaint=inpaint,
+        )
         job_params = JobParams(bounds, conditioning.positive, regions=job_regions)
-        enqueue_jobs = self.enqueue_jobs(input, JobKind.diffusion, job_params, self.batch_count)
-        eventloop.run(_report_errors(self, enqueue_jobs))
+        return input, job_params
 
     async def enqueue_jobs(
         self, input: WorkflowInput, kind: JobKind, params: JobParams, count: int = 1
@@ -205,45 +204,69 @@ class Model(QObject, ObservableProperties):
         client = self._connection.client
         job.id = await client.enqueue(input, self.queue_front)
 
+    def _prepare_upscale_image(self, dryrun=False):
+        extent = self._doc.extent
+        image = self._doc.get_image(Bounds(0, 0, *extent)) if not dryrun else DummyImage(extent)
+        params = self.upscale.params
+        bounds = Bounds(0, 0, *self._doc.extent)
+        client = self._connection.client
+        upscaler = params.upscaler or client.models.default_upscaler
+        if params.use_prompt and not dryrun:
+            conditioning, job_regions = process_regions(self.regions, bounds, min_coverage=0)
+            for region in job_regions:
+                region.bounds = Bounds.scale(region.bounds, params.factor)
+        else:
+            conditioning, job_regions = ConditioningInput("4k uhd"), []
+        models = client.models.for_checkpoint(self.style.sd_checkpoint)
+        has_unblur = models.control.find(ControlMode.blur) is not None
+        if has_unblur and params.unblur_strength > 0.0:
+            control = ControlInput(ControlMode.blur, None, params.unblur_strength)
+            conditioning.control.append(control)
+
+        if params.use_diffusion:
+            input = workflow.prepare(
+                WorkflowKind.upscale_tiled,
+                image,
+                conditioning,
+                self.style,
+                params.seed,
+                client.models,
+                client.performance_settings,
+                strength=params.strength,
+                upscale_factor=params.factor,
+                upscale_model=upscaler,
+            )
+        else:
+            input = workflow.prepare_upscale_simple(image, upscaler, params.factor)
+
+        target_bounds = Bounds(0, 0, *params.target_extent)
+        name = f"[Upscale] {target_bounds.width}x{target_bounds.height}"
+        job_params = JobParams(target_bounds, name, seed=params.seed, regions=job_regions)
+        return input, job_params
+
     def upscale_image(self):
         try:
-            params = self.upscale.params
-            bounds = Bounds(0, 0, *self._doc.extent)
-            image = self._doc.get_image()
-            client = self._connection.client
-            upscaler = params.upscaler or client.models.default_upscaler
-            if params.use_prompt:
-                conditioning, _ = process_regions(self.regions, bounds, None)
-            else:
-                conditioning = ConditioningInput("4k uhd")
-            models = client.models.for_checkpoint(self.style.sd_checkpoint)
-            has_unblur = models.control.find(ControlMode.blur) is not None
-            if has_unblur and params.unblur_strength > 0.0:
-                control = ControlInput(ControlMode.blur, None, params.unblur_strength)
-                conditioning.control.append(control)
-
-            if params.use_diffusion:
-                inputs = workflow.prepare(
-                    WorkflowKind.upscale_tiled,
-                    image,
-                    conditioning,
-                    self.style,
-                    params.seed,
-                    client.models,
-                    client.performance_settings,
-                    strength=params.strength,
-                    upscale_factor=params.factor,
-                    upscale_model=upscaler,
-                )
-            else:
-                inputs = workflow.prepare_upscale_simple(image, upscaler, params.factor)
-            job = self.jobs.add_upscale(Bounds(0, 0, *self.upscale.target_extent), params.seed)
+            inputs, job_params = self._prepare_upscale_image()
+            job = self.jobs.add(JobKind.upscaling, job_params)
         except Exception as e:
             self.report_error(util.log_error(e))
             return
 
         self.clear_error()
         eventloop.run(_report_errors(self, self._enqueue_job(job, inputs)))
+
+    def estimate_cost(self, kind=JobKind.diffusion):
+        try:
+            if kind is JobKind.diffusion:
+                input, _ = self._prepare_workflow(dryrun=True)
+            elif kind is JobKind.upscaling:
+                input, _ = self._prepare_upscale_image(dryrun=True)
+            else:
+                return 0
+            return input.cost
+        except Exception as e:
+            util.client_logger.warning(f"Failed to estimate workflow cost: {type(e)} {str(e)}")
+            return 0
 
     def generate_live(self):
         eventloop.run(_report_errors(self, self._generate_live()))
@@ -469,8 +492,8 @@ class Model(QObject, ObservableProperties):
                 if job_region.bounds != params.bounds:
                     padding = int(0.1 * job_region.bounds.extent.average_side)
                     region_bounds = Bounds.pad(job_region.bounds, padding)
-                    region_bounds = Bounds.clamp(region_bounds, params.bounds.extent)
-                    region_image = Image.crop(image, region_bounds)
+                    region_bounds = Bounds.intersection(region_bounds, params.bounds)
+                    region_image = Image.crop(image, region_bounds.relative_to(params.bounds))
 
                 self.layers.create(
                     name, region_image, region_bounds, parent=region_layer, above=insert_pos
@@ -506,7 +529,7 @@ class Model(QObject, ObservableProperties):
             self._layer = None
         self._doc.resize(job.params.bounds.extent)
         self.upscale.target_extent_changed.emit(self.upscale.target_extent)
-        self.layers.create(job.params.prompt, job.results[0], job.params.bounds)
+        self.create_result_layer(job.results[0], job.params)
 
     def set_workspace(self, workspace: Workspace):
         if self.workspace is Workspace.live:
@@ -514,6 +537,16 @@ class Model(QObject, ObservableProperties):
         self._workspace = workspace
         self.workspace_changed.emit(workspace)
         self.modified.emit(self, "workspace")
+
+    def set_style(self, style: Style):
+        if style is not self._style:
+            if client := self._connection.client_if_connected:
+                styles = filter_supported_styles(Styles.list().filtered(), client)
+                if style not in styles:
+                    return
+            self._style = style
+            self.style_changed.emit(style)
+            self.modified.emit(self, "style")
 
     def generate_seed(self):
         self.seed = workflow.generate_seed()

@@ -179,14 +179,26 @@ class RootRegion(QObject, ObservableProperties):
         return self._active
 
     @active.setter
-    def active(self, region: Region | None):
+    def active(self, region: RootRegion | Region | None):
+        if isinstance(region, RootRegion):
+            region = None
         if self._active != region:
             self._active = region
             self.active_changed.emit(region)
+            self._track_layer(region)
 
     @property
     def active_or_root(self):
         return self.active or self
+
+    def get_active_region_layer(self, use_parent: bool):
+        result = self.layers.root
+        target = Region.link_target(self.layers.active)
+        if self.is_linked(target):
+            result = target
+        if use_parent and result.parent_layer is not None:
+            result = result.parent_layer
+        return result
 
     def add_control(self):
         self.active_or_root.control.add()
@@ -271,6 +283,15 @@ class RootRegion(QObject, ObservableProperties):
             elif self._model.workspace is model.Workspace.live:
                 self.active = None  # root region
 
+    def _track_layer(self, region: Region | None):
+        if region and region.first_layer:
+            layer, changed = self._get_active_layer()
+            if layer and not changed and not region.is_linked(layer):
+                target = region.first_layer
+                if target.type is LayerType.group:
+                    target = target.child_layers[-1]
+                self.layers.active = target
+
     def _update_group(self, layer: Layer):
         """If a layer is moved into a group, promote the region to non-destructive apply workflow."""
         if layer.type is not LayerType.group:
@@ -299,8 +320,9 @@ class RootRegion(QObject, ObservableProperties):
         return iter(self._regions)
 
 
-def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None = None):
-    use_all_regions = parent_layer is None  # eg. for tiled upscaling
+def process_regions(
+    root: RootRegion, bounds: Bounds, parent_layer: Layer | None = None, min_coverage=0.08
+):
     parent_region = None
     if parent_layer and not parent_layer.is_root:
         parent_region = root.find_linked(parent_layer)
@@ -316,7 +338,7 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
         control=[c.to_api(bounds) for c in root.control],
     )
 
-    # Check for regions linked to any child layers of the parent layer.
+    # Collect layers with linked regions. Optionally restrict to to child layers of a region.
     if parent_layer is not None:
         child_layers = parent_layer.child_layers
     else:
@@ -329,7 +351,7 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
 
     # Get region masks. Filter out regions with:
     # * no content (empty mask)
-    # * less than 5% overlap (estimate based on bounding box)
+    # * less than minimum overlap (estimate based on bounding box)
     result_regions: list[tuple[RegionInput, JobRegion]] = []
     for layer, region in layer_regions:
         layer_bounds = layer.compute_bounds()
@@ -337,13 +359,13 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
             print(f"Skipping empty region {layer.name}")
             continue
 
-        overlap_rough = Bounds.intersection(bounds, layer_bounds).area / bounds.area
-        if overlap_rough < 0.05 and not use_all_regions:
-            print(f"Skipping region {region.positive[:10]}: overlap is {overlap_rough}")
+        coverage_rough = Bounds.intersection(bounds, layer_bounds).area / bounds.area
+        if coverage_rough < 1.5 * min_coverage:
             continue
 
         region_result = RegionInput(
             layer.get_mask(bounds),
+            layer_bounds,
             workflow.merge_prompt(region.positive, root.positive),
             control=[c.to_api(bounds) for c in region.control],
         )
@@ -354,22 +376,22 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
     accumulated_mask = None
     for i in range(len(result_regions) - 1, -1, -1):
         region, job_region = result_regions[i]
+        assert region.mask is not None
         mask = region.mask
         if accumulated_mask is not None:
             mask = Image.mask_subtract(mask, accumulated_mask)
 
         coverage = mask.average()
-        if coverage > 0.9 and not use_all_regions:
+        if coverage > 0.9 and min_coverage > 0:
             # Single region covers (almost) entire image, don't use regional conditioning.
-            print(f"Using single region {region.positive[:10]}: coverage is {coverage}")
+            result.positive = workflow.merge_prompt(region.positive, root.positive)
             result.control += region.control
             return result, [job_region]
-        elif coverage < 0.05 and not use_all_regions:
-            # Region has less than 5% coverage, remove it.
-            print(f"Skipping region {region.positive[:10]}: coverage is {coverage}")
+        elif coverage < min_coverage:
+            # Region has less than minimum coverage, remove it.
             result_regions.pop(i)
         else:
-            # Initialize accumulated_mask if needed
+            # Accumulate mask for next region, and store modified mask.
             if accumulated_mask is None:
                 accumulated_mask = Image.copy(region.mask)
 
@@ -384,12 +406,14 @@ def process_regions(root: RootRegion, bounds: Bounds, parent_layer: Layer | None
     # If the region(s) don't cover the entire image, add a final region for the remaining area.
     assert accumulated_mask is not None, "Expecting at least one region mask"
     total_coverage = accumulated_mask.average()
-    if total_coverage < 1:
+    if total_coverage > 0.95:
+        # Almost fully covered, use the bottom region as the background.
+        result_regions[0][0].mask = None  # Region without mask fills remaining space
+    else:
         print(f"Adding background region: total coverage is {total_coverage}")
-        accumulated_mask.invert()
-        input = RegionInput(accumulated_mask, result.positive)
+        input = RegionInput(None, bounds, result.positive)
         job = JobRegion(parent_layer.id_string, "background", bounds, is_background=True)
-        result_regions.append((input, job))
+        result_regions.insert(0, (input, job))
 
     result.regions = [r for r, _ in result_regions]
     return result, [j for _, j in result_regions]

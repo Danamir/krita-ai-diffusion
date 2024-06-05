@@ -13,7 +13,7 @@ from . import resolution, resources
 from .api import ControlInput, ImageInput, CheckpointInput, SamplingInput, WorkflowInput, LoraInput
 from .api import ExtentInput, InpaintMode, InpaintParams, FillMode, ConditioningInput, WorkflowKind
 from .api import RegionInput
-from .image import Bounds, Extent, Image, Mask, multiple_of
+from .image import Bounds, Extent, Image, Mask, Point, multiple_of
 from .client import Client, ClientModels, ModelDict
 from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, get_inpaint_reference
@@ -21,7 +21,7 @@ from .resources import ControlMode, SDVersion, UpscalerName, ResourceKind
 from .settings import PerformanceSettings, settings
 from .text import merge_prompt, extract_loras
 from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Output, OutputNull
-from .util import ensure, median_or_zero, client_logger as log
+from .util import ensure, median_or_zero, unique, client_logger as log
 
 
 _pattern_lora = re.compile(r"\s*<lora:([^:<>]+)(?::(-?[^:<>]*))?>\s*", re.IGNORECASE)
@@ -50,9 +50,7 @@ def _sampling_from_style(style: Style, strength: float, is_live: bool):
         total_steps=total_steps or preset.steps,
     )
     if strength < 1.0:
-        # Unless we have something like a 1-step turbo model, ensure there are at least 4 steps
-        # even at very low strength with low total steps of 4-8 (like Lightning/LCM).
-        min_steps = min(4, total_steps)
+        min_steps = min(preset.minimum_steps, total_steps)
         result.total_steps, result.start_step = _apply_strength(strength, total_steps, min_steps)
     return result
 
@@ -61,7 +59,7 @@ def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[in
     start_at_step = round(steps * (1 - strength))
 
     if min_steps and steps - start_at_step < min_steps:
-        steps = math.floor(min_steps * 1 / strength)
+        steps = math.floor(min_steps / strength)
         start_at_step = steps - min_steps
 
     return steps, start_at_step
@@ -125,89 +123,111 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     return model, clip, vae
 
 
-class Control:
-    mode: ControlMode
-    image: Image | Output | None
-    mask: Mask | Output | None = None
-    strength: float = 1.0
-    range = (0.0, 1.0)
-
-    _original_extent: Extent | None = None
-    _scaled_extent: Extent | None = None
+class ImageOutput:
+    image: Image | None = None
+    is_mask: bool = False
+    _output: Output | None = None
     _scaled: Output | None = None
+    _scale: Extent | None = None
 
-    def __init__(
-        self,
-        mode: ControlMode,
-        image: Image | Output | None,
-        strength=1.0,
-        range: tuple[float, float] = (0.0, 1.0),
-        mask: None | Mask | Output = None,
-    ):
-        self.mode = mode
-        self.image = image
-        self.strength = strength
-        self.mask = mask
-        self.range = range
+    def __init__(self, image: Image | Output | None, is_mask: bool = False):
+        if isinstance(image, Output):
+            self._output = image
+        else:
+            self.image = image
+        self.is_mask = is_mask
 
-    @staticmethod
-    def from_input(i: ControlInput):
-        return Control(i.mode, i.image, i.strength, i.range)
-
-    def load_image(
+    def load(
         self,
         w: ComfyWorkflow,
         target_extent: Extent | None = None,
         default_image: Output | None = None,
     ):
-        self.image = self.image or default_image
-        assert self.image is not None
-        if isinstance(self.image, Image):
-            self._original_extent = self.image.extent
-            self.image = w.load_image(self.image)
-        if target_extent and self._original_extent != target_extent:
-            if not self._scaled or self._scaled_extent != target_extent:
-                self._scaled = w.scale_control_image(self.image, target_extent)
-                self._scaled_extent = target_extent
-            return self._scaled
-        return self.image
+        if self._output is None:
+            if self.image is None:
+                self._output = ensure(default_image)
+                if target_extent is not None:
+                    self._output = w.scale_image(self._output, target_extent)
+            elif self.is_mask:
+                self._output = w.load_mask(self.image)
+            else:
+                self._output = w.load_image(self.image)
+        if target_extent is None or self.image is None or self.image.extent == target_extent:
+            return self._output
 
-    def load_mask(self, w: ComfyWorkflow):
-        assert self.mask is not None
-        if isinstance(self.mask, Mask):
-            self.mask = w.load_mask(self.mask.to_image())
-        return self.mask
+        if self._scaled is None or self._scale != target_extent:
+            if self.is_mask:
+                self._scaled = w.scale_mask(self._output, target_extent)
+            else:
+                self._scaled = w.scale_control_image(self._output, target_extent)
+            self._scale = target_extent
+        return self._scaled
 
-    def __eq__(self, other):
-        if isinstance(other, Control):
-            return self.__dict__ == other.__dict__
-        return False
+    def crop(self, bounds: Bounds):
+        if self.image is not None:
+            self.image = Image.crop(self.image, bounds)
+            self._output = None
+            self._scale = None
+
+    def __bool__(self):
+        return self.image is not None
+
+
+@dataclass
+class Control:
+    mode: ControlMode
+    image: ImageOutput
+    mask: ImageOutput | None = None
+    strength: float = 1.0
+    range: tuple[float, float] = (0.0, 1.0)
+
+    @staticmethod
+    def from_input(i: ControlInput):
+        return Control(i.mode, ImageOutput(i.image), None, i.strength, i.range)
+
+
+class TextPrompt:
+    text: str
+    _output: Output | None = None
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None):
+        text = self.text
+        if text != "" and style_prompt:
+            text = merge_prompt(text, style_prompt)
+        if self._output is None:
+            self._output = w.clip_text_encode(clip, text)
+        return self._output
 
 
 @dataclass
 class Region:
-    mask: Image | Output
-    positive: str
-    negative: str = ""
+    mask: ImageOutput
+    bounds: Bounds
+    positive: TextPrompt
     control: list[Control] = field(default_factory=list)
 
     @staticmethod
     def from_input(i: RegionInput):
-        return Region(i.mask, i.positive, i.negative, [Control.from_input(c) for c in i.control])
+        control = [Control.from_input(c) for c in i.control]
+        mask = ImageOutput(i.mask, is_mask=True)
+        return Region(mask, i.bounds, TextPrompt(i.positive), control)
+
+    @property
+    def is_background(self):
+        return self.mask.image is None
 
     def copy(self):
-        return Region(self.mask, self.positive, self.negative, [copy(c) for c in self.control])
-
-    def load_mask(self, w: ComfyWorkflow):
-        if isinstance(self.mask, Image):
-            self.mask = w.load_mask(self.mask)
-        return self.mask
+        control = [copy(c) for c in self.control]
+        return Region(self.mask, self.bounds, self.positive, control)
 
 
 @dataclass
 class Conditioning:
-    positive: str
-    negative: str = ""
+    positive: TextPrompt
+    negative: TextPrompt
     control: list[Control] = field(default_factory=list)
     regions: list[Region] = field(default_factory=list)
     style_prompt: str = ""
@@ -215,8 +235,8 @@ class Conditioning:
     @staticmethod
     def from_input(i: ConditioningInput):
         return Conditioning(
-            i.positive,
-            i.negative,
+            TextPrompt(i.positive),
+            TextPrompt(i.negative),
             [Control.from_input(c) for c in i.control],
             [Region.from_input(r) for r in i.regions],
             i.style,
@@ -237,12 +257,11 @@ class Conditioning:
     def crop(self, bounds: Bounds):
         # Meant to be called during preperation, before adding inpaint layer.
         for control in self._all_control_layers:
-            assert isinstance(control.image, Image) and control.mask is None
-            control.image = Image.crop(control.image, bounds)
-
-    @property
-    def positive_merged(self):
-        return "\n".join(chain((r.positive for r in self.regions), [self.positive]))
+            assert isinstance(control.image, Image) and not control.mask
+            control.image.crop(bounds)
+        for region in self.regions:
+            assert isinstance(region.mask, Image)
+            region.mask.crop(bounds)
 
     @property
     def _all_control_layers(self):
@@ -259,7 +278,10 @@ def downscale_control_images(
             assert isinstance(control.image, Image)
             # Only scale if control image resolution matches canvas resolution
             if control.image.extent == original and control.mode is not ControlMode.canny_edge:
-                control.image = Image.scale(control.image, target)
+                if isinstance(control, ControlInput):
+                    control.image = Image.scale(control.image, target)
+                elif control.image.image:
+                    control.image.image = Image.scale(control.image.image, target)
 
 
 def downscale_all_control_images(cond: ConditioningInput, original: Extent, target: Extent):
@@ -269,49 +291,37 @@ def downscale_all_control_images(cond: ConditioningInput, original: Extent, targ
 
 
 def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, models: ModelDict):
-    prompt = cond.positive_merged
-    if prompt != "":
-        prompt = merge_prompt(prompt, cond.style_prompt)
-    positive = w.clip_text_encode(clip, prompt, models, split_conditioning=settings.split_conditioning_sdxl)
-    negative = w.clip_text_encode(clip, cond.negative, models, split_conditioning=settings.split_conditioning_sdxl)
+    positive = cond.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
+    negative = cond.negative.encode(w, clip, models, split_conditioning=settings.split_conditioning_sdxl)
     return positive, negative
 
 
-def encode_attention_text_prompt(
-    w: ComfyWorkflow, cond: Conditioning, positive: str, negative: str | None, clip: Output, models: ModelDict
+def apply_attention_mask(
+    w: ComfyWorkflow, model: Output, cond: Conditioning, clip: Output, target_extent: Extent | None, models: ModelDict
 ):
-    if positive != "":
-        positive = merge_prompt(positive, cond.style_prompt)
-    positive_cond = w.clip_text_encode(clip, positive, models, split_conditioning=settings.split_conditioning_sdxl)
-    negative_cond = OutputNull
-    if negative is not None:
-        negative_cond = w.clip_text_encode(clip, negative, models, split_conditioning=settings.split_conditioning_sdxl)
-    return positive_cond, negative_cond
+    if len(cond.regions) == 0:
+        return model
 
+    if len(cond.regions) == 1:
+        region = cond.regions[0]
+        cond.positive = region.positive
+        cond.control += region.control
+        return model
 
-def apply_attention(
-    w: ComfyWorkflow,
-    model: Output,
-    cond: Conditioning,
-    clip: Output,
-    extent: ScaledExtent,
-    models: ModelDict,
-    extent_name: str = "initial",
-):
-    if not cond.regions:
-        return model, False
+    bottom_region = cond.regions[0]
+    if bottom_region.is_background:
+        regions = w.background_region(bottom_region.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl))
+        remaining = cond.regions[1:]
+    else:
+        regions = w.background_region(cond.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl))
+        remaining = cond.regions
 
-    conds: list[Output] = []
-    masks: list[Output] = []
+    for region in remaining:
+        mask = region.mask.load(w, target_extent)
+        prompt = region.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
+        regions = w.define_region(regions, mask, prompt)
 
-    for region in reversed(cond.regions):
-        mask = w.scale_mask(region.load_mask(w), getattr(extent, extent_name))
-        masks.append(mask)
-
-        conds.append(encode_attention_text_prompt(w, cond, region.positive, None, clip, models)[0])
-
-    model = w.apply_attention_couple(model, conds, masks)
-    return model, True
+    return w.attention_mask(model, regions)
 
 
 def apply_control(
@@ -324,9 +334,10 @@ def apply_control(
 ):
     models = models.control
     for control in (c for c in control_layers if c.mode.is_control_net):
-        image = control.load_image(w, extent)
+        image = control.image.load(w, extent)
         if control.mode is ControlMode.inpaint:
-            image = w.inpaint_preprocessor(image, control.load_mask(w))
+            assert control.mask is not None, "Inpaint control requires a mask"
+            image = w.inpaint_preprocessor(image, control.mask.load(w))
         if control.mode.is_lines:  # ControlNet expects white lines on black background
             image = w.invert_image(image)
         controlnet = w.load_controlnet(models[control.mode])
@@ -359,7 +370,7 @@ def apply_ip_adapter(
                 ip_adapter,
                 clip_vision,
                 insight_face,
-                control.load_image(w),
+                control.image.load(w),
                 control.strength,
                 range=control.range,
             )
@@ -374,7 +385,7 @@ def apply_ip_adapter(
         for control in control_layers:
             if len(embeds) >= 5:
                 raise Exception(f"Too many control layers of type '{mode.text}' (maximum is 5)")
-            img = control.load_image(w)
+            img = control.image.load(w)
             embeds.append(w.encode_ip_adapter(img, control.strength, ip_adapter, clip_vision)[0])
             range = (min(range[0], control.range[0]), max(range[1], control.range[1]))
 
@@ -404,7 +415,7 @@ def scale(
     models: ModelDict,
 ):
     """Handles scaling images from `extent` to `target` resolution.
-    Uses either simple bilinear scaling or a fast upscaling model."""
+    Uses either lanczos or a fast upscaling model."""
 
     if mode is ScaleMode.none:
         return image
@@ -448,7 +459,6 @@ def scale_refine_and_decode(
     clip: Output,
     vae: Output,
     models: ModelDict,
-    use_attention: bool = False,
 ):
     """Handles scaling images from `initial` to `desired` resolution.
     If it is a substantial upscale, runs a high-res SD refinement pass.
@@ -459,8 +469,7 @@ def scale_refine_and_decode(
         decoded = w.vae_decode(vae, latent)
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
-    if use_attention:
-        model, applied_attention = apply_attention(w, model, cond, clip, extent, models, "desired")
+    model = apply_attention_mask(w, model, cond, clip, extent.desired)
 
     if mode is ScaleMode.upscale_small:
         upscaler = models.upscale[UpscalerName.fast_2x]
@@ -495,7 +504,7 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
-    model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+    model = apply_attention_mask(w, model, cond, clip, extent.initial)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
@@ -511,18 +520,7 @@ def generate(
         **_sampler_params(sampling)
     )
     out_image = scale_refine_and_decode(
-        extent,
-        w,
-        cond,
-        sampling,
-        out_latent,
-        prompt_pos,
-        prompt_neg,
-        model_orig,
-        clip,
-        vae,
-        models,
-        True,
+        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model_orig, clip, vae, models
     )
     out_image = scale_to_target(extent, w, out_image, models)
     w.send_image(out_image)
@@ -595,9 +593,6 @@ def inpaint(
     model = w.differential_diffusion(model)
     model_orig = copy(model)
 
-    if not params.use_single_region:
-        model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
-
     upscale_extent = ScaledExtent(  # after crop to the masked region
         Extent(0, 0), Extent(0, 0), crop_upscale_extent, target_bounds.extent
     )
@@ -611,26 +606,28 @@ def inpaint(
 
     cond_base = cond.copy()
     cond_base.downscale(extent.input, extent.initial)
+    model = apply_attention_mask(w, model, cond_base, clip, extent.initial)
+
     if params.use_reference:
         reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or in_image
-        cond_base.control.append(Control(ControlMode.reference, reference, 0.5, (0.2, 0.8)))
+        cond_base.control.append(
+            Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
+        )
     if params.use_inpaint_model and models.version is SDVersion.sd15:
-        cond_base.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
+        cond_base.control.append(
+            Control(ControlMode.inpaint, ImageOutput(in_image), ImageOutput(in_mask, is_mask=True))
+        )
     if params.use_condition_mask and len(cond_base.regions) == 0:
-        cond_base.regions.append(Region(in_mask, cond_base.positive, "", cond_base.control))
-        cond_base.positive = "."  # + style prompt
-        cond_base.control = []
+        focus_mask = ImageOutput(in_mask, is_mask=True)
+        base_prompt = TextPrompt(merge_prompt("", cond_base.style_prompt))
+        cond_base.regions = [
+            Region(ImageOutput(None), Bounds(0, 0, *extent.initial), base_prompt, []),
+            Region(focus_mask, initial_bounds, cond_base.positive, []),
+        ]
     in_image = fill_masked(w, in_image, in_mask, params.fill, models)
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
-    if params.use_single_region:
-        region_pos, region_neg = find_region_prompts(cond)
-        positive, negative = encode_attention_text_prompt(
-            w, cond_base, region_pos, region_neg, clip, models
-        )
-    else:
-        positive, negative = encode_text_prompt(w, cond, clip, models)
-
+    positive, negative = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
         w, positive, negative, cond_base.control, extent.initial, models
     )
@@ -651,17 +648,7 @@ def inpaint(
     )
 
     if extent.refinement_scaling in [ScaleMode.upscale_small, ScaleMode.upscale_quality]:
-        if params.use_single_region:
-            region_pos, region_neg = find_region_prompts(cond)
-            positive_up, negative_up = encode_attention_text_prompt(
-                w, cond, region_pos, region_neg, clip, models
-            )
-        else:
-            model_orig, applied_attention = apply_attention(
-                w, model_orig, cond, clip, upscale_extent, models, "desired"
-            )
-            positive_up, negative_up = encode_text_prompt(w, cond, clip, models)
-
+        model = model_orig
         if extent.refinement_scaling is ScaleMode.upscale_small:
             upscaler = models.upscale[UpscalerName.fast_2x]
         else:
@@ -677,12 +664,15 @@ def inpaint(
 
         cond_upscale = cond.copy()
         cond_upscale.crop(target_bounds)
-        if params.use_inpaint_model and models.version is SDVersion.sd15:
-            cond_upscale.control.append(
-                Control(ControlMode.inpaint, ensure(images.hires_image), mask=cropped_mask)
-            )
-
         res = upscale_extent.desired
+
+        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip)
+        model = apply_attention_mask(w, model, cond_upscale, clip, res)
+
+        if params.use_inpaint_model and models.version is SDVersion.sd15:
+            hires_image = ImageOutput(images.hires_image)
+            hires_mask = ImageOutput(cropped_mask, is_mask=True)
+            cond_upscale.control.append(Control(ControlMode.inpaint, hires_image, hires_mask))
         positive_up, negative_up = apply_control(
             w, positive_up, negative_up, cond_upscale.control, res, models
         )
@@ -722,7 +712,7 @@ def refine(
 ):
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
-    model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
+    model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
@@ -745,43 +735,6 @@ def refine(
     return w
 
 
-def find_region_prompts(cond: Conditioning):
-    prompts = []
-
-    for region in reversed(cond.regions):
-        if region.positive == cond.positive:
-            region.positive = ""  # skip prompt already covered in global prompt
-            continue
-
-        if isinstance(region.mask, Image):
-            average = Image.scale(region.mask, Extent(1, 1)).pixel(0, 0)
-        else:
-            average = (0, 0, 0, 0)
-
-        covering = isinstance(average, tuple) and average[0] >= 10
-        if not covering:
-            region.positive = ""
-            region.negative = ""
-        else:
-            prompts.append(
-                {
-                    "positive": region.positive,
-                    "negative": region.negative,
-                    "score": average[0] if isinstance(average, tuple) else average,
-                }
-            )
-
-    if not prompts:
-        return cond.positive_merged, cond.negative
-
-    prompts.sort(key=lambda x: x.get("score"), reverse=True)
-
-    positive = prompts[0].get("positive")
-    negative = prompts[0].get("negative")
-
-    return merge_prompt(positive, cond.positive), f"{negative}\n{cond.negative}"
-
-
 def refine_region(
     w: ComfyWorkflow,
     images: ImageInput,
@@ -797,16 +750,9 @@ def refine_region(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = w.differential_diffusion(model)
     model = apply_ip_adapter(w, model, cond.control, models)
-
     model_orig = copy(model)
-
-    if inpaint.use_single_region:
-        region_pos, region_neg = find_region_prompts(cond)
-        prompt_pos, prompt_neg = encode_attention_text_prompt(w, cond, region_pos, region_neg, clip, models)
-        applied_attention = False
-    else:
-        model, applied_attention = apply_attention(w, model, cond, clip, extent, models)
-        prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
+    model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
+    prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
 
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
@@ -814,7 +760,8 @@ def refine_region(
     in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
     if inpaint.use_inpaint_model and models.version is SDVersion.sd15:
-        cond.control.append(Control(ControlMode.inpaint, in_image, mask=in_mask))
+        c_mask = ImageOutput(in_mask, is_mask=True)
+        cond.control.append(Control(ControlMode.inpaint, ImageOutput(in_image), c_mask))
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.control, extent.initial, models
     )
@@ -836,18 +783,7 @@ def refine_region(
         inpaint_model, positive, negative, latent, **_sampler_params(sampling), two_pass=False
     )
     out_image = scale_refine_and_decode(
-        extent,
-        w,
-        cond,
-        sampling,
-        out_latent,
-        prompt_pos,
-        prompt_neg,
-        model_orig,
-        clip,
-        vae,
-        models,
-        applied_attention,
+        extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model_orig, clip, vae, models
     )
     out_image = scale_to_target(extent, w, out_image, models)
     if extent.target != inpaint.target_bounds.extent:
@@ -936,6 +872,52 @@ def upscale_simple(w: ComfyWorkflow, image: Image, model: str, factor: float):
     return w
 
 
+class TileLayout:
+    image_extent: Extent
+    tile_extent: Extent
+    min_size: int
+    padding: int
+    blending: int
+    tile_count: Extent
+
+    def __init__(self, extent: Extent, min_tile_size: int, strength: float):
+        self.image_extent = extent
+        self.min_size = min_tile_size
+        self.padding = round((16 + 64 * strength) / 8) * 8
+        self.blending = max(1, self.padding // 16) * 8
+        self.tile_count = self.image_extent // (min_tile_size - 2 * self.padding)
+
+        padded = extent + (self.tile_count - Extent(1, 1)) * 2 * self.padding
+        tile_extent = Extent(
+            math.ceil(padded.width / self.tile_count.width),
+            math.ceil(padded.height / self.tile_count.height),
+        )
+        self.tile_extent = tile_extent.multiple_of(8)
+
+    @property
+    def total_tiles(self):
+        return self.tile_count.width * self.tile_count.height
+
+    def start(self, coord: Point):
+        return Point(
+            coord.x * (self.tile_extent.width - self.padding),
+            coord.y * (self.tile_extent.height - self.padding),
+        )
+
+    def end(self, coord: Point):
+        end = self.start(coord) + self.tile_extent
+        return end.clamp(Bounds.from_extent(self.image_extent))
+
+    def coord(self, index: int):
+        # Note: this appears flipped compared to tile layout in tooling nodes, but
+        # that's because torch tensor uses [H x W] layout
+        return Point(index // self.tile_count.width, index % self.tile_count.height)
+
+    def bounds(self, index: int):
+        coord = self.coord(index)
+        return Bounds.from_points(self.start(coord), self.end(coord))
+
+
 def upscale_tiled(
     w: ComfyWorkflow,
     image: Image,
@@ -946,12 +928,8 @@ def upscale_tiled(
     upscale_model_name: str,
     models: ModelDict,
 ):
-    strength = sampling.actual_steps / sampling.total_steps
-    padding = round((16 + 64 * strength) / 8) * 8
-    blending = max(1, padding // 16) * 8
-    tile_size = extent.desired.width
-    tile_count = extent.initial // (tile_size - 2 * padding)
-    total_tiles = tile_count.width * tile_count.height
+    upscale_factor = extent.initial.width / extent.input.width
+    layout = TileLayout(extent.initial, extent.desired.width, sampling.denoise_strength)
 
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
@@ -965,23 +943,42 @@ def upscale_tiled(
         upscaled = in_image
     if extent.input != extent.initial:
         upscaled = w.scale_image(upscaled, extent.initial)
-    tile_layout = w.create_tile_layout(upscaled, tile_size, padding, blending)
+    tile_layout = w.create_tile_layout(upscaled, layout.min_size, layout.padding, layout.blending)
 
     def tiled_control(control: Control, index: int):
-        img = control.load_image(w, extent.initial, default_image=in_image)
+        img = control.image.load(w, extent.initial, default_image=in_image)
         img = w.extract_image_tile(img, tile_layout, index)
-        return Control(control.mode, img, control.strength, control.range)
+        return Control(control.mode, ImageOutput(img), None, control.strength, control.range)
+
+    def tiled_region(region: Region, index: int, tile_bounds: Bounds):
+        region_bounds = Bounds.scale(region.bounds, upscale_factor)
+        coverage = Bounds.intersection(tile_bounds, region_bounds).area / tile_bounds.area
+        if coverage > 0.1:
+            if region.mask:
+                mask = region.mask.load(w, extent.initial)
+                mask = w.extract_mask_tile(mask, tile_layout, index)
+                region.mask = ImageOutput(mask, is_mask=True)
+            return region
+        return None
 
     out_image = upscaled
-    for i in range(total_tiles):
+    for i in range(layout.total_tiles):
+        bounds = layout.bounds(i)
         tile_image = w.extract_image_tile(upscaled, tile_layout, i)
         tile_mask = w.generate_tile_mask(tile_layout, i)
-        latent = w.vae_encode(vae, tile_image)
-        latent = w.set_latent_noise_mask(latent, tile_mask)
+
+        tile_cond = cond.copy()
+        regions = [tiled_region(r, i, bounds) for r in tile_cond.regions]
+        tile_cond.regions = [r for r in regions if r is not None]
+        tile_model = apply_attention_mask(w, model, tile_cond, clip, None, models)
+
         control = [tiled_control(c, i) for c in cond.control]
         tile_pos, tile_neg = apply_control(w, positive, negative, control, None, models)
+
+        latent = w.vae_encode(vae, tile_image)
+        latent = w.set_latent_noise_mask(latent, tile_mask)
         sampler = w.ksampler_advanced(
-            model, tile_pos, tile_neg, latent, **_sampler_params(sampling)
+            tile_model, tile_pos, tile_neg, latent, **_sampler_params(sampling)
         )
         tile_result = w.vae_decode(vae, sampler)
         out_image = w.merge_image_tile(out_image, tile_layout, i, tile_result)
@@ -1019,21 +1016,14 @@ def prepare(
     i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, models.loras)
     i.conditioning.negative = merge_prompt(cond.negative, style.negative_prompt)
     i.conditioning.style = style.style_prompt
-    for region in i.conditioning.regions:
+    for idx, region in enumerate(i.conditioning.regions):
+        assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
         region.positive, region_loras = extract_loras(region.positive, models.loras)
-        extra_loras += [
-            region_lora
-            for region_lora in region_loras
-            if region_lora.name not in map(lambda x: x.name, extra_loras)
-        ]
+        extra_loras += region_loras
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models()
-    i.models.loras += [
-        extra_lora
-        for extra_lora in extra_loras
-        if extra_lora.name not in map(lambda x: x.name, i.models.loras)
-    ]
+    i.models.loras = unique(i.models.loras + extra_loras, key=lambda l: l.name)
     _check_server_has_models(i.models, models, style.name)
 
     sd_version = i.models.version = models.version_of(style.sd_checkpoint)

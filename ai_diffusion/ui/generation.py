@@ -28,7 +28,7 @@ from ..root import root
 from ..workflow import InpaintMode, FillMode
 from ..util import ensure
 from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget, QueueButton
-from .widget import create_wide_tool_button
+from .widget import GenerateButton, create_wide_tool_button
 from .region import RegionPromptWidget
 from . import theme
 
@@ -502,12 +502,11 @@ class GenerationWidget(QWidget):
         self.custom_inpaint = CustomInpaintWidget(self)
         layout.addWidget(self.custom_inpaint)
 
-        self.generate_button = QPushButton(self)
-        self.generate_button.setMinimumHeight(int(self.generate_button.sizeHint().height() * 1.2))
+        self.generate_button = GenerateButton(JobKind.diffusion, self)
 
         self.inpaint_mode_button = QToolButton(self)
         self.inpaint_mode_button.setArrowType(Qt.ArrowType.DownArrow)
-        self.inpaint_mode_button.setMinimumHeight(self.generate_button.minimumHeight())
+        self.inpaint_mode_button.setFixedHeight(self.generate_button.height() - 2)
         self.inpaint_mode_button.clicked.connect(self.show_inpaint_menu)
         self.generate_menu = self._create_generate_menu("generate")
         self.refine_menu = self._create_generate_menu("refine")
@@ -520,7 +519,7 @@ class GenerationWidget(QWidget):
         generate_layout.addWidget(self.inpaint_mode_button)
 
         self.queue_button = QueueButton(parent=self)
-        self.queue_button.setMinimumHeight(self.generate_button.minimumHeight())
+        self.queue_button.setFixedHeight(self.generate_button.height() - 2)
 
         actions_layout = QHBoxLayout()
         actions_layout.addLayout(generate_layout)
@@ -574,6 +573,7 @@ class GenerationWidget(QWidget):
             ]
             self.region_prompt.regions = model.regions
             self.custom_inpaint.model = model
+            self.generate_button.model = model
             self.queue_button.model = model
             self.history.model_ = model
             self.update_generate_button()
@@ -664,35 +664,34 @@ class GenerationWidget(QWidget):
                 if self.model.strength == 1.0:
                     if self.model.region_only:
                         self.generate_button.setIcon(theme.icon("generate-region"))
-                        self.generate_button.setText("Generate Region")
+                        self.generate_button.operation = "Generate Region"
                     else:
                         self.generate_button.setIcon(theme.icon("workspace-generation"))
-                        self.generate_button.setText("Generate")
+                        self.generate_button.operation = "Generate"
                 else:
                     if self.model.region_only:
                         self.generate_button.setIcon(theme.icon("refine-region"))
-                        self.generate_button.setText("Refine Region")
+                        self.generate_button.operation = "Refine Region"
                     else:
                         self.generate_button.setIcon(theme.icon("refine"))
-                        self.generate_button.setText("Refine")
+                        self.generate_button.operation = "Refine"
             else:
                 if self.model.strength == 1.0:
                     self.generate_button.setIcon(theme.icon("workspace-generation"))
-                    self.generate_button.setText("Generate")
+                    self.generate_button.operation = "Generate"
                 else:
                     self.generate_button.setIcon(theme.icon("refine"))
-                    self.generate_button.setText("Refine")
+                    self.generate_button.operation = "Refine"
         else:
             self.inpaint_mode_button.setVisible(True)
             self.custom_inpaint.setVisible(self.model.inpaint.mode is InpaintMode.custom)
             if self.model.strength == 1.0:
                 mode = self.model.resolve_inpaint_mode()
                 self.generate_button.setIcon(theme.icon(f"inpaint-{mode.name}"))
-                self.generate_button.setText(self._inpaint_text[mode])
+                self.generate_button.operation = self._inpaint_text[mode]
             else:
                 is_custom = self.model.inpaint.mode is InpaintMode.custom
                 self.generate_button.setIcon(
                     theme.icon("inpaint-custom" if is_custom else "refine")
                 )
-                self.generate_button.setText("Refine (Custom)" if is_custom else "Refine")
-        self.generate_button.setText(" " + self.generate_button.text())
+                self.generate_button.operation = "Refine (Custom)" if is_custom else "Refine"

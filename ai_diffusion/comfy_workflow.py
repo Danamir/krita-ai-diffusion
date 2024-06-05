@@ -326,30 +326,16 @@ class ComfyWorkflow:
     def conditioning_combine(self, a: Output, b: Output):
         return self.add("ConditioningCombine", 1, conditioning_1=a, conditioning_2=b)
 
-    def attention_mask_composite(self, destination: Output, source: Output, operation: str):
+    def background_region(self, conditioning: Output):
+        return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
+
+    def define_region(self, regions: Output, mask: Output, conditioning: Output):
         return self.add(
-            "MaskComposite",
-            1,
-            destination=destination,
-            source=source,
-            x=0,
-            y=0,
-            operation=operation,
+            "ETN_DefineRegion", 1, regions=regions, mask=mask, conditioning=conditioning
         )
 
-    def apply_attention_couple(self, model: Output, conds: list[Output], masks: list[Output]):
-        regions_list = None
-        for i in range(len(conds)):
-            regions_list = self.add(
-                "ETN_ListAppend",
-                output_count=1,
-                list=regions_list,
-                image=None,
-                mask=masks[i],
-                conditioning=conds[i],
-            )
-
-        return self.add("ETN_AttentionCouple", 1, model=model, regions=regions_list)
+    def attention_mask(self, model: Output, regions: Output):
+        return self.add("ETN_AttentionMask", 1, model=model, regions=regions)
 
     def apply_controlnet(
         self,
@@ -438,7 +424,7 @@ class ComfyWorkflow:
         )
 
     def apply_self_attention_guidance(self, model: Output):
-        return self.add("SelfAttentionGuidance", 1, model=model)
+        return self.add("SelfAttentionGuidance", 1, model=model, scale=0.5, blur_sigma=2.0)
 
     def inpaint_preprocessor(self, image: Output, mask: Output):
         return self.add("InpaintPreprocessor", 1, image=image, mask=mask)
@@ -503,14 +489,14 @@ class ComfyWorkflow:
             height=bounds.height,
         )
 
-    def scale_image(self, image: Output, extent: Extent):
+    def scale_image(self, image: Output, extent: Extent, method="lanczos"):
         return self.add(
             "ImageScale",
             1,
             image=image,
             width=extent.width,
             height=extent.height,
-            upscale_method="lanczos",
+            upscale_method=method,
             crop="disabled",
         )
 
@@ -552,7 +538,7 @@ class ComfyWorkflow:
 
     def scale_mask(self, mask: Output, extent: Extent):
         img = self.mask_to_image(mask)
-        scaled = self.scale_image(img, extent)
+        scaled = self.scale_image(img, extent, method="bilinear")
         return self.image_to_mask(scaled)
 
     def image_to_mask(self, image: Output):
@@ -584,7 +570,7 @@ class ComfyWorkflow:
     def blur_masked(self, image: Output, mask: Output, blur: int, falloff: int = 0):
         return self.add("INPAINT_MaskedBlur", 1, image=image, mask=mask, blur=blur, falloff=falloff)
 
-    def denoise_to_compositing_mask(self, mask: Output, offset=0.15, threshold=0.25):
+    def denoise_to_compositing_mask(self, mask: Output, offset=0.05, threshold=0.35):
         return self.add(
             "INPAINT_DenoiseToCompositingMask", 1, mask=mask, offset=offset, threshold=threshold
         )
@@ -622,6 +608,9 @@ class ComfyWorkflow:
 
     def extract_image_tile(self, image: Output, layout: Output, index: int):
         return self.add("ETN_ExtractImageTile", 1, image=image, layout=layout, index=index)
+
+    def extract_mask_tile(self, mask: Output, layout: Output, index: int):
+        return self.add("ETN_ExtractMaskTile", 1, mask=mask, layout=layout, index=index)
 
     def merge_image_tile(self, image: Output, layout: Output, index: int, tile: Output):
         return self.add("ETN_MergeImageTile", 1, layout=layout, index=index, tile=tile, image=image)
