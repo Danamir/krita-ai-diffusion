@@ -356,7 +356,6 @@ def process_regions(
     for layer, region in layer_regions:
         layer_bounds = layer.compute_bounds()
         if layer_bounds.area == 0:
-            print(f"Skipping empty region {layer.name}")
             continue
 
         coverage_rough = Bounds.intersection(bounds, layer_bounds).area / bounds.area
@@ -394,8 +393,6 @@ def process_regions(
             # Accumulate mask for next region, and store modified mask.
             if accumulated_mask is None:
                 accumulated_mask = Image.copy(region.mask)
-
-            # Accumulate mask for next region, and store modified mask.
             accumulated_mask = Image.mask_add(accumulated_mask, region.mask)
             region.mask = mask
 

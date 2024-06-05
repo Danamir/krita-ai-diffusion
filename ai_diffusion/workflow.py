@@ -1,30 +1,24 @@
 from __future__ import annotations
 
-import re
 from copy import copy
 from dataclasses import dataclass, field
-from itertools import chain
 from typing import Any
 import math
 import random
-import re
 
 from . import resolution, resources
 from .api import ControlInput, ImageInput, CheckpointInput, SamplingInput, WorkflowInput, LoraInput
 from .api import ExtentInput, InpaintMode, InpaintParams, FillMode, ConditioningInput, WorkflowKind
 from .api import RegionInput
 from .image import Bounds, Extent, Image, Mask, Point, multiple_of
-from .client import Client, ClientModels, ModelDict
+from .client import ClientModels, ModelDict
 from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, get_inpaint_reference
 from .resources import ControlMode, SDVersion, UpscalerName, ResourceKind
 from .settings import PerformanceSettings, settings
 from .text import merge_prompt, extract_loras
-from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Output, OutputNull
+from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Output
 from .util import ensure, median_or_zero, unique, client_logger as log
-
-
-_pattern_lora = re.compile(r"\s*<lora:([^:<>]+)(?::(-?[^:<>]*))?>\s*", re.IGNORECASE)
 
 
 def detect_inpaint_mode(extent: Extent, area: Bounds):
@@ -193,12 +187,12 @@ class TextPrompt:
     def __init__(self, text: str):
         self.text = text
 
-    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None):
+    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None, split_conditioning=False):
         text = self.text
         if text != "" and style_prompt:
             text = merge_prompt(text, style_prompt)
         if self._output is None:
-            self._output = w.clip_text_encode(clip, text)
+            self._output = w.clip_text_encode(clip, text, models, split_conditioning)
         return self._output
 
 
@@ -292,7 +286,7 @@ def downscale_all_control_images(cond: ConditioningInput, original: Extent, targ
 
 def encode_text_prompt(w: ComfyWorkflow, cond: Conditioning, clip: Output, models: ModelDict):
     positive = cond.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
-    negative = cond.negative.encode(w, clip, models, split_conditioning=settings.split_conditioning_sdxl)
+    negative = cond.negative.encode(w, clip, None, models, split_conditioning=settings.split_conditioning_sdxl)
     return positive, negative
 
 
@@ -469,7 +463,7 @@ def scale_refine_and_decode(
         decoded = w.vae_decode(vae, latent)
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
-    model = apply_attention_mask(w, model, cond, clip, extent.desired)
+    model = apply_attention_mask(w, model, cond, clip, extent.desired, models)
 
     if mode is ScaleMode.upscale_small:
         upscaler = models.upscale[UpscalerName.fast_2x]
@@ -504,7 +498,7 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
-    model = apply_attention_mask(w, model, cond, clip, extent.initial)
+    model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
@@ -606,7 +600,7 @@ def inpaint(
 
     cond_base = cond.copy()
     cond_base.downscale(extent.input, extent.initial)
-    model = apply_attention_mask(w, model, cond_base, clip, extent.initial)
+    model = apply_attention_mask(w, model, cond_base, clip, extent.initial, models)
 
     if params.use_reference:
         reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or in_image
@@ -666,8 +660,8 @@ def inpaint(
         cond_upscale.crop(target_bounds)
         res = upscale_extent.desired
 
-        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip)
-        model = apply_attention_mask(w, model, cond_upscale, clip, res)
+        positive_up, negative_up = encode_text_prompt(w, cond_upscale, clip, models)
+        model = apply_attention_mask(w, model, cond_upscale, clip, res, models)
 
         if params.use_inpaint_model and models.version is SDVersion.sd15:
             hires_image = ImageOutput(images.hires_image)

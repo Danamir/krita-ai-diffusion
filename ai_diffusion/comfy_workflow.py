@@ -24,7 +24,6 @@ class Output(NamedTuple):
 Output2 = Tuple[Output, Output]
 Output3 = Tuple[Output, Output, Output]
 Output4 = Tuple[Output, Output, Output, Output]
-OutputNull = Output(-1, -1)
 
 
 class ComfyWorkflow:
@@ -177,7 +176,7 @@ class ComfyWorkflow:
                 start_at_step=min(start_at_step, round(steps*0.6)),
                 end_at_step=round(steps*0.6),
                 cfg=cfg,
-                add_noise='enable',
+                add_noise="enable",
                 return_with_leftover_noise="enable",
             )
 
@@ -195,7 +194,7 @@ class ComfyWorkflow:
                 start_at_step=max(start_at_step, round(steps*0.6)),
                 end_at_step=steps,
                 cfg=cfg,
-                add_noise='disable',
+                add_noise="disable",
                 return_with_leftover_noise="disable",
             )
         else:
@@ -213,7 +212,7 @@ class ComfyWorkflow:
                 start_at_step=start_at_step,
                 end_at_step=steps,
                 cfg=cfg,
-                add_noise='enable',
+                add_noise="enable",
                 return_with_leftover_noise="disable",
             )
 

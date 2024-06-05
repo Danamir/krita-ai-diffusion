@@ -123,7 +123,6 @@ class Model(QObject, ObservableProperties):
         image = None
         inpaint_mode = InpaintMode.fill
         inpaint = None
-        region_layer = self.layers.root
         extent = self._doc.extent
         region_layer = None
 
@@ -620,7 +619,6 @@ class CustomInpaint(QObject, ObservableProperties):
         params = InpaintParams(self.mode, mask.bounds, self.fill)
         params.use_inpaint_model = self.use_inpaint
         params.use_condition_mask = self.use_prompt_focus
-        params.use_single_region = self.use_prompt_focus
         return params
 
     def get_context(self, model: Model, mask: Mask | None):
