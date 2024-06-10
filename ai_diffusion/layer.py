@@ -6,7 +6,7 @@ from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage
 
 from .image import Extent, Bounds, Image
-from .util import ensure, maybe
+from .util import ensure, maybe, client_logger as log
 from . import eventloop
 
 
@@ -106,7 +106,10 @@ class Layer(QObject):
 
     @property
     def bounds(self):
-        return Bounds.from_qrect(self._node.bounds())
+        # In Krita layer bounds can be larger than the image - this property clamps them
+        bounds = Bounds.from_qrect(self._node.bounds())
+        bounds = Bounds.restrict(bounds, Bounds(0, 0, *self._manager.image_extent))
+        return bounds
 
     @property
     def parent_layer(self):
@@ -125,32 +128,48 @@ class Layer(QObject):
         if time is None:
             data: QByteArray = self._node.projectionPixelData(*bounds)
         else:
-            data: QByteArray = self._node.pixelDataAtTime(time, *bounds)
+            data: QByteArray = self._node.pixelDataAtTime(*bounds, time)
         assert data is not None and data.size() >= bounds.extent.pixel_count * 4
         return Image(QImage(data, *bounds.extent, QImage.Format.Format_ARGB32))
 
-    def write_pixels(self, img: Image, bounds: Bounds | None = None, make_visible=True):
+    def write_pixels(
+        self,
+        img: Image,
+        bounds: Bounds | None = None,
+        make_visible=True,
+        keep_alpha=False,
+        silent=False,
+    ):
         layer_bounds = self.bounds
         bounds = bounds or layer_bounds
-        if layer_bounds != bounds and not layer_bounds.is_zero:
+        if keep_alpha:
+            composite = self.get_pixels(bounds)
+            composite.draw_image(img, keep_alpha=True)
+            img = composite
+        elif layer_bounds != bounds and not layer_bounds.is_zero:
             # layer.cropNode(*bounds)  <- more efficient, but clutters the undo stack
             blank = Image.create(layer_bounds.extent, fill=0)
             self._node.setPixelData(blank.data, *layer_bounds)
         self._node.setPixelData(img.data, *bounds)
         if make_visible:
             self.show()
-        if self.is_visible:
+        if not silent and self.is_visible:
             self.refresh()
 
-    def get_mask(self, bounds: Bounds | None):
+    def get_mask(self, bounds: Bounds | None = None, grow=0, feather=0):
         bounds = bounds or self.bounds
         if self.type.is_mask:
             data: QByteArray = self._node.pixelData(*bounds)
             assert data is not None and data.size() >= bounds.extent.pixel_count
+            if grow or feather:
+                data = _grow_feather(data, bounds, grow, feather)
             return Image(QImage(data, *bounds.extent, QImage.Format.Format_Grayscale8))
         else:
             img = self.get_pixels(bounds)
             alpha = img._qimage.convertToFormat(QImage.Format.Format_Alpha8)
+            if grow or feather:
+                data = _grow_feather(Image(alpha).data, bounds, grow, feather)
+                return Image(QImage(data, *bounds.extent, QImage.Format.Format_Grayscale8))
             alpha.reinterpretAsFormat(QImage.Format.Format_Grayscale8)
             return Image(alpha)
 
@@ -173,8 +192,15 @@ class Layer(QObject):
         self._node.remove()
         self._manager.update()
 
+    def clone(self):
+        clone = self._node.clone()
+        self._node.parentNode().addChildNode(clone, self._node)
+        return self._manager.wrap(clone)
+
     def compute_bounds(self):
         bounds = self.bounds
+        if bounds.is_zero:
+            return bounds
         if self.type.is_mask:
             # Unfortunately node.bounds() returns the whole image
             # Use a selection to get just the bounds that contain pixels > 0
@@ -280,7 +306,8 @@ class LayerManager(QObject):
     _doc: krita.Document | None
     _root: Layer | None
     _layers: dict[QUuid, Layer]
-    _active: QUuid
+    _active_id: QUuid
+    _last_active: Layer | None = None
     _timer: QTimer
 
     def __init__(self, doc: krita.Document | None):
@@ -291,7 +318,7 @@ class LayerManager(QObject):
             root = doc.rootNode()
             self._root = Layer(self, root)
             self._layers = {self._root.id: self._root}
-            self._active = doc.activeNode().uniqueId()
+            self._active_id = doc.activeNode().uniqueId()
             self.update()
             self._timer = QTimer()
             self._timer.setInterval(500)
@@ -299,7 +326,7 @@ class LayerManager(QObject):
             self._timer.start()
         else:
             self._root = None
-            self._active = QUuid()
+            self._active_id = QUuid()
 
     def __del__(self):
         if self._doc is not None:
@@ -316,8 +343,8 @@ class LayerManager(QObject):
         if active is None:
             return
 
-        if active.uniqueId() != self._active:
-            self._active = active.uniqueId()
+        if active.uniqueId() != self._active_id:
+            self._active_id = active.uniqueId()
             self.active_changed.emit()
 
         removals = set(self._layers.keys())
@@ -365,8 +392,13 @@ class LayerManager(QObject):
         assert self._doc is not None
         layer = self.find(self._doc.activeNode().uniqueId())
         if layer is None:
-            layer = self.updated()._layers[self._active]
-        return layer
+            layer = self.updated()._layers.get(self._active_id)
+        if layer is None:
+            log.warning("Active layer not found in layer tree")
+            layer = self._last_active
+        else:
+            self._last_active = layer
+        return ensure(layer, "Active layer not found in layer tree (no fallback)")
 
     @active.setter
     def active(self, layer: Layer):
@@ -385,10 +417,9 @@ class LayerManager(QObject):
     ):
         doc = ensure(self._doc)
         node = doc.createNode(name, "paintlayer")
-        layer = self._insert(node, parent, above, make_active)
         if img and bounds:
-            layer.node.setPixelData(img.data, *bounds)
-            layer.refresh()
+            node.setPixelData(img.data, *bounds)
+        layer = self._insert(node, parent, above, make_active)
         return layer
 
     def _insert(
@@ -456,6 +487,12 @@ class LayerManager(QObject):
             return []
         return [self.wrap(n) for n in traverse_layers(self._doc.rootNode(), self._mask_types)]
 
+    @property
+    def image_extent(self):
+        if doc := self._doc:
+            return Extent(doc.width(), doc.height())
+        return Extent(1, 1)
+
     def __bool__(self):
         return self._doc is not None
 
@@ -465,3 +502,11 @@ def traverse_layers(node: krita.Node, type_filter: list[str] | None = None):
         if not type_filter or child.type() in type_filter:
             yield child
         yield from traverse_layers(child, type_filter)
+
+
+def _grow_feather(mask_bytes: QByteArray, bounds: Bounds, grow: int, feather: int):
+    s = krita.Selection()
+    s.setPixelData(mask_bytes, *bounds)
+    s.grow(grow, grow)
+    s.feather(feather)
+    return s.pixelData(*bounds)

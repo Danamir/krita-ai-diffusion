@@ -4,11 +4,13 @@ from PyQt5.QtCore import QObject, QUuid, pyqtSignal
 
 from . import model, workflow
 from .api import ConditioningInput, RegionInput
-from .image import Image, Bounds
+from .image import Image, Bounds, Extent
 from .document import Layer, LayerType
 from .properties import Property, ObservableProperties
 from .jobs import JobRegion
-from .control import ControlLayerList
+from .control import ControlLayer, ControlLayerList
+from .util import clamp
+from .settings import settings
 
 
 class RegionLink(Enum):
@@ -217,14 +219,14 @@ class RootRegion(QObject, ObservableProperties):
 
     def create_region(self, group=True):
         """Create a new region. This action depends on context:
-        If the active layer can be linked to a group and isn't the only layer in the document,
-        it will be used as the initial link target for the new group. Otherwise, a new layer
-        is inserted (or a group if group==True) and that will be linked instead.
+        If the active layer can be linked to a group it will be used as the initial link
+        target for the new group. Otherwise, a new layer is inserted (or a group if group==True)
+        and that will be linked instead.
         """
         layers = self._model.layers
         target = Region.link_target(layers.active)
         can_link = target.type in [LayerType.paint, LayerType.group] and not self.is_linked(target)
-        if can_link and len(layers.images) > 1:
+        if can_link:
             layer = target
         elif group:
             layer = layers.create_group(f"Region {len(self)}")
@@ -264,6 +266,14 @@ class RootRegion(QObject, ObservableProperties):
                     layer = active_layer.parent_layer or active_layer
             return [], self._get_regions(layer.child_layers)
         return [], []
+
+    def last_unlinked_layer(self, parent: Layer):
+        result = None
+        for node in parent.child_layers:
+            if self.is_linked(node):
+                break
+            result = node
+        return result
 
     def _get_active_layer(self):
         if not self.layers:
@@ -320,6 +330,18 @@ class RootRegion(QObject, ObservableProperties):
         return iter(self._regions)
 
 
+def get_region_inpaint_mask(region_layer: Layer, max_extent: Extent, min_size=0, expand_mask=False):
+    region_bounds = region_layer.compute_bounds()
+    padding = int((settings.selection_padding / 100) * region_bounds.extent.average_side)
+    bounds = Bounds.pad(region_bounds, padding, min_size=min_size, square=min_size > 0)
+    bounds = Bounds.clamp(bounds, max_extent)
+    feather = 0
+    if expand_mask:
+        feather = clamp((bounds.extent - region_bounds.extent).shortest_side // 2, 8, 128)
+    mask_image = region_layer.get_mask(bounds, grow=feather, feather=feather // 2)
+    return mask_image.to_mask(bounds)
+
+
 def process_regions(
     root: RootRegion, bounds: Bounds, parent_layer: Layer | None = None, min_coverage=0.08
 ):
@@ -328,14 +350,16 @@ def process_regions(
         parent_region = root.find_linked(parent_layer)
 
     parent_prompt = ""
+    parent_control: list[ControlLayer] = []
     job_info = []
     if parent_layer and parent_region:
         parent_prompt = parent_region.positive
+        parent_control = list(parent_region.control)
         job_info = [JobRegion(parent_layer.id_string, parent_prompt, bounds)]
     result = ConditioningInput(
         positive=workflow.merge_prompt(parent_prompt, root.positive),
         negative=root.negative,
-        control=[c.to_api(bounds) for c in root.control],
+        control=[c.to_api(bounds) for c in list(root.control) + parent_control],
     )
 
     # Collect layers with linked regions. Optionally restrict to to child layers of a region.
@@ -403,12 +427,9 @@ def process_regions(
     # If the region(s) don't cover the entire image, add a final region for the remaining area.
     assert accumulated_mask is not None, "Expecting at least one region mask"
     total_coverage = accumulated_mask.average()
-    if total_coverage > 0.95:
-        # Almost fully covered, use the bottom region as the background.
-        result_regions[0][0].mask = None  # Region without mask fills remaining space
-    else:
-        print(f"Adding background region: total coverage is {total_coverage}")
-        input = RegionInput(None, bounds, result.positive)
+    if total_coverage < 0.95:
+        accumulated_mask.invert()
+        input = RegionInput(accumulated_mask, bounds, result.positive)
         job = JobRegion(parent_layer.id_string, "background", bounds, is_background=True)
         result_regions.insert(0, (input, job))
 
