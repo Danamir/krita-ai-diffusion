@@ -187,6 +187,7 @@ class Model(QObject, ObservableProperties):
         sampling = ensure(input.sampling)
         params.negative_prompt = self.regions.negative
         params.strength = sampling.denoise_strength
+        params.has_mask = input.images is not None and input.images.initial_mask is not None
         if len(params.regions) == 1:
             params.prompt = params.regions[0].prompt
 
@@ -238,7 +239,7 @@ class Model(QObject, ObservableProperties):
             input = workflow.prepare_upscale_simple(image, upscaler, params.factor)
 
         target_bounds = Bounds(0, 0, *params.target_extent)
-        name = f"[Upscale] {target_bounds.width}x{target_bounds.height}"
+        name = f"{target_bounds.width}x{target_bounds.height}"
         job_params = JobParams(target_bounds, name, seed=params.seed, regions=job_regions)
         return input, job_params
 
@@ -252,6 +253,9 @@ class Model(QObject, ObservableProperties):
 
         self.clear_error()
         eventloop.run(_report_errors(self, self._enqueue_job(job, inputs)))
+
+        self._doc.resize(job.params.bounds.extent)
+        self.upscale.target_extent_changed.emit(self.upscale.target_extent)
 
     def estimate_cost(self, kind=JobKind.diffusion):
         try:
@@ -500,7 +504,7 @@ class Model(QObject, ObservableProperties):
                 layer_image = region_layer.get_pixels(region_bounds)
                 layer_image.draw_image(region_image, keep_alpha=True)
                 region_image = layer_image
-                if behavior is ApplyBehavior.layer_hide_below:
+                if behavior is ApplyBehavior.layer_hide_below and not params.has_mask:
                     for layer in region_layer.child_layers:
                         layer.is_visible = False
 
@@ -541,9 +545,7 @@ class Model(QObject, ObservableProperties):
         if self._layer:
             self._layer.remove()
             self._layer = None
-        self._doc.resize(job.params.bounds.extent)
-        self.upscale.target_extent_changed.emit(self.upscale.target_extent)
-        self.create_result_layers(job.results[0], job.params, settings.apply_behavior)
+        self.create_result_layers(job.results[0], job.params, settings.apply_behavior, "[Upscale] ")
 
     def set_workspace(self, workspace: Workspace):
         if self.workspace is Workspace.live:
