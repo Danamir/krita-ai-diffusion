@@ -4,6 +4,7 @@ from PyQt5.QtGui import QImage, qRgba
 from PyQt5.QtCore import Qt, QByteArray
 from PIL import Image as PILImage
 from ai_diffusion.image import Mask, Bounds, Extent, Image, ImageCollection
+from .config import image_dir, result_dir, reference_dir
 
 
 def test_extent_compare():
@@ -157,6 +158,24 @@ def test_draw_image():
                 assert base.pixel(x, y) == (255, 255, 255, 255)
 
 
+def test_mask_subtract():
+    lhs = Mask.load(image_dir / "mask_op_left.webp").to_image()
+    rhs = Mask.load(image_dir / "mask_op_right.webp").to_image()
+    result = Image.mask_subtract(lhs, rhs)
+    result.save(result_dir / "mask_op_subtract.png")
+    reference = Mask.load(reference_dir / "mask" / "mask_op_subtract.png").to_image()
+    assert Image.compare(result, reference) < 0.0001
+
+
+def test_mask_add():
+    lhs = Mask.load(image_dir / "mask_op_left.webp").to_image()
+    rhs = Mask.load(image_dir / "mask_op_right.webp").to_image()
+    result = Image.mask_add(lhs, rhs)
+    result.save(result_dir / "mask_op_add.png")
+    reference = Mask.load(reference_dir / "mask" / "mask_op_add.png").to_image()
+    assert Image.compare(result, reference) < 0.0001
+
+
 def test_image_collection_each():
     col = ImageCollection([create_test_image(2, 2), create_test_image(2, 2)])
     col.each(lambda img: img.set_pixel(0, 0, (42, 42, 42, 42)))
@@ -190,7 +209,7 @@ def test_pad_bounds_min_size():
 def test_pad_square():
     bounds = Bounds(0, 0, 8, 2)
     result = Bounds.pad(bounds, 2, square=True, multiple=1)
-    assert result == Bounds(0, -2, 8, 6)
+    assert result == Bounds(-1, -2, 10, 6)
 
 
 @pytest.mark.parametrize(

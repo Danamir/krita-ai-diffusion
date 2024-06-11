@@ -1,9 +1,9 @@
 from __future__ import annotations
 from collections import deque
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, field
 from datetime import datetime
 from enum import Enum, Flag
-from typing import Deque, NamedTuple
+from typing import Any, Deque, NamedTuple
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .image import Bounds, ImageCollection
@@ -29,14 +29,35 @@ class JobKind(Enum):
 
 
 @dataclass
+class JobRegion:
+    layer_id: str
+    prompt: str
+    bounds: Bounds
+    is_background: bool = False
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]):
+        data["bounds"] = Bounds(*data["bounds"])
+        return JobRegion(**data)
+
+
+@dataclass
 class JobParams:
     bounds: Bounds
     prompt: str
     negative_prompt: str = ""
+    regions: list[JobRegion] = field(default_factory=list)
     strength: float = 1.0
     seed: int = 0
+    has_mask: bool = False
     frame: tuple[int, int, int] = (0, 0, 0)
     animation_id: str = ""
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]):
+        data["bounds"] = Bounds(*data["bounds"])
+        data["regions"] = [JobRegion.from_dict(r) for r in data.get("regions", [])]
+        return JobParams(**data)
 
     @classmethod
     def equal_ignore_seed(cls, a: JobParams | None, b: JobParams | None):
@@ -97,11 +118,6 @@ class JobQueue(QObject):
     def add_control(self, control: "control.ControlLayer", bounds: Bounds):
         job = Job(None, JobKind.control_layer, JobParams(bounds, f"[Control] {control.mode.text}"))
         job.control = control
-        return self.add_job(job)
-
-    def add_upscale(self, bounds: Bounds, seed: int):
-        name = f"[Upscale] {bounds.width}x{bounds.height}"
-        job = Job(None, JobKind.upscaling, JobParams(bounds, name, seed=seed))
         return self.add_job(job)
 
     def add_job(self, job: Job):

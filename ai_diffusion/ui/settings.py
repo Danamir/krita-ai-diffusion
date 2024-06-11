@@ -206,7 +206,7 @@ class ConnectionSettings(SettingsTab):
     def __init__(self, server: Server):
         super().__init__("Server Configuration")
 
-        self._server_cloud = QRadioButton("Online Service [BETA]", self)
+        self._server_cloud = QRadioButton("Online Service", self)
         self._server_managed = QRadioButton("Local Managed Server", self)
         self._server_external = QRadioButton("Custom Server (local or remote)", self)
         info_cloud = QLabel("Generate images via GPU Cloud Service", self)
@@ -334,7 +334,8 @@ class ConnectionSettings(SettingsTab):
             self._connection_status.setText("Disconnected")
             self._connection_status.setStyleSheet(f"color: {grey}; font-style:italic")
         elif connection.state == ConnectionState.error:
-            self._connection_status.setText(f"<b>Error</b>: {connection.error}")
+            msg = connection.error.removeprefix("Error: ") if connection.error else "Unknown error"
+            self._connection_status.setText(f"<b>Error</b>: {msg}")
             self._connection_status.setStyleSheet(f"color: {red};")
             if connection.missing_resource is not None:
                 self._handle_missing_resource(connection.missing_resource)
@@ -390,7 +391,6 @@ class InterfaceSettings(SettingsTab):
         self.add(
             "show_negative_prompt", SwitchSetting(S._show_negative_prompt, ("Show", "Hide"), self)
         )
-        self.add("show_control_end", SwitchSetting(S._show_control_end, ("Show", "Hide"), self))
         self.add("auto_preview", SwitchSetting(S._auto_preview, parent=self))
         self.add("new_seed_after_apply", SwitchSetting(S._new_seed_after_apply, parent=self))
         self.add("debug_dump_workflow", SwitchSetting(S._debug_dump_workflow, parent=self))

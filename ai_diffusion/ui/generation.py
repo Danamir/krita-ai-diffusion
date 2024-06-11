@@ -23,21 +23,14 @@ from PyQt5.QtWidgets import (
 from ..properties import Binding, Bind, bind, bind_combo, bind_toggle
 from ..image import Bounds, Extent, Image
 from ..jobs import Job, JobQueue, JobState, JobKind, JobParams
-from ..model import Model, InpaintContext
+from ..model import Model, InpaintContext, RootRegion
 from ..root import root
 from ..workflow import InpaintMode, FillMode
-from ..settings import settings
 from ..util import ensure
+from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget, QueueButton
+from .widget import GenerateButton, create_wide_tool_button
+from .region import RegionPromptWidget
 from . import theme
-from .control import ControlLayerButton, ControlListWidget
-from .widget import (
-    WorkspaceSelectWidget,
-    StyleSelectWidget,
-    TextPromptWidget,
-    StrengthWidget,
-    QueueButton,
-    GenerateButton,
-)
 
 
 class HistoryWidget(QListWidget):
@@ -340,8 +333,10 @@ class HistoryWidget(QListWidget):
 
     def _copy_prompt(self):
         if job := self.selected_job:
-            self._model.prompt = job.params.prompt
-            self._model.negative_prompt = job.params.negative_prompt
+            active = self._model.regions.active_or_root
+            active.positive = job.params.prompt
+            if isinstance(active, RootRegion):
+                active.negative = job.params.negative_prompt
 
     def _copy_strength(self):
         if job := self.selected_job:
@@ -381,7 +376,7 @@ class CustomInpaintWidget(QWidget):
         self.use_prompt_focus_button = QCheckBox(self)
         self.use_prompt_focus_button.setText("Focus")
         self.use_prompt_focus_button.setToolTip(
-            "Use the text prompt to describe the selected region rather than the context area"
+            "Use the text prompt to describe the selected region rather than the context area / Use only one regional prompt"
         )
 
         self.fill_mode_combo = QComboBox(self)
@@ -449,7 +444,7 @@ class CustomInpaintWidget(QWidget):
                 self.context_combo.removeItem(self.context_combo.count() - 1)
             icon = theme.icon("context-layer")
             for layer in self._model.layers.masks:
-                self.context_combo.addItem(icon, f"{layer.name()}", layer.uniqueId())
+                self.context_combo.addItem(icon, f"{layer.name}", layer.id)
         current_index = self.context_combo.findData(current)
         if current_index >= 0:
             self.context_combo.setCurrentIndex(current_index)
@@ -479,7 +474,6 @@ class GenerationWidget(QWidget):
         super().__init__()
         self._model = root.active_model
         self._model_bindings = []
-        settings.changed.connect(self.update_settings)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 2, 0)
@@ -493,27 +487,16 @@ class GenerationWidget(QWidget):
         style_layout.addWidget(self.style_select)
         layout.addLayout(style_layout)
 
-        self.prompt_textbox = TextPromptWidget(parent=self)
-        self.prompt_textbox.line_count = settings.prompt_line_count
-
-        self.negative_textbox = TextPromptWidget(line_count=1, is_negative=True, parent=self)
-        self.negative_textbox.setVisible(settings.show_negative_prompt)
-
-        prompt_layout = QVBoxLayout()
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.setSpacing(2)
-        prompt_layout.addWidget(self.prompt_textbox)
-        prompt_layout.addWidget(self.negative_textbox)
-        layout.addLayout(prompt_layout)
-
-        self.control_list = ControlListWidget(self)
-        layout.addWidget(self.control_list)
+        self.region_prompt = RegionPromptWidget(self)
+        layout.addWidget(self.region_prompt)
 
         self.strength_slider = StrengthWidget(parent=self)
-        self.add_control_button = ControlLayerButton(self)
+        self.add_region_button = create_wide_tool_button("region-add", "Add Region", self)
+        self.add_control_button = create_wide_tool_button("control-add", "Add Control Layer", self)
         strength_layout = QHBoxLayout()
         strength_layout.addWidget(self.strength_slider)
         strength_layout.addWidget(self.add_control_button)
+        strength_layout.addWidget(self.add_region_button)
         layout.addLayout(strength_layout)
 
         self.custom_inpaint = CustomInpaintWidget(self)
@@ -525,8 +508,10 @@ class GenerationWidget(QWidget):
         self.inpaint_mode_button.setArrowType(Qt.ArrowType.DownArrow)
         self.inpaint_mode_button.setFixedHeight(self.generate_button.height() - 2)
         self.inpaint_mode_button.clicked.connect(self.show_inpaint_menu)
+        self.generate_menu = self._create_generate_menu("generate")
+        self.refine_menu = self._create_generate_menu("refine")
         self.inpaint_menu = self._create_inpaint_menu()
-        self.refine_menu = self._create_refine_menu()
+        self.refine_region_menu = self._create_refine_region_menu()
 
         generate_layout = QHBoxLayout()
         generate_layout.setSpacing(0)
@@ -572,21 +557,21 @@ class GenerationWidget(QWidget):
             self._model_bindings = [
                 bind(model, "workspace", self.workspace_select, "value", Bind.one_way),
                 bind(model, "style", self.style_select, "value"),
-                bind(model, "prompt", self.prompt_textbox, "text"),
-                bind(model, "negative_prompt", self.negative_textbox, "text"),
                 bind(model, "strength", self.strength_slider, "value"),
                 model.inpaint.mode_changed.connect(self.update_generate_button),
                 model.strength_changed.connect(self.update_generate_button),
                 model.document.selection_bounds_changed.connect(self.update_generate_button),
+                model.regions.active_changed.connect(self.update_generate_button),
+                model.region_only_changed.connect(self.update_generate_button),
                 model.progress_changed.connect(self.update_progress),
                 model.error_changed.connect(self.error_text.setText),
                 model.has_error_changed.connect(self.error_text.setVisible),
-                self.add_control_button.clicked.connect(model.control.add),
-                self.prompt_textbox.activated.connect(model.generate),
-                self.negative_textbox.activated.connect(model.generate),
+                self.add_control_button.clicked.connect(model.regions.add_control),
+                self.add_region_button.clicked.connect(model.regions.create_region_group),
+                self.region_prompt.activated.connect(model.generate),
                 self.generate_button.clicked.connect(model.generate),
             ]
-            self.control_list.model = model
+            self.region_prompt.regions = model.regions
             self.custom_inpaint.model = model
             self.generate_button.model = model
             self.queue_button.model = model
@@ -601,16 +586,24 @@ class GenerationWidget(QWidget):
                 self.progress_bar.reset()
             self.progress_bar.setValue(min(99, self.progress_bar.value() + 2))
 
-    def update_settings(self, key: str, value):
-        if key == "prompt_line_count":
-            self.prompt_textbox.line_count = value
-        elif key == "show_negative_prompt":
-            self.negative_textbox.text = ""
-            self.negative_textbox.setVisible(value)
-
     def apply_result(self, item: QListWidgetItem):
         job_id, index = self.history.item_info(item)
         self.model.apply_result(job_id, index)
+
+    def _create_generate_action(self, text: str, icon: str, region_only: bool):
+        action = QAction(text, self)
+        action.setIcon(theme.icon(icon))
+        action.setIconVisibleInMenu(True)
+        action.triggered.connect(lambda: self.toggle_region_only(region_only))
+        return action
+
+    def _create_generate_menu(self, action: str):
+        menu = QMenu(self)
+        menu.addAction(self._create_generate_action(action.capitalize(), action, False))
+        menu.addAction(
+            self._create_generate_action(f"{action.capitalize()} Region", f"{action}-region", True)
+        )
+        return menu
 
     _inpaint_text = {
         InpaintMode.automatic: "Default (Auto-detect)",
@@ -636,7 +629,7 @@ class GenerationWidget(QWidget):
             menu.addAction(self._create_inpaint_action(mode, text, f"inpaint-{mode.name}"))
         return menu
 
-    def _create_refine_menu(self):
+    def _create_refine_region_menu(self):
         menu = QMenu(self)
         menu.addAction(self._create_inpaint_action(InpaintMode.automatic, "Refine", "refine"))
         menu.addAction(
@@ -647,23 +640,48 @@ class GenerationWidget(QWidget):
     def show_inpaint_menu(self):
         width = self.generate_button.width() + self.inpaint_mode_button.width()
         pos = QPoint(0, self.generate_button.height())
-        menu = self.inpaint_menu if self.model.strength == 1.0 else self.refine_menu
+        if self.model.document.selection_bounds is None:
+            menu = self.generate_menu if self.model.strength == 1.0 else self.refine_menu
+        else:
+            menu = self.inpaint_menu if self.model.strength == 1.0 else self.refine_region_menu
         menu.setFixedWidth(width)
         menu.exec_(self.generate_button.mapToGlobal(pos))
 
     def change_inpaint_mode(self, mode: InpaintMode):
         self.model.inpaint.mode = mode
 
+    def toggle_region_only(self, checked: bool):
+        self.model.region_only = checked
+
     def update_generate_button(self):
         if self.model.document.selection_bounds is None:
-            self.inpaint_mode_button.setVisible(False)
+            has_regions = len(self.model.regions) > 0
+            has_active_region = self.model.regions.active is not None
+            show_region_menu = has_regions and has_active_region
+            self.inpaint_mode_button.setVisible(show_region_menu)
             self.custom_inpaint.setVisible(False)
-            if self.model.strength == 1.0:
-                self.generate_button.setIcon(theme.icon("workspace-generation"))
-                self.generate_button.operation = "Generate"
+            if show_region_menu:
+                if self.model.strength == 1.0:
+                    if self.model.region_only:
+                        self.generate_button.setIcon(theme.icon("generate-region"))
+                        self.generate_button.operation = "Generate Region"
+                    else:
+                        self.generate_button.setIcon(theme.icon("workspace-generation"))
+                        self.generate_button.operation = "Generate"
+                else:
+                    if self.model.region_only:
+                        self.generate_button.setIcon(theme.icon("refine-region"))
+                        self.generate_button.operation = "Refine Region"
+                    else:
+                        self.generate_button.setIcon(theme.icon("refine"))
+                        self.generate_button.operation = "Refine"
             else:
-                self.generate_button.setIcon(theme.icon("refine"))
-                self.generate_button.operation = "Refine"
+                if self.model.strength == 1.0:
+                    self.generate_button.setIcon(theme.icon("workspace-generation"))
+                    self.generate_button.operation = "Generate"
+                else:
+                    self.generate_button.setIcon(theme.icon("refine"))
+                    self.generate_button.operation = "Refine"
         else:
             self.inpaint_mode_button.setVisible(True)
             self.custom_inpaint.setVisible(self.model.inpaint.mode is InpaintMode.custom)

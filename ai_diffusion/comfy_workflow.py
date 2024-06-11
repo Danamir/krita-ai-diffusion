@@ -176,7 +176,7 @@ class ComfyWorkflow:
                 start_at_step=min(start_at_step, round(steps*0.6)),
                 end_at_step=round(steps*0.6),
                 cfg=cfg,
-                add_noise='enable',
+                add_noise="enable",
                 return_with_leftover_noise="enable",
             )
 
@@ -194,7 +194,7 @@ class ComfyWorkflow:
                 start_at_step=max(start_at_step, round(steps*0.6)),
                 end_at_step=steps,
                 cfg=cfg,
-                add_noise='disable',
+                add_noise="disable",
                 return_with_leftover_noise="disable",
             )
         else:
@@ -212,7 +212,7 @@ class ComfyWorkflow:
                 start_at_step=start_at_step,
                 end_at_step=steps,
                 cfg=cfg,
-                add_noise='enable',
+                add_noise="enable",
                 return_with_leftover_noise="disable",
             )
 
@@ -325,6 +325,17 @@ class ComfyWorkflow:
     def conditioning_combine(self, a: Output, b: Output):
         return self.add("ConditioningCombine", 1, conditioning_1=a, conditioning_2=b)
 
+    def background_region(self, conditioning: Output):
+        return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
+
+    def define_region(self, regions: Output, mask: Output, conditioning: Output):
+        return self.add(
+            "ETN_DefineRegion", 1, regions=regions, mask=mask, conditioning=conditioning
+        )
+
+    def attention_mask(self, model: Output, regions: Output):
+        return self.add("ETN_AttentionMask", 1, model=model, regions=regions)
+
     def apply_controlnet(
         self,
         positive: Output,
@@ -371,6 +382,7 @@ class ComfyWorkflow:
         weight: float,
         weight_type: str = "linear",
         range: tuple[float, float] = (0.0, 1.0),
+        mask: Output | None = None,
     ):
         return self.add(
             "IPAdapterEmbeds",
@@ -384,6 +396,7 @@ class ComfyWorkflow:
             embeds_scaling="V only",
             start_at=range[0],
             end_at=range[1],
+            attn_mask=mask,
         )
 
     def apply_ip_adapter_face(
@@ -395,6 +408,7 @@ class ComfyWorkflow:
         image: Output,
         weight=1.0,
         range: tuple[float, float] = (0.0, 1.0),
+        mask: Output | None = None,
     ):
         return self.add(
             "IPAdapterFaceID",
@@ -409,6 +423,7 @@ class ComfyWorkflow:
             weight_type="linear",
             start_at=range[0],
             end_at=range[1],
+            attn_mask=mask,
         )
 
     def apply_self_attention_guidance(self, model: Output):
@@ -584,6 +599,28 @@ class ComfyWorkflow:
     def save_image(self, image: Output, prefix: str):
         return self.add("SaveImage", 1, images=image, filename_prefix=prefix)
 
+    def create_tile_layout(self, image: Output, tile_size: int, padding: int, blending: int):
+        return self.add(
+            "ETN_TileLayout",
+            1,
+            image=image,
+            min_tile_size=tile_size,
+            padding=padding,
+            blending=blending,
+        )
+
+    def extract_image_tile(self, image: Output, layout: Output, index: int):
+        return self.add("ETN_ExtractImageTile", 1, image=image, layout=layout, index=index)
+
+    def extract_mask_tile(self, mask: Output, layout: Output, index: int):
+        return self.add("ETN_ExtractMaskTile", 1, mask=mask, layout=layout, index=index)
+
+    def merge_image_tile(self, image: Output, layout: Output, index: int, tile: Output):
+        return self.add("ETN_MergeImageTile", 1, layout=layout, index=index, tile=tile, image=image)
+
+    def generate_tile_mask(self, layout: Output, index: int):
+        return self.add("ETN_GenerateTileMask", 1, layout=layout, index=index)
+
     def estimate_pose(self, image: Output, resolution: int):
         feat = dict(detect_hand="enable", detect_body="enable", detect_face="enable")
         mdls = dict(bbox_detector="yolox_l.onnx", pose_estimator="dw-ll_ucoco_384.onnx")
@@ -591,54 +628,3 @@ class ComfyWorkflow:
             # use smaller model, but it requires onnxruntime, see #630
             mdls["bbox_detector"] = "yolo_nas_l_fp16.onnx"
         return self.add("DWPreprocessor", 1, image=image, resolution=resolution, **feat, **mdls)
-
-    def upscale_tiled(
-        self,
-        image: Output,
-        model: Output,
-        vae: Output,
-        positive: Output,
-        negative: Output,
-        upscale_model: Output,
-        original_extent: Extent,
-        factor: float,
-        tile_extent: Extent,
-        steps: int,
-        cfg: float,
-        sampler: str,
-        scheduler: str,
-        denoise: float,
-        seed=-1,
-    ):
-        target_extent = original_extent * factor
-        tiles_w = int(math.ceil(target_extent.width / tile_extent.width))
-        tiles_h = int(math.ceil(target_extent.height / tile_extent.height))
-        self.sample_count += 4 + tiles_w * tiles_h * steps  # approx, ignores padding
-        return self.add(
-            "UltimateSDUpscale",
-            1,
-            image=image,
-            model=model,
-            positive=positive,
-            negative=negative,
-            vae=vae,
-            upscale_model=upscale_model,
-            upscale_by=factor,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            denoise=denoise,
-            tile_width=tile_extent.width,
-            tile_height=tile_extent.height,
-            mode_type="Linear",
-            mask_blur=8,
-            tile_padding=32,
-            seam_fix_mode="None",
-            seam_fix_denoise=1.0,
-            seam_fix_width=64,
-            seam_fix_mask_blur=8,
-            seam_fix_padding=16,
-            force_uniform_tiles="enable",
-        )

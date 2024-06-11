@@ -11,10 +11,11 @@ import logging
 import logging.handlers
 import statistics
 import zipfile
-from typing import Iterable, Optional, Sequence, TypeVar
+from typing import Callable, Iterable, Optional, Sequence, TypeVar
 from PyQt5.QtCore import QStandardPaths
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 is_windows = sys.platform.startswith("win")
 is_macos = sys.platform == "darwin"
@@ -80,17 +81,24 @@ server_logger = create_logger("krita.ai_diffusion.server", log_dir / "server.log
 
 
 def log_error(error: Exception):
+    message = str(error)
     if isinstance(error, AssertionError):
         message = f"Error: Internal assertion failed [{error}]"
-    else:
-        message = f"Error: {error}"
+    elif not message.startswith("Error:"):
+        message = f"Error: {message}"
     client_logger.exception(message)
     return message
 
 
-def ensure(value: Optional[T]) -> T:
-    assert value is not None
+def ensure(value: Optional[T], msg="") -> T:
+    assert value is not None, msg or "a value is required"
     return value
+
+
+def maybe(func: Callable[[T], R], value: Optional[T]) -> Optional[R]:
+    if value is not None:
+        return func(value)
+    return None
 
 
 def batched(iterable, n):
@@ -108,6 +116,11 @@ def median_or_zero(values: Iterable[float]) -> float:
         return statistics.median(values)
     except statistics.StatisticsError:
         return 0
+
+
+def unique(seq: Sequence[T], key) -> list[T]:
+    seen = set()
+    return [x for x in seq if (k := key(x)) not in seen and not seen.add(k)]
 
 
 def encode_json(obj):

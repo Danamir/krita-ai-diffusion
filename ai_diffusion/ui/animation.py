@@ -18,13 +18,14 @@ from ..image import Extent, Image
 from ..root import root
 from ..settings import settings
 from . import theme
-from .control import ControlLayerButton, ControlListWidget
+from .control import ControlListWidget
 from .widget import (
     WorkspaceSelectWidget,
     StyleSelectWidget,
     TextPromptWidget,
     StrengthWidget,
     QueueButton,
+    create_wide_tool_button,
 )
 
 
@@ -64,11 +65,8 @@ class AnimationWidget(QWidget):
         prompt_layout.addWidget(self.negative_textbox)
         layout.addLayout(prompt_layout)
 
-        self.control_list = ControlListWidget(self)
-        layout.addWidget(self.control_list)
-
         self.strength_slider = StrengthWidget(parent=self)
-        self.add_control_button = ControlLayerButton(self)
+        self.add_control_button = create_wide_tool_button("control-add", "Add Control Layer", self)
         strength_layout = QHBoxLayout()
         strength_layout.addWidget(self.strength_slider)
         strength_layout.addWidget(self.add_control_button)
@@ -130,8 +128,8 @@ class AnimationWidget(QWidget):
                 bind(model, "workspace", self.workspace_select, "value", Bind.one_way),
                 bind(model, "style", self.style_select, "value"),
                 bind(model.animation, "sampling_quality", self.style_select, "quality"),
-                bind(model, "prompt", self.prompt_textbox, "text"),
-                bind(model, "negative_prompt", self.negative_textbox, "text"),
+                bind(model.regions, "positive", self.prompt_textbox, "text"),
+                bind(model.regions, "negative", self.negative_textbox, "text"),
                 bind(model, "strength", self.strength_slider, "value"),
                 bind_toggle(model.animation, "batch_mode", self.batch_mode_button),
                 bind_combo(model.animation, "target_layer", self.target_layer),
@@ -141,12 +139,11 @@ class AnimationWidget(QWidget):
                 model.error_changed.connect(self.error_text.setText),
                 model.has_error_changed.connect(self.error_text.setVisible),
                 model.layers.changed.connect(self.update_target_layers),
-                self.add_control_button.clicked.connect(model.control.add),
+                self.add_control_button.clicked.connect(model.regions.add_control),
                 self.prompt_textbox.activated.connect(model.animation.generate),
                 self.negative_textbox.activated.connect(model.animation.generate),
                 self.generate_button.clicked.connect(model.animation.generate),
             ]
-            self.control_list.model = model
             self.queue_button.model = model
             self.update_mode()
             self.update_target_layers()
@@ -181,7 +178,7 @@ class AnimationWidget(QWidget):
         with theme.SignalBlocker(self.target_layer):
             self.target_layer.clear()
             for layer in self._model.layers.images:
-                self.target_layer.addItem(f"Target layer: {layer.name()}", layer.uniqueId())
+                self.target_layer.addItem(f"Target layer: {layer.name}", layer.id)
         if self.model.animation.target_layer.isNull():
             self.model.animation.target_layer = self.target_layer.currentData()
         else:

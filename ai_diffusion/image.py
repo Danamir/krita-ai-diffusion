@@ -9,7 +9,7 @@ from itertools import product
 from pathlib import Path
 
 from .settings import settings
-from .util import is_linux, client_logger as log
+from .util import clamp, ensure, is_linux, client_logger as log
 
 
 def multiple_of(number, multiple):
@@ -20,11 +20,6 @@ def multiple_of(number, multiple):
 class Extent(NamedTuple):
     width: int
     height: int
-
-    def __mul__(self, scale: float | SupportsIndex):
-        if isinstance(scale, (float, int)):
-            return Extent(round(self.width * scale), round(self.height * scale))
-        raise NotImplementedError()
 
     def at_least(self, min_size: int):
         return Extent(max(self.width, min_size), max(self.height, min_size))
@@ -64,6 +59,10 @@ class Extent(NamedTuple):
         return self.width * self.height
 
     @staticmethod
+    def from_points(start: Point, end: Point):
+        return Extent(end.x - start.x, end.y - start.y)
+
+    @staticmethod
     def from_qsize(qsize: QSize):
         return Extent(qsize.width(), qsize.height())
 
@@ -75,12 +74,63 @@ class Extent(NamedTuple):
     def ratio(a: "Extent", b: "Extent"):
         return sqrt(a.pixel_count / b.pixel_count)
 
+    def __add__(self, other):
+        return Extent(self.width + other.width, self.height + other.height)
+
+    def __sub__(self, other: "Extent"):
+        return Extent(self.width - other.width, self.height - other.height)
+
+    def __mul__(self, scale: float | SupportsIndex):
+        if isinstance(scale, (float, int)):
+            return Extent(round(self.width * scale), round(self.height * scale))
+        raise NotImplementedError()
+
+    def __floordiv__(self, div: int):
+        return Extent(self.width // div, self.height // div)
+
+
+class Point(NamedTuple):
+    x: int
+    y: int
+
+    def __add__(self, other):
+        x, y = other[0], other[1]
+        return Point(self.x + x, self.y + y)
+
+    def __sub__(self, other: "Point"):
+        return Point(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, other):
+        if isinstance(other, Point):
+            return Point(self.x * other.x, self.y * other.y)
+        return Point(self.x * other, self.y * other)
+
+    def __floordiv__(self, div: int):
+        return Point(self.x // div, self.y // div)
+
+    def __eq__(self, other):
+        return isinstance(other, Point) and self.x == other.x and self.y == other.y
+
+    def clamp(self, bounds: Bounds):
+        return Point(
+            clamp(self.x, bounds.x, bounds.x + bounds.width),
+            clamp(self.y, bounds.y, bounds.y + bounds.height),
+        )
+
 
 class Bounds(NamedTuple):
     x: int
     y: int
     width: int
     height: int
+
+    @staticmethod
+    def from_extent(extent: Extent):
+        return Bounds(0, 0, extent.width, extent.height)
+
+    @staticmethod
+    def from_points(start: Point, end: Point):
+        return Bounds(start.x, start.y, end.x - start.x, end.y - start.y)
 
     @property
     def offset(self):
@@ -122,9 +172,9 @@ class Bounds(NamedTuple):
 
         pad_x, pad_y = padding, padding
         if square and bounds.width > bounds.height:
-            pad_x = max(0, pad_x - (bounds.width - bounds.height) // 2)
+            pad_x = max(pad_x // 2, pad_x - (bounds.width - bounds.height) // 2)
         elif square and bounds.height > bounds.width:
-            pad_y = max(0, pad_y - (bounds.height - bounds.width) // 2)
+            pad_y = max(pad_y // 2, pad_y - (bounds.height - bounds.width) // 2)
 
         new_x, new_width = pad_scalar(bounds.x, bounds.width, pad_x)
         new_y, new_height = pad_scalar(bounds.y, bounds.height, pad_y)
@@ -182,6 +232,18 @@ class Bounds(NamedTuple):
             bounds.x, bounds.y, max(bounds.width, min_size), max(bounds.height, min_size)
         )
         return Bounds.clamp(result, max_extent)
+
+    @staticmethod
+    def intersection(a: "Bounds", b: "Bounds"):
+        x = max(a.x, b.x)
+        y = max(a.y, b.y)
+        width = min(a.x + a.width, b.x + b.width) - x
+        height = min(a.y + a.height, b.y + b.height) - y
+        return Bounds(x, y, max(0, width), max(0, height))
+
+    @property
+    def area(self):
+        return self.width * self.height
 
     def relative_to(self, reference: "Bounds"):
         """Return bounds relative to another bounds."""
@@ -244,6 +306,10 @@ class Image:
             img._qimage.fill(fill)
         return img
 
+    @staticmethod
+    def copy(image: "Image"):
+        return Image(QImage(image._qimage))
+
     @property
     def width(self):
         return self._qimage.width()
@@ -259,6 +325,7 @@ class Image:
     @property
     def is_rgba(self):
         return self._qimage.format() in [
+            QImage.Format.Format_Indexed8,
             QImage.Format.Format_ARGB32,
             QImage.Format.Format_RGB32,
             QImage.Format.Format_RGBA8888,
@@ -266,7 +333,7 @@ class Image:
 
     @property
     def is_mask(self):
-        return self._qimage.format() == QImage.Format_Grayscale8
+        return self._qimage.format() == QImage.Format.Format_Grayscale8
 
     @staticmethod
     def from_base64(data: str):
@@ -305,6 +372,29 @@ class Image:
         return Image(img._qimage.copy(*bounds))
 
     @staticmethod
+    def _mask_op(lhs: "Image", rhs: "Image", mode: QPainter.CompositionMode):
+        assert extent_equal(lhs._qimage, rhs._qimage)
+        assert lhs.is_mask and rhs.is_mask
+        result = lhs._qimage.copy()
+        result.reinterpretAsFormat(QImage.Format.Format_Alpha8)
+        rhs._qimage.reinterpretAsFormat(QImage.Format.Format_Alpha8)
+        painter = QPainter(result)
+        painter.setCompositionMode(mode)
+        painter.drawImage(0, 0, rhs._qimage)
+        painter.end()
+        rhs._qimage.reinterpretAsFormat(QImage.Format.Format_Grayscale8)
+        result.reinterpretAsFormat(QImage.Format.Format_Grayscale8)
+        return Image(result)
+
+    @classmethod
+    def mask_subtract(cls, lhs: "Image", rhs: "Image"):
+        return cls._mask_op(rhs, lhs, QPainter.CompositionMode.CompositionMode_SourceOut)
+
+    @classmethod
+    def mask_add(cls, lhs: "Image", rhs: "Image"):
+        return cls._mask_op(lhs, rhs, QPainter.CompositionMode.CompositionMode_SourceOver)
+
+    @staticmethod
     def compare(img_a: "Image", img_b: "Image"):
         assert extent_equal(img_a._qimage, img_b._qimage)
         import numpy as np
@@ -332,13 +422,28 @@ class Image:
         painter.fillRect(self._qimage.rect(), background)
         painter.end()
 
+    def invert(self):
+        self._qimage.invertPixels()
+
+    def average(self):
+        assert self.is_mask
+        avg = Image.scale(self, Extent(1, 1)).pixel(0, 0)
+        avg = avg[0] if isinstance(avg, tuple) else avg
+        return avg / 255
+
     @property
     def data(self):
         self.to_krita_format()
-        ptr = self._qimage.bits()
-        assert ptr is not None, "Accessing data of invalid image"
-        ptr.setsize(self._qimage.byteCount())
-        return QByteArray(ptr.asstring())
+        if self._qimage.bytesPerLine() != self._qimage.width() * (self._qimage.depth() // 8):
+            # QImage scanlines are padded to 32-bit, which can be a problem with mask formats
+            buffer = QByteArray()
+            for i in range(self._qimage.height()):
+                ptr = ensure(self._qimage.scanLine(i), "Accessing data of invalid image")
+                buffer.append(ptr.asstring(self._qimage.width() * (self._qimage.depth() // 8)))
+            return buffer
+        else:
+            ptr = ensure(self._qimage.constBits(), "Accessing data of invalid image")
+            return QByteArray(ptr.asstring(self._qimage.byteCount()))
 
     @property
     def size(self):  # in bytes
@@ -349,10 +454,11 @@ class Image:
 
         self.to_numpy_format()
         w, h = self.extent
+        c = 4 if self.is_rgba else 1
         bits = self._qimage.constBits()
         assert bits is not None, "Accessing data of invalid image"
-        ptr = bits.asarray(w * h * 4)
-        array = np.frombuffer(ptr, np.uint8).reshape(h, w, 4)  # type: ignore
+        ptr = bits.asarray(w * h * c)
+        array = np.frombuffer(ptr, np.uint8).reshape(h, w, c)  # type: ignore
         return array.astype(np.float32) / 255
 
     def write(self, buffer: QIODevice, format=ImageFileFormat.png):
@@ -392,13 +498,20 @@ class Image:
     def to_icon(self):
         return QIcon(self.to_pixmap())
 
-    def draw_image(self, image: "Image", offset: tuple[int, int] = (0, 0)):
+    def to_mask(self, bounds: Bounds | None = None):
+        assert self.is_mask
+        return Mask(bounds or Bounds(0, 0, *self.extent), self._qimage)
+
+    def draw_image(self, image: "Image", offset: tuple[int, int] = (0, 0), keep_alpha=False):
         w, h = self.extent
         x, y = offset[0] if offset[0] >= 0 else w + offset[0], (
             offset[1] if offset[1] >= 0 else h + offset[1]
         )
+        mode = QPainter.CompositionMode.CompositionMode_SourceOver
+        if keep_alpha:
+            mode = QPainter.CompositionMode.CompositionMode_SourceAtop
         painter = QPainter(self._qimage)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        painter.setCompositionMode(mode)
         painter.drawImage(x, y, image._qimage)
         painter.end()
 
@@ -417,12 +530,12 @@ class Image:
             self.save(Path(settings.debug_image_folder, f"{name}.png"))
 
     def to_krita_format(self):
-        if self._qimage.format() != QImage.Format.Format_ARGB32:
+        if self.is_rgba and self._qimage.format() != QImage.Format.Format_ARGB32:
             self._qimage = self._qimage.convertToFormat(QImage.Format.Format_ARGB32)
         return self
 
     def to_numpy_format(self):
-        if self._qimage.format() != QImage.Format.Format_RGBA8888:
+        if self.is_rgba and self._qimage.format() != QImage.Format.Format_RGBA8888:
             self._qimage = self._qimage.convertToFormat(QImage.Format.Format_RGBA8888)
         return self
 

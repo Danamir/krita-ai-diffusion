@@ -22,9 +22,9 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QCompleter,
     QPushButton,
+    QFrame,
 )
 from PyQt5.QtGui import (
-    QColor,
     QFontMetrics,
     QKeyEvent,
     QMouseEvent,
@@ -34,7 +34,7 @@ from PyQt5.QtGui import (
     QIcon,
     QPaintEvent,
 )
-from PyQt5.QtCore import Qt, QMetaObject, QEvent, QSize, QStringListModel, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QMetaObject, QSize, QStringListModel, pyqtSignal, QEvent
 
 from ..style import Style, Styles
 from ..root import root
@@ -325,9 +325,7 @@ def handle_weight_adjustment(
 
 
 class PromptAutoComplete:
-    # _widget: QLineEdit
     _completer: QCompleter
-    # _popup: QAbstractItemView
 
     def __init__(self, widget: QLineEdit):
         self._widget = widget
@@ -400,8 +398,8 @@ class MultiLineTextPromptWidget(QPlainTextEdit):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setTabChangesFocus(True)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
         self.line_count = 2
-        self.is_negative = False
 
         self._completer = PromptAutoComplete(self)
         self.textChanged.connect(self._completer.check_completion)
@@ -427,7 +425,7 @@ class MultiLineTextPromptWidget(QPlainTextEdit):
     def line_count(self, value: int):
         self._line_count = value
         fm = QFontMetrics(ensure(self.document()).defaultFont())
-        self.setFixedHeight(fm.lineSpacing() * value + 6)
+        self.setFixedHeight(fm.lineSpacing() * value + 8)
 
     def hasSelectedText(self) -> bool:
         return self.textCursor().hasSelection()
@@ -467,6 +465,8 @@ class SingleLineTextPromptWidget(QLineEdit):
         super().__init__(parent)
         self._completer = PromptAutoComplete(self)
         self.textChanged.connect(self._completer.check_completion)
+        self.setFrame(False)
+        self.setStyleSheet(f"QLineEdit {{ background: transparent; }}")
 
     def keyPressEvent(self, a0: QKeyEvent | None):
         assert a0 is not None
@@ -474,7 +474,7 @@ class SingleLineTextPromptWidget(QLineEdit):
         super().keyPressEvent(a0)
 
 
-class TextPromptWidget(QWidget):
+class TextPromptWidget(QFrame):
     """Wraps a single or multi-line text widget, with ability to switch between them.
     Using QPlainTextEdit set to a single line doesn't work properly because it still
     scrolls to the next line when eg. selecting and then looks like it's empty."""
@@ -482,11 +482,8 @@ class TextPromptWidget(QWidget):
     activated = pyqtSignal()
     text_changed = pyqtSignal(str)
 
-    _multi: MultiLineTextPromptWidget
-    _single: QLineEdit
     _line_count = 2
     _is_negative = False
-    _base_color: QColor
 
     def __init__(self, line_count=2, is_negative=False, parent=None):
         super().__init__(parent)
@@ -495,7 +492,7 @@ class TextPromptWidget(QWidget):
         self._layout = QVBoxLayout()
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self._layout)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self._multi = MultiLineTextPromptWidget(self)
         self._multi.line_count = self._line_count
@@ -555,17 +552,42 @@ class TextPromptWidget(QWidget):
     @is_negative.setter
     def is_negative(self, value: bool):
         self._is_negative = value
-        for w in [self._multi, self._single]:
-            palette: QPalette = w.palette()
-            color = self._base_color
+        for w in (self._multi, self._single):
             if not value:
                 w.setPlaceholderText("Describe the content you want to see, or leave empty.")
             else:
                 w.setPlaceholderText("Describe content you want to avoid.")
-                o = 8 if theme.is_dark else 16
-                color = QColor(color.red(), color.green() - o, color.blue() - o)
-            palette.setColor(QPalette.ColorRole.Base, color)
-            w.setPalette(palette)
+
+        if value:
+            self.setContentsMargins(0, 2, 0, 2)
+            self.setFrameStyle(QFrame.Shape.StyledPanel)
+            self.setStyleSheet(f"QFrame {{ background: rgba(255, 0, 0, 15); }}")
+        else:
+            self.setFrameStyle(QFrame.Shape.NoFrame)
+
+    @property
+    def has_focus(self):
+        return self._multi.hasFocus() or self._single.hasFocus()
+
+    @has_focus.setter
+    def has_focus(self, value: bool):
+        if value:
+            if self._line_count > 1:
+                self._multi.setFocus()
+            else:
+                self._single.setFocus()
+
+    def install_event_filter(self, obj: QObject):
+        self._multi.installEventFilter(obj)
+        self._single.installEventFilter(obj)
+
+    def move_cursor_to_end(self):
+        if self._line_count > 1:
+            cursor = self._multi.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self._multi.setTextCursor(cursor)
+        else:
+            self._single.setCursorPosition(len(self._single.text()))
 
 
 class StrengthWidget(QWidget):
@@ -719,6 +741,17 @@ class GenerateButton(QPushButton):
             style.drawItemText(painter, cost_rect, vcenter, self.palette(), True, str(self._cost))
             cost_rect = cost_rect.adjusted(cost_width + 4, 0, 0, 0)
             style.drawItemPixmap(painter, cost_rect, vcenter, pixmap)
+
+
+def create_wide_tool_button(icon_name: str, text: str, parent=None):
+    button = QToolButton(parent)
+    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+    button.setIcon(theme.icon(icon_name))
+    button.setToolTip(text)
+    button.setAutoRaise(True)
+    icon_height = button.iconSize().height()
+    button.setIconSize(QSize(int(icon_height * 1.25), icon_height))
+    return button
 
 
 def _paint_tool_drop_down(widget: QToolButton, text: str | None = None):

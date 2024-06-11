@@ -8,13 +8,13 @@ from typing import Any
 
 from ai_diffusion import workflow
 from ai_diffusion.api import LoraInput, WorkflowKind, WorkflowInput, ControlInput
-from ai_diffusion.api import InpaintMode, FillMode, TextInput
+from ai_diffusion.api import InpaintMode, FillMode, ConditioningInput, RegionInput
 from ai_diffusion.client import ClientModels, CheckpointInfo
 from ai_diffusion.comfy_client import ComfyClient
 from ai_diffusion.cloud_client import CloudClient
 from ai_diffusion.resources import ControlMode
 from ai_diffusion.settings import PerformanceSettings
-from ai_diffusion.image import Mask, Bounds, Extent, Image
+from ai_diffusion.image import Mask, Bounds, Extent, Image, ImageCollection
 from ai_diffusion.client import Client, ClientEvent
 from ai_diffusion.style import SDVersion, Style
 from ai_diffusion.pose import Pose
@@ -66,7 +66,7 @@ def default_style(client: Client, sd_ver=SDVersion.sd15):
 
 
 def create(kind: WorkflowKind, client: Client, **kwargs):
-    kwargs.setdefault("text", TextInput(""))
+    kwargs.setdefault("cond", ConditioningInput(""))
     kwargs.setdefault("style", default_style(client))
     kwargs.setdefault("seed", default_seed)
     kwargs.setdefault("perf", default_perf)
@@ -100,7 +100,7 @@ def run_and_save(
     async def runner():
         return await receive_images(client, work)
 
-    results = qtapp.run(runner())
+    results: ImageCollection = qtapp.run(runner())
     assert len(results) == 1
     client_name = "local" if isinstance(client, ComfyClient) else "cloud"
     if composition_image and composition_mask:
@@ -157,13 +157,13 @@ def test_prepare_lora():
     job = workflow.prepare(
         WorkflowKind.generate,
         canvas=Extent(512, 512),
-        text=TextInput("test <lora:PINK_UNICORNS:0.77>"),
+        cond=ConditioningInput("test <lora:PINK_UNICORNS:0.77>"),
         style=style,
         seed=29,
         models=models,
         perf=default_perf,
     )
-    assert job.text and job.text.positive == "test"
+    assert job.conditioning and job.conditioning.positive == "test"
     assert (
         job.models
         and LoraInput("PINK_UNICORNS", 0.77) in job.models.loras
@@ -173,8 +173,8 @@ def test_prepare_lora():
 
 @pytest.mark.parametrize("extent", [Extent(256, 256), Extent(800, 800), Extent(512, 1024)])
 def test_generate(qtapp, client, extent: Extent):
-    prompt = TextInput("ship")
-    job = create(WorkflowKind.generate, client, canvas=extent, text=prompt)
+    prompt = ConditioningInput("ship")
+    job = create(WorkflowKind.generate, client, canvas=extent, cond=prompt)
     result = run_and_save(qtapp, client, job, f"test_generate_{extent.width}x{extent.height}")
     assert result.extent == extent
 
@@ -182,14 +182,14 @@ def test_generate(qtapp, client, extent: Extent):
 def test_inpaint(qtapp, client):
     image = Image.load(image_dir / "beach_768x512.webp")
     mask = Mask.rectangle(Bounds(40, 120, 320, 200), feather=10)
-    cond = TextInput("beach, the sea, cliffs, palm trees")
+    cond = ConditioningInput("beach, the sea, cliffs, palm trees")
     job = create(
         WorkflowKind.inpaint,
         client,
         canvas=image,
         mask=mask,
         style=default_style(client, SDVersion.sd15),
-        text=cond,
+        cond=cond,
         perf=PerformanceSettings(batch_size=3),  # max 3 images@512x512 -> 2 images@768x512
         inpaint=detect_inpaint(
             InpaintMode.fill, mask.bounds, SDVersion.sd15, cond.positive, [], 1.0
@@ -212,14 +212,14 @@ def test_inpaint(qtapp, client):
 def test_inpaint_upscale(qtapp, client, sdver):
     image = Image.load(image_dir / "beach_1536x1024.webp")
     mask = Mask.rectangle(Bounds(300, 200, 768, 512), feather=20)
-    prompt = TextInput("ship")
+    prompt = ConditioningInput("ship")
     job = create(
         WorkflowKind.inpaint,
         client,
         canvas=image,
         mask=mask,
         style=default_style(client, sdver),
-        text=prompt,
+        cond=prompt,
         perf=PerformanceSettings(batch_size=3),  # 2 images for 1.5, 1 image for XL
         inpaint=detect_inpaint(
             InpaintMode.add_object, mask.bounds, sdver, prompt.positive, [], 1.0
@@ -257,13 +257,13 @@ def test_inpaint_odd_resolution(qtapp, client):
 def test_inpaint_area_conditioning(qtapp, client):
     image = Image.load(image_dir / "lake_1536x1024.webp")
     mask = Mask.load(image_dir / "lake_1536x1024_mask_bottom_right.png")
-    prompt = TextInput("(crocodile)")
+    prompt = ConditioningInput("(crocodile)")
     job = create(
         WorkflowKind.inpaint,
         client,
         canvas=image,
         mask=mask,
-        text=prompt,
+        cond=prompt,
         inpaint=detect_inpaint(
             InpaintMode.add_object, mask.bounds, SDVersion.sd15, prompt.positive, [], 1.0
         ),
@@ -279,7 +279,7 @@ def test_inpaint_remove_object(qtapp, client):
         client,
         canvas=image,
         mask=mask,
-        text=TextInput("tree branch"),
+        cond=ConditioningInput("tree branch"),
         inpaint=detect_inpaint(
             InpaintMode.remove_object, mask.bounds, SDVersion.sd15, "tree", [], 1.0
         ),
@@ -300,7 +300,7 @@ def test_refine(qtapp, client, setup):
         client,
         canvas=image,
         style=default_style(client, sdver),
-        text=TextInput("painting in the style of Vincent van Gogh"),
+        cond=ConditioningInput("painting in the style of Vincent van Gogh"),
         strength=strength,
         perf=PerformanceSettings(batch_size=1, max_pixel_count=2),
     )
@@ -317,7 +317,7 @@ def test_refine_region(qtapp, client, setup):
     }[setup]
     image = Image.load(image_dir / "lake_region.webp")
     mask = Mask.load(image_dir / "lake_region_mask.png")
-    prompt = TextInput("waterfall")
+    prompt = ConditioningInput("waterfall")
     params = detect_inpaint(
         InpaintMode.fill, mask.bounds, SDVersion.sd15, prompt.positive, [], strength
     )
@@ -327,7 +327,7 @@ def test_refine_region(qtapp, client, setup):
         canvas=image,
         mask=mask,
         style=default_style(client, sdver),
-        text=prompt,
+        cond=prompt,
         strength=strength,
         inpaint=params,
     )
@@ -338,7 +338,7 @@ def test_refine_region(qtapp, client, setup):
 def test_differential_diffusion(qtapp, client):
     image = Image.scale(Image.load(image_dir / "beach_1536x1024.webp"), Extent(768, 512))
     mask = Mask.load(image_dir / "differential_diffusion_mask.webp")
-    prompt = TextInput("barren plain, volcanic wasteland, burned trees")
+    prompt = ConditioningInput("barren plain, volcanic wasteland, burned trees")
     params = detect_inpaint(InpaintMode.fill, mask.bounds, SDVersion.sd15, prompt.positive, [], 0.9)
     job = create(
         WorkflowKind.refine_region,
@@ -346,11 +346,90 @@ def test_differential_diffusion(qtapp, client):
         canvas=image,
         mask=mask,
         style=default_style(client, SDVersion.sd15),
-        text=prompt,
+        cond=prompt,
         strength=0.9,
         inpaint=params,
     )
     run_and_save(qtapp, client, job, "test_differential_diffusion", image, mask)
+
+
+def region_prompt():
+    root_text = "a collection of objects on a wooden workbench, evening light, dust motes"
+    prompt = ConditioningInput(root_text)
+    prompt.regions = [
+        RegionInput(
+            Mask.load(image_dir / "region_mask_bg.png").to_image(),
+            Bounds(0, 0, 1024, 1024),
+            "a workbench made of wood, sturdy and well-used",
+        ),
+        RegionInput(
+            Mask.load(image_dir / "region_mask_1.png").to_image(),
+            Bounds(320, 220, 350, 580),
+            "a chemical bottle, something pink oozing out, flask",
+        ),
+        RegionInput(
+            Mask.load(image_dir / "region_mask_2.png").to_image(),
+            Bounds(600, 150, 424, 600),
+            "a miniature model of a sailing boat made out of light wood, with red sails",
+        ),
+        RegionInput(
+            Mask.load(image_dir / "region_mask_3.png").to_image(),
+            Bounds(0, 250, 355, 700),
+            "a gramophone with a large horn, made of brass",
+        ),
+    ]
+    for region in prompt.regions:
+        region.positive += " " + root_text
+    return prompt
+
+
+@pytest.mark.parametrize("sdver", [SDVersion.sd15, SDVersion.sdxl])
+def test_regions(qtapp, client, sdver: SDVersion):
+    style = default_style(client, sdver)
+    job = create(
+        WorkflowKind.generate, client, canvas=Extent(1024, 1024), cond=region_prompt(), style=style
+    )
+    run_and_save(qtapp, client, job, f"test_regions_{sdver.name}")
+
+
+@pytest.mark.parametrize("kind", [WorkflowKind.inpaint, WorkflowKind.refine_region])
+def test_regions_inpaint(qtapp, client, kind: WorkflowKind):
+    image = Image.load(image_dir / "regions_inpaint.webp")
+    mask = Mask.load(image_dir / "region_mask_inpaint.png")
+    prompt = region_prompt()
+    prompt.regions = prompt.regions[:2] + prompt.regions[3:]
+    prompt.regions[0].mask = Mask.load(image_dir / "region_mask_bg2.png").to_image()
+    params = detect_inpaint(InpaintMode.fill, mask.bounds, SDVersion.sd15, prompt.positive, [], 1.0)
+    strength = 0.7 if kind is WorkflowKind.refine_region else 1.0
+    job = create(
+        kind, client, canvas=image, mask=mask, cond=prompt, inpaint=params, strength=strength
+    )
+    run_and_save(qtapp, client, job, f"test_regions_{kind.name}", image, mask)
+
+
+def test_regions_upscale(qtapp, client: Client):
+    job = create(
+        WorkflowKind.upscale_tiled,
+        client,
+        canvas=Image.load(image_dir / "regions_base.webp"),
+        cond=region_prompt(),
+        strength=0.5,
+        upscale_model=client.models.default_upscaler,
+        upscale_factor=2,
+    )
+    run_and_save(qtapp, client, job, f"test_regions_upscale")
+
+
+def test_regions_ip_adapter(qtapp, client: Client):
+    cat = Image.load(image_dir / "cat.webp")
+    flowers = Image.load(image_dir / "flowers.webp")
+    prompt = region_prompt()
+    prompt.regions[2].positive = ""
+    prompt.regions[2].control.append(ControlInput(ControlMode.reference, flowers))
+    prompt.regions[3].positive = ""
+    prompt.regions[3].control.append(ControlInput(ControlMode.reference, cat))
+    job = create(WorkflowKind.generate, client, canvas=Extent(1024, 1024), cond=prompt)
+    run_and_save(qtapp, client, job, f"test_regions_ip_adapter")
 
 
 @pytest.mark.parametrize(
@@ -361,8 +440,8 @@ def test_control_scribble(qtapp, client, op):
     inpaint_image = Image.load(image_dir / "owls_inpaint.webp")
     mask = Mask.load(image_dir / "owls_mask.png")
     mask.bounds = Bounds(256, 0, 256, 512)
-    prompt = TextInput("owls")
     control = [ControlInput(ControlMode.scribble, scribble_image)]
+    prompt = ConditioningInput("owls", control=control)
 
     args: dict[str, Any]
     if op == "generate":
@@ -387,7 +466,7 @@ def test_control_scribble(qtapp, client, op):
         params = detect_inpaint(InpaintMode.fill, mask.bounds, SDVersion.sd15, "owls", control, 1.0)
         args = dict(kind=WorkflowKind.inpaint, canvas=inpaint_image, mask=mask, inpaint=params)
 
-    job = create(client=client, text=prompt, control=control, **args)
+    job = create(client=client, cond=prompt, **args)
     if op in ["inpaint", "refine_region", "inpaint_upscale"]:
         run_and_save(qtapp, client, job, f"test_control_scribble_{op}", inpaint_image, mask)
     else:
@@ -396,11 +475,9 @@ def test_control_scribble(qtapp, client, op):
 
 def test_control_canny_downscale(qtapp, client):
     canny_image = Image.load(image_dir / "shrine_canny.webp")
-    prompt = TextInput("shrine")
     control = [ControlInput(ControlMode.canny_edge, canny_image, 1.0)]
-    job = create(
-        WorkflowKind.generate, client, canvas=Extent(999, 999), text=prompt, control=control
-    )
+    prompt = ConditioningInput("shrine", control=control)
+    job = create(WorkflowKind.generate, client, canvas=Extent(999, 999), cond=prompt)
     run_and_save(qtapp, client, job, "test_control_canny_downscale")
 
 
@@ -466,13 +543,11 @@ def test_create_hand_refiner_image(qtapp, client: Client, setup):
 @pytest.mark.parametrize("sdver", [SDVersion.sd15, SDVersion.sdxl])
 def test_ip_adapter(qtapp, client, sdver):
     image = Image.load(image_dir / "cat.webp")
-    prompt = TextInput("cat on a rooftop in paris")
-    control = [ControlInput(ControlMode.reference, image, 0.6)]
+    prompt = ConditioningInput("cat on a rooftop in paris")
+    prompt.control = [ControlInput(ControlMode.reference, image, 0.6)]
     extent = Extent(512, 512) if sdver == SDVersion.sd15 else Extent(1024, 1024)
     style = default_style(client, sdver)
-    job = create(
-        WorkflowKind.generate, client, style=style, canvas=extent, text=prompt, control=control
-    )
+    job = create(WorkflowKind.generate, client, style=style, canvas=extent, cond=prompt)
     run_and_save(qtapp, client, job, f"test_ip_adapter_{sdver.name}")
 
 
@@ -480,17 +555,16 @@ def test_ip_adapter_region(qtapp, client):
     image = Image.load(image_dir / "flowers.webp")
     mask = Mask.load(image_dir / "flowers_mask.png")
     control_img = Image.load(image_dir / "pegonia.webp")
-    prompt = TextInput("potted flowers")
-    control = [ControlInput(ControlMode.reference, control_img, 0.7)]
-    inpaint = automatic_inpaint(image.extent, mask.bounds, SDVersion.sd15, prompt.positive, control)
+    prompt = ConditioningInput("potted flowers")
+    prompt.control = [ControlInput(ControlMode.reference, control_img, 0.7)]
+    inpaint = automatic_inpaint(image.extent, mask.bounds, SDVersion.sd15, prompt.positive)
     job = create(
         WorkflowKind.refine_region,
         client,
         canvas=image,
         mask=mask,
         inpaint=inpaint,
-        text=prompt,
-        control=control,
+        cond=prompt,
         strength=0.6,
     )
     run_and_save(qtapp, client, job, "test_ip_adapter_region", image, mask)
@@ -503,7 +577,8 @@ def test_ip_adapter_batch(qtapp, client):
         ControlInput(ControlMode.reference, image1, 1.0),
         ControlInput(ControlMode.reference, image2, 1.0),
     ]
-    job = create(WorkflowKind.generate, client, canvas=Extent(512, 512), control=control)
+    cond = ConditioningInput("", control=control)
+    job = create(WorkflowKind.generate, client, canvas=Extent(512, 512), cond=cond)
     run_and_save(qtapp, client, job, "test_ip_adapter_batch")
 
 
@@ -518,7 +593,7 @@ def test_style_composition(qtapp, client):
         WorkflowKind.generate,
         client,
         canvas=Extent(1024, 1024),
-        control=control,
+        cond=ConditioningInput("", control=control),
         style=default_style(client, SDVersion.sdxl),
     )
     run_and_save(qtapp, client, job, "test_style_composition")
@@ -530,9 +605,9 @@ def test_ip_adapter_face(qtapp, client, sdver):
         pytest.skip("IP-adapter FaceID is not available in the cloud")
     extent = Extent(650, 650) if sdver == SDVersion.sd15 else Extent(1024, 1024)
     image = Image.load(image_dir / "face.webp")
-    cond = TextInput("portrait photo of a woman at a garden party")
-    control = [ControlInput(ControlMode.face, image, 0.9)]
-    job = create(WorkflowKind.generate, client, canvas=extent, text=cond, control=control)
+    cond = ConditioningInput("portrait photo of a woman at a garden party")
+    cond.control = [ControlInput(ControlMode.face, image, 0.9)]
+    job = create(WorkflowKind.generate, client, canvas=extent, cond=cond)
     run_and_save(qtapp, client, job, f"test_ip_adapter_face_{sdver.name}")
 
 
@@ -552,7 +627,7 @@ def test_upscale_tiled(qtapp, client: Client, sdver):
         upscale_model=client.models.default_upscaler,
         upscale_factor=2.0,
         style=default_style(client, sdver),
-        text=TextInput("4k uhd"),
+        cond=ConditioningInput("4k uhd", control=[ControlInput(ControlMode.blur, None)]),
         strength=0.5,
     )
     run_and_save(qtapp, client, job, f"test_upscale_tiled_{sdver.name}")
@@ -564,8 +639,7 @@ def test_generate_live(qtapp, client):
         WorkflowKind.generate,
         client,
         canvas=Extent(512, 512),
-        text=TextInput("owls"),
-        control=[ControlInput(ControlMode.scribble, scribble)],
+        cond=ConditioningInput("owls", control=[ControlInput(ControlMode.scribble, scribble)]),
         is_live=True,
     )
     run_and_save(qtapp, client, job, "test_generate_live")
@@ -581,7 +655,7 @@ def test_refine_live(qtapp, client, sdver):
         client,
         style=default_style(client, sdver),
         canvas=image,
-        text=TextInput(""),
+        cond=ConditioningInput(""),
         strength=0.4,
         is_live=True,
     )
@@ -591,9 +665,9 @@ def test_refine_live(qtapp, client, sdver):
 def test_refine_max_pixels(qtapp, client):
     perf_settings = PerformanceSettings(max_pixel_count=1)  # million pixels
     image = Image.load(image_dir / "lake_1536x1024.webp")
-    cond = TextInput("watercolor painting on structured paper, aquarelle, stylized")
+    cond = ConditioningInput("watercolor painting on structured paper, aquarelle, stylized")
     job = create(
-        WorkflowKind.refine, client, canvas=image, text=cond, strength=0.6, perf=perf_settings
+        WorkflowKind.refine, client, canvas=image, cond=cond, strength=0.6, perf=perf_settings
     )
     run_and_save(qtapp, client, job, f"test_refine_max_pixels")
 
@@ -604,14 +678,14 @@ def test_outpaint_resolution_multiplier(qtapp, client):
     beach = Image.load(image_dir / "beach_1536x1024.webp")
     image.draw_image(beach, (512, 0))
     mask = Mask.load(image_dir / "beach_outpaint_mask.png")
-    prompt = TextInput("photo of a beach and jungle, nature photography, tropical")
+    prompt = ConditioningInput("photo of a beach and jungle, nature photography, tropical")
     params = automatic_inpaint(image.extent, mask.bounds, prompt=prompt.positive)
     job = create(
         WorkflowKind.inpaint,
         client,
         canvas=image,
         mask=mask,
-        text=prompt,
+        cond=prompt,
         inpaint=params,
         perf=perf_settings,
     )
@@ -664,7 +738,7 @@ def run_inpaint_benchmark(
     mask = Mask.load(image_dir / "inpaint" / f"{scenario}-mask.webp")
     if bounds:
         mask = Mask.crop(mask, bounds)
-    text = TextInput(prompt if prompt_mode == "prompt" else "")
+    text = ConditioningInput(prompt if prompt_mode == "prompt" else "")
     params = detect_inpaint(mode, mask.bounds, sdver, text.positive, [], 1.0)
     job = create(
         WorkflowKind.inpaint,
@@ -672,7 +746,7 @@ def run_inpaint_benchmark(
         style=default_style(client, sdver),
         canvas=image,
         mask=mask,
-        text=text,
+        cond=text,
         inpaint=params,
         seed=seed,
     )

@@ -4,7 +4,6 @@ from enum import Enum
 from typing import Any, Generator, Iterable, NamedTuple
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from ai_diffusion.settings import settings
 from .api import WorkflowInput
 from .image import ImageCollection
 from .properties import Property, ObservableProperties
