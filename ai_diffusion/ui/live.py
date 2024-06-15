@@ -67,6 +67,14 @@ class LiveWidget(QWidget):
         self.apply_button.setToolTip("Copy the current result to the active layer")
         self.apply_button.clicked.connect(self.apply_result)
 
+        self.apply_layer_button = QToolButton(self)
+        self.apply_layer_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.apply_layer_button.setIcon(theme.icon("apply-layer"))
+        self.apply_layer_button.setAutoRaise(True)
+        self.apply_layer_button.setEnabled(False)
+        self.apply_layer_button.setToolTip("Create a new layer with the current result")
+        self.apply_layer_button.clicked.connect(self.apply_result_layer)
+
         self.style_select = StyleSelectWidget(self)
 
         controls_layout = QHBoxLayout()
@@ -74,6 +82,7 @@ class LiveWidget(QWidget):
         controls_layout.addWidget(self.active_button)
         controls_layout.addWidget(self.record_button)
         controls_layout.addWidget(self.apply_button)
+        controls_layout.addWidget(self.apply_layer_button)
         controls_layout.addWidget(self.style_select)
         layout.addLayout(controls_layout)
 
@@ -111,7 +120,10 @@ class LiveWidget(QWidget):
         prompt_buttons_layout.addWidget(self.add_control_button)
 
         self.region_widget = ActiveRegionWidget(self._model.regions, self, header=PromptHeader.icon)
+        self.region_widget.focused.connect(self.focus_active_region)
+
         self.prompt_widget = ActiveRegionWidget(self._model.regions, self, header=PromptHeader.icon)
+        self.prompt_widget.focused.connect(self.focus_root_region)
 
         prompt_text_layout = QVBoxLayout()
         prompt_text_layout.setSpacing(2)
@@ -171,6 +183,7 @@ class LiveWidget(QWidget):
                 model.live.is_active_changed.connect(self.update_is_active),
                 model.live.is_recording_changed.connect(self.update_is_recording),
                 model.live.has_result_changed.connect(self.apply_button.setEnabled),
+                model.live.has_result_changed.connect(self.apply_layer_button.setEnabled),
                 self.add_region_button.clicked.connect(model.regions.create_region_layer),
                 self.add_control_button.clicked.connect(model.regions.add_control),
                 self.random_seed_button.clicked.connect(model.generate_seed),
@@ -179,7 +192,10 @@ class LiveWidget(QWidget):
                 model.progress_changed.connect(self.update_progress),
                 model.live.result_available.connect(self.show_result),
                 model.regions.active_changed.connect(self.update_region),
+                model.layers.active_changed.connect(self.update_region),
             ]
+            self.apply_button.setEnabled(model.live.has_result)
+            self.apply_layer_button.setEnabled(model.live.has_result)
             self.prompt_widget.region = model.regions
             self.region_widget.root = model.regions
             self.update_region()
@@ -202,11 +218,18 @@ class LiveWidget(QWidget):
         has_regions = len(self.model.regions) > 0
         max_lines = 1 if has_regions else 2
         self.region_widget.setVisible(has_regions)
-        self.region_widget.region = self.model.regions.active
+        self.region_widget.region = self.model.regions.region_for_active_layer
         self.prompt_widget.header_style = PromptHeader.icon if has_regions else PromptHeader.none
         self.region_widget.max_lines = max_lines
         self.prompt_widget.max_lines = max_lines
-        self.control_list.model = self.model.regions.control
+        self.control_list.model = self.model.regions.active_or_root.control
+
+    def focus_root_region(self):
+        if len(self.model.regions) > 0:
+            self.model.regions.active = self.model.regions
+
+    def focus_active_region(self):
+        self.model.regions.active = self.model.regions.region_for_active_layer
 
     def update_is_recording(self):
         self.record_button.setIcon(
@@ -231,3 +254,6 @@ class LiveWidget(QWidget):
 
     def apply_result(self):
         self.model.live.apply_result()
+
+    def apply_result_layer(self):
+        self.model.live.apply_result(layer_only=True)
