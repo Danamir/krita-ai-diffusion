@@ -23,6 +23,15 @@ from .util import client_logger as log
 from .workflow import create as create_workflow
 from . import resources, util
 
+if util.is_macos:
+    try:
+        import certifi  # type: ignore
+        import os
+
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    except Exception as e:
+        log.error(f"Error setting SSL_CERT_FILE on MacOS: {e}")
+
 
 class JobInfo(NamedTuple):
     id: str
@@ -102,6 +111,9 @@ class ComfyClient(Client):
         models.node_inputs = {name: nodes[name]["input"].get("required", None) for name in nodes}
         available_resources = client.models.resources = {}
 
+        clip_models = nodes["DualCLIPLoader"]["input"]["required"]["clip_name1"][0]
+        available_resources.update(_find_clip_models(clip_models))
+
         control_models = nodes["ControlNetLoader"]["input"]["required"]["control_net_name"][0]
         available_resources.update(_find_control_models(control_models))
 
@@ -124,7 +136,7 @@ class ComfyClient(Client):
         client._refresh_models(nodes, await client.try_inspect_checkpoints())
 
         # Check supported SD versions and make sure there is at least one
-        missing = {ver: client._check_workload(ver) for ver in [SDVersion.sd15, SDVersion.sdxl]}
+        missing = {ver: client._check_workload(ver) for ver in SDVersion.list()}
         client._supported_sd_versions = [ver for ver, miss in missing.items() if len(miss) == 0]
         if len(client._supported_sd_versions) == 0:
             raise missing[SDVersion.sd15][0]
@@ -283,7 +295,7 @@ class ComfyClient(Client):
                     info.get("is_refiner", False),
                 )
                 for filename, info in checkpoint_info.items()
-                if info["base_model"] in ["sd15", "sdxl"]
+                if info["base_model"] in ["sd15", "sd3", "sdxl"]
             }
         else:
             models.checkpoints = {
@@ -406,14 +418,19 @@ def _find_model(
     return found
 
 
-_sd_versions = [SDVersion.sd15, SDVersion.sdxl]
+def _find_clip_models(model_list: Sequence[str], ver=SDVersion.sd3):
+    kind = ResourceKind.clip
+    return {
+        resource_id(kind, ver, name): _find_model(model_list, kind, ver, name)
+        for name in ["clip_g", "clip_l"]
+    }
 
 
 def _find_control_models(model_list: Sequence[str]):
     kind = ResourceKind.controlnet
     return {
         resource_id(kind, ver, mode): _find_model(model_list, kind, ver, mode)
-        for mode, ver in product(ControlMode, _sd_versions)
+        for mode, ver in product(ControlMode, SDVersion.list())
         if mode.is_control_net
     }
 
@@ -422,7 +439,7 @@ def _find_ip_adapters(model_list: Sequence[str]):
     kind = ResourceKind.ip_adapter
     return {
         resource_id(kind, ver, mode): _find_model(model_list, kind, ver, mode)
-        for mode, ver in product(ControlMode, _sd_versions)
+        for mode, ver in product(ControlMode, SDVersion.list())
         if mode.is_ip_adapter
     }
 
@@ -451,7 +468,7 @@ def _find_upscalers(model_list: Sequence[str]):
 
 def _find_loras(model_list: Sequence[str]):
     kind = ResourceKind.lora
-    common_loras = list(product(["lcm", "face"], _sd_versions))
+    common_loras = list(product(["hyper", "lcm", "face"], [SDVersion.sd15, SDVersion.sdxl]))
     sdxl_loras = [("lightning", SDVersion.sdxl)]
     return {
         resource_id(kind, ver, name): _find_model(model_list, kind, ver, name)

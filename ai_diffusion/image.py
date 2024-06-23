@@ -241,6 +241,14 @@ class Bounds(NamedTuple):
         height = min(a.y + a.height, b.y + b.height) - y
         return Bounds(x, y, max(0, width), max(0, height))
 
+    @staticmethod
+    def union(a: "Bounds", b: "Bounds"):
+        x = min(a.x, b.x)
+        y = min(a.y, b.y)
+        width = max(a.x + a.width, b.x + b.width) - x
+        height = max(a.y + a.height, b.y + b.height) - y
+        return Bounds(x, y, width, height)
+
     @property
     def area(self):
         return self.width * self.height
@@ -358,6 +366,8 @@ class Image:
     def scale(img: "Image", target: Extent):
         if isinstance(img, DummyImage):
             return DummyImage(target)
+        if img.extent == target:
+            return img
         mode = Qt.AspectRatioMode.IgnoreAspectRatio
         quality = Qt.TransformationMode.SmoothTransformation
         scaled = img._qimage.scaled(target.width, target.height, mode, quality)
@@ -503,16 +513,12 @@ class Image:
         return Mask(bounds or Bounds(0, 0, *self.extent), self._qimage)
 
     def draw_image(self, image: "Image", offset: tuple[int, int] = (0, 0), keep_alpha=False):
-        w, h = self.extent
-        x, y = offset[0] if offset[0] >= 0 else w + offset[0], (
-            offset[1] if offset[1] >= 0 else h + offset[1]
-        )
         mode = QPainter.CompositionMode.CompositionMode_SourceOver
         if keep_alpha:
             mode = QPainter.CompositionMode.CompositionMode_SourceAtop
         painter = QPainter(self._qimage)
         painter.setCompositionMode(mode)
-        painter.drawImage(x, y, image._qimage)
+        painter.drawImage(*offset, image._qimage)
         painter.end()
 
     def save(self, filepath: Union[str, Path]):

@@ -59,25 +59,17 @@ def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[in
     return steps, start_at_step
 
 
-def _sampler_params(sampling: SamplingInput, strength: float | None = None, advanced=True):
-    """Assemble the parameters which are passed to ComfyUI's KSampler/KSamplerAdvanced node.
-    Optionally adjust the number of steps based on the strength parameter (for hires pass).
-    """
+def _sampler_params(sampling: SamplingInput, strength: float | None = None):
     params: dict[str, Any] = dict(
         sampler=sampling.sampler,
         scheduler=sampling.scheduler,
-        steps=sampling.actual_steps,
+        steps=sampling.total_steps,
+        start_at_step=sampling.start_step,
         cfg=sampling.cfg_scale,
         seed=sampling.seed,
     )
-    assert strength is None or advanced
-    if advanced:
-        params["steps"] = sampling.total_steps
-        params["start_at_step"] = sampling.start_step
-        if strength is not None:
-            params["steps"], params["start_at_step"] = _apply_strength(
-                strength, sampling.total_steps
-            )
+    if strength is not None:
+        params["steps"], params["start_at_step"] = _apply_strength(strength, sampling.total_steps)
     return params
 
 
@@ -89,6 +81,11 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
             f"Style checkpoint {checkpoint.checkpoint} not found, using default {checkpoint_model}"
         )
     model, clip, vae = w.load_checkpoint(checkpoint_model)
+
+    if checkpoint.version is SDVersion.sd3:
+        clip_models = models.for_version(checkpoint.version).clip
+        model = w.model_sampling_sd3(model)
+        clip = w.load_dual_clip(clip_models["clip_g"], clip_models["clip_l"], type="sd3")
 
     if checkpoint.clip_skip != StyleSettings.clip_skip.default:
         clip = w.clip_set_last_layer(clip, (checkpoint.clip_skip * -1))
@@ -102,14 +99,14 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     for lora in checkpoint.loras:
         model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
 
-    lcm_lora = models.for_checkpoint(checkpoint_model).lora["lcm"]
-    is_lcm = any(l.name == lcm_lora for l in checkpoint.loras)
-
     if checkpoint.v_prediction_zsnr:
         model = w.model_sampling_discrete(model, "v_prediction", zsnr=True)
         model = w.rescale_cfg(model, 0.7)
-    elif is_lcm:
-        model = w.model_sampling_discrete(model, "lcm")
+
+    if checkpoint.version.supports_lcm:
+        lcm_lora = models.for_checkpoint(checkpoint_model).lora.find("lcm")
+        if lcm_lora and any(l.name == lcm_lora for l in checkpoint.loras):
+            model = w.model_sampling_discrete(model, "lcm")
 
     if checkpoint.self_attention_guidance:
         model = w.apply_self_attention_guidance(model)
@@ -512,7 +509,7 @@ def generate(
     model_orig = copy(model)
     model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
-    latent = w.empty_latent_image(extent.initial, batch_count)
+    latent = w.empty_latent_image(extent.initial, models.version, batch_count)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.initial, models
@@ -824,10 +821,7 @@ def create_control_image(
     input = w.load_image(image)
     result = None
 
-    if mode is ControlMode.canny_edge:
-        result = w.add("Canny", 1, image=input, low_threshold=0.4, high_threshold=0.8)
-
-    elif mode is ControlMode.hands:
+    if mode is ControlMode.hands:
         if bounds is None:
             current_extent = current_extent.multiple_of(64)
             resolution = current_extent.shortest_side
@@ -847,7 +841,7 @@ def create_control_image(
             empty = w.empty_image(current_extent)
             result = w.composite_image_masked(result, empty, None, bounds.x, bounds.y)
     else:
-        current_extent = current_extent.multiple_of(64)
+        current_extent = current_extent.multiple_of(64).at_least(512)
         args = {"image": input, "resolution": current_extent.shortest_side}
         if mode is ControlMode.scribble:
             result = w.add("PiDiNetPreprocessor", 1, **args, safe="enable")
@@ -855,10 +849,17 @@ def create_control_image(
         elif mode is ControlMode.line_art:
             result = w.add("LineArtPreprocessor", 1, **args, coarse="disable")
         elif mode is ControlMode.soft_edge:
-            result = w.add("HEDPreprocessor", 1, **args, safe="disable")
+            args["merge_with_lineart"] = "lineart_standard"
+            args["lineart_lower_bound"] = 0.0
+            args["lineart_upper_bound"] = 1.0
+            args["object_min_size"] = 36
+            args["object_connectivity"] = 1
+            result = w.add("AnyLineArtPreprocessor_aux", 1, **args)
+        elif mode is ControlMode.canny_edge:
+            result = w.add("CannyEdgePreprocessor", 1, **args, low_threshold=80, high_threshold=200)
         elif mode is ControlMode.depth:
-            model = "depth_anything_vitb14.pth"
-            result = w.add("DepthAnythingPreprocessor", 1, **args, ckpt_name=model)
+            model = "depth_anything_v2_vitb.pth"
+            result = w.add("DepthAnythingV2Preprocessor", 1, **args, ckpt_name=model)
         elif mode is ControlMode.normal:
             result = w.add("BAE-NormalMapPreprocessor", 1, **args)
         elif mode is ControlMode.pose:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from enum import Enum
 import krita
 from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
@@ -25,11 +25,28 @@ class LayerType(Enum):
 
     @property
     def is_image(self):
-        return not self.is_mask
+        return self in [  # Layers that contain color pixel data
+            LayerType.paint,
+            LayerType.vector,
+            LayerType.group,
+            LayerType.file,
+            LayerType.clone,
+            LayerType.filter,
+        ]
 
     @property
-    def is_mask(self):
+    def is_mask(self):  # Layers that contain alpha pixel data
         return self in [LayerType.transparency, LayerType.selection]
+
+    @property
+    def is_filter(self):
+        return self in [  # Layers which modify their parent layer
+            LayerType.transparency,
+            LayerType.selection,
+            LayerType.filtermask,
+            LayerType.transform,
+            LayerType.colorize,
+        ]
 
 
 class Layer(QObject):
@@ -42,15 +59,15 @@ class Layer(QObject):
     _node: krita.Node
     _name: str
     _parent: QUuid | None
+    _is_confirmed: bool
 
-    removed = pyqtSignal()
-
-    def __init__(self, manager: LayerManager, node: krita.Node):
+    def __init__(self, manager: LayerManager, node: krita.Node, is_confirmed=True):
         super().__init__()
         self._manager = manager
         self._node = node
         self._name = node.name()
         self._parent = maybe(krita.Node.uniqueId, node.parentNode())
+        self._is_confirmed = is_confirmed
 
     @property
     def id(self):
@@ -74,6 +91,10 @@ class Layer(QObject):
     @property
     def type(self):
         return LayerType(self._node.type())
+
+    @property
+    def is_confirmed(self):
+        return self._is_confirmed
 
     @property
     def was_removed(self):
@@ -155,7 +176,7 @@ class Layer(QObject):
             self._node.setPixelData(blank.data, *layer_bounds)
         self._node.setPixelData(img.data, *bounds)
         if make_visible:
-            self.show()
+            self.is_visible = True
         if not silent and self.is_visible:
             self.refresh()
 
@@ -194,11 +215,6 @@ class Layer(QObject):
     def remove(self):
         self._node.remove()
         self._manager.update()
-
-    def clone(self):
-        clone = self._node.clone()
-        self._node.parentNode().addChildNode(clone, self._node)
-        return self._manager.wrap(clone)
 
     def compute_bounds(self):
         bounds = self.bounds
@@ -251,6 +267,7 @@ class Layer(QObject):
         return self._node
 
     def poll(self):
+        self._is_confirmed = True
         changed = False
         if self._name != self._node.name():
             self._name = self._node.name()
@@ -308,6 +325,7 @@ class LayerManager(QObject):
     changed = pyqtSignal()
     active_changed = pyqtSignal()
     parent_changed = pyqtSignal(Layer)
+    removed = pyqtSignal(Layer)
 
     _doc: krita.Document | None
     _root: Layer | None
@@ -315,6 +333,7 @@ class LayerManager(QObject):
     _active_id: QUuid
     _last_active: Layer | None = None
     _timer: QTimer
+    _is_updating: bool = False
 
     def __init__(self, doc: krita.Document | None):
         super().__init__()
@@ -338,8 +357,18 @@ class LayerManager(QObject):
         if self._doc is not None:
             self._timer.stop()
 
+    @contextmanager
+    def _update_guard(self):
+        self._is_updating = True
+        try:
+            yield
+        finally:
+            self._is_updating = False
+
     def update(self):
         if self._doc is None:
+            return
+        if self._is_updating:
             return
         root_node = self._doc.rootNode()
         if root_node is None:
@@ -349,34 +378,37 @@ class LayerManager(QObject):
         if active is None:
             return
 
-        if active.uniqueId() != self._active_id:
-            self._active_id = active.uniqueId()
-            self.active_changed.emit()
+        with self._update_guard():
+            if active.uniqueId() != self._active_id:
+                self._active_id = active.uniqueId()
+                self.active_changed.emit()
 
-        removals = set(self._layers.keys())
-        changes = False
-        for n in traverse_layers(root_node):
-            id = n.uniqueId()
-            if id in self._layers:
-                removals.remove(id)
-                layer = self._layers[id]
-                changes = layer.poll() or changes
-            else:
-                self._layers[id] = Layer(self, n)
-                changes = True
+            removals = set(self._layers.keys())
+            changes = False
+            for n in traverse_layers(root_node):
+                id = n.uniqueId()
+                if id in self._layers:
+                    removals.remove(id)
+                    layer = self._layers[id]
+                    changes = layer.poll() or changes
+                else:
+                    self._layers[id] = Layer(self, n)
+                    changes = True
 
-        removals.remove(self.root.id)
-        for id in removals:
-            self._layers[id].removed.emit()
-            del self._layers[id]
+            removals.remove(self.root.id)
+            for id in removals:
+                if self._layers[id].is_confirmed:
+                    self.removed.emit(self._layers[id])
+                    del self._layers[id]
 
-        if removals or changes:
-            self.changed.emit()
+            if removals or changes:
+                self.changed.emit()
 
     def wrap(self, node: krita.Node) -> Layer:
         layer = self.find(node.uniqueId())
         if layer is None:
-            layer = self.updated()._layers[node.uniqueId()]
+            layer = Layer(self, node, is_confirmed=False)
+            self._layers[node.uniqueId()] = layer
         return layer
 
     def find(self, id: QUuid) -> Layer | None:
@@ -471,6 +503,17 @@ class LayerManager(QObject):
         parent.node.removeChildNode(layer.node)
         group_node.addChildNode(layer.node, None)
         return self.wrap(group_node)
+
+    def update_layer_image(self, layer: Layer, image: Image, bounds: Bounds, keep_alpha=False):
+        """Update layer pixel data by creating a new layer to allow undo."""
+        layer_bounds = layer.bounds
+        if not keep_alpha:
+            layer_bounds = Bounds.union(layer_bounds, bounds)
+        content = layer.get_pixels(layer_bounds)
+        content.draw_image(image, bounds.relative_to(layer_bounds).offset, keep_alpha=keep_alpha)
+        replacement = self.create(layer.name, content, layer_bounds, above=layer)
+        layer.remove()
+        return replacement
 
     _image_types = [t.value for t in LayerType if t.is_image]
     _mask_types = [t.value for t in LayerType if t.is_mask]

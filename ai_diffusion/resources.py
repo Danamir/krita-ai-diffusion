@@ -6,10 +6,10 @@ from typing import NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.18.0"
+version = "1.19.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "56333d48508f95bdef23870cad3239ba0ebdb8a9"
+comfy_version = "887a6341ed14c9904230cf55a0eabe95cd0218d3"
 
 
 class CustomNode(NamedTuple):
@@ -25,7 +25,7 @@ required_custom_nodes = [
         "ControlNet Preprocessors",
         "comfyui_controlnet_aux",
         "https://github.com/Fannovel16/comfyui_controlnet_aux",
-        "8e51eb352411212bcdda0bba8ddf69f889e6c23c",
+        "589af18adae7ff50009a0e021781dd1aa39c32e3",
         ["InpaintPreprocessor"],
     ),
     CustomNode(
@@ -39,7 +39,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "c324f6741dc9f2be794e6f121a113d03e06169a3",
+        "aff32e8da6db5db73bc6f84b30c87862e211544c",
         [
             "ETN_LoadImageBase64",
             "ETN_LoadMaskBase64",
@@ -51,7 +51,7 @@ required_custom_nodes = [
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "8b800e41bd86ce8f47ec077c839f8b11e52872b2",
+        "9927f44cb4a9878f1737cbabf8a29d2fc8182d0f",
         ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint"],
     ),
 ]
@@ -60,6 +60,7 @@ required_custom_nodes = [
 class SDVersion(Enum):
     sd15 = "SD 1.5"
     sdxl = "SD XL"
+    sd3 = "SD 3"
 
     auto = "Automatic"
     all = "All"
@@ -70,6 +71,8 @@ class SDVersion(Enum):
             return SDVersion.sd15
         if string == "sdxl":
             return SDVersion.sdxl
+        if string == "sd3":
+            return SDVersion.sd3
         return None
 
     @staticmethod
@@ -98,9 +101,18 @@ class SDVersion(Enum):
     def has_controlnet_inpaint(self):
         return self is SDVersion.sd15
 
+    @property
+    def supports_lcm(self):
+        return self in [SDVersion.sd15, SDVersion.sdxl]
+
+    @staticmethod
+    def list():
+        return [SDVersion.sd15, SDVersion.sdxl, SDVersion.sd3]
+
 
 class ResourceKind(Enum):
     checkpoint = "Stable Diffusion Checkpoint"
+    clip = "CLIP model"
     controlnet = "ControlNet model"
     clip_vision = "CLIP Vision model"
     ip_adapter = "IP-Adapter model"
@@ -316,21 +328,21 @@ required_models = [
         },
     ),
     ModelResource(
-        "LCM-LoRA (SD1.5)",
-        ResourceId(ResourceKind.lora, SDVersion.sd15, "lcm"),
+        "Hyper-SD LoRA (SD1.5)",
+        ResourceId(ResourceKind.lora, SDVersion.sd15, "hyper"),
         {
             Path(
-                "models/loras/lcm-lora-sdv1-5.safetensors"
-            ): "https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/resolve/main/pytorch_lora_weights.safetensors",
+                "models/loras/Hyper-SD15-8steps-CFG-lora.safetensors"
+            ): "https://huggingface.co/ByteDance/Hyper-SD/resolve/main/Hyper-SD15-8steps-CFG-lora.safetensors",
         },
     ),
     ModelResource(
-        "LCM-LoRA (SDXL)",
-        ResourceId(ResourceKind.lora, SDVersion.sdxl, "lcm"),
+        "Hyper-SD LoRA (SDXL)",
+        ResourceId(ResourceKind.lora, SDVersion.sdxl, "hyper"),
         {
             Path(
-                "models/loras/lcm-lora-sdxl.safetensors"
-            ): "https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
+                "models/loras/Hyper-SDXL-8steps-CFG-lora.safetensors"
+            ): "https://huggingface.co/ByteDance/Hyper-SD/resolve/main/Hyper-SDXL-8steps-CFG-lora.safetensors",
         },
     ),
     ModelResource(
@@ -400,6 +412,15 @@ default_checkpoints = [
             Path(
                 "models/checkpoints/juggernautXL_version6Rundiffusion.safetensors"
             ): "https://huggingface.co/lllyasviel/fav_models/resolve/main/fav/juggernautXL_version6Rundiffusion.safetensors"
+        },
+    ),
+    ModelResource(
+        "ZavyChroma XL",
+        ResourceId(ResourceKind.checkpoint, SDVersion.sdxl, "zavychroma"),
+        {
+            Path(
+                "models/checkpoints/zavychromaxl_v80.safetensors"
+            ): "https://huggingface.co/misri/zavychromaxl_v80/resolve/main/zavychromaxl_v80.safetensors"
         },
     ),
 ]
@@ -534,8 +555,8 @@ optional_models = [
         ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art),
         {
             Path(
-                "models/controlnet/sai_xl_sketch_256lora.safetensors"
-            ): "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/sai_xl_sketch_256lora.safetensors",
+                "models/controlnet/mistoLine_rank256.safetensors"
+            ): "https://huggingface.co/TheMistoAI/MistoLine/resolve/main/mistoLine_rank256.safetensors",
         },
     ),
     ModelResource(
@@ -561,8 +582,8 @@ optional_models = [
         ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose),
         {
             Path(
-                "models/controlnet/thibaud_xl_openpose_256lora.safetensors"
-            ): "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/thibaud_xl_openpose_256lora.safetensors",
+                "models/controlnet/controlnetxlCNXL_xinsirOpenpose.safetensors"
+            ): "https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors",
         },
     ),
     ModelResource(
@@ -616,8 +637,8 @@ prefetch_models = [
         ResourceId(ResourceKind.preprocessor, SDVersion.all, ControlMode.soft_edge),
         {
             Path(
-                "custom_nodes/comfyui_controlnet_aux/ckpts/lllyasviel/Annotators/ControlNetHED.pth"
-            ): "https://huggingface.co/lllyasviel/Annotators/resolve/main/ControlNetHED.pth"
+                "custom_nodes/comfyui_controlnet_aux/ckpts/TheMistoAI/MistoLine/Anyline/MTEED.pth"
+            ): "https://huggingface.co/TheMistoAI/MistoLine/resolve/main/Anyline/MTEED.pth"
         },
     ),
     ModelResource(
@@ -625,8 +646,8 @@ prefetch_models = [
         ResourceId(ResourceKind.preprocessor, SDVersion.all, ControlMode.depth),
         {
             Path(
-                "custom_nodes/comfyui_controlnet_aux/ckpts/LiheYoung/Depth-Anything/checkpoints/depth_anything_vitb14.pth"
-            ): "https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/depth_anything_vitb14.pth"
+                "custom_nodes/comfyui_controlnet_aux/ckpts/depth-anything/Depth-Anything-V2-Base/depth_anything_v2_vitb.pth"
+            ): "https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/depth_anything_v2_vitb.pth"
         },
     ),
     ModelResource(
@@ -639,6 +660,27 @@ prefetch_models = [
             Path(
                 "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx"
             ): "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx",
+        },
+    ),
+]
+
+deprecated_models = [
+    ModelResource(
+        "LCM-LoRA (SD1.5)",
+        ResourceId(ResourceKind.lora, SDVersion.sd15, "lcm"),
+        {
+            Path(
+                "models/loras/lcm-lora-sdv1-5.safetensors"
+            ): "https://huggingface.co/latent-consistency/lcm-lora-sdv1-5/resolve/main/pytorch_lora_weights.safetensors",
+        },
+    ),
+    ModelResource(
+        "LCM-LoRA (SDXL)",
+        ResourceId(ResourceKind.lora, SDVersion.sdxl, "lcm"),
+        {
+            Path(
+                "models/loras/lcm-lora-sdxl.safetensors"
+            ): "https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
         },
     ),
 ]
@@ -683,14 +725,17 @@ all_resources = (
 )
 
 
-def all_models():
-    return chain(
+def all_models(include_deprecated=False):
+    result = chain(
         required_models,
         optional_models,
         default_checkpoints,
         upscale_models,
         prefetch_models,
     )
+    if include_deprecated:
+        result = chain(result, deprecated_models)
+    return result
 
 
 _control_text = {
@@ -721,8 +766,8 @@ def resource_id(
     return f"{kind.name}-{identifier}-{version.name}"
 
 
-def find_resource(id: ResourceId):
-    return next((m for m in all_models() if m.id == id), None)
+def find_resource(id: ResourceId, include_deprecated=False):
+    return next((m for m in all_models(include_deprecated) if m.id == id), None)
 
 
 def search_path(
@@ -739,23 +784,28 @@ def is_required(
 
 # fmt: off
 search_paths: dict[str, list[str]] = {
+    resource_id(ResourceKind.clip, SDVersion.sd3, "clip_l") : ["clip_l"],
+    resource_id(ResourceKind.clip, SDVersion.sd3, "clip_g") : ["clip_g"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.inpaint):  ["control_v11p_sd15_inpaint"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.scribble): ["control_v11p_sd15_scribble", "control_lora_rank128_v11p_sd15_scribble"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.scribble): ["control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.scribble): ["xinsirscribble", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.line_art): ["control_v11p_sd15_lineart", "control_lora_rank128_v11p_sd15_lineart"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art): ["control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art): ["xinsirscribble", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.soft_edge): ["control_v11p_sd15_softedge", "control_lora_rank128_v11p_sd15_softedge"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.soft_edge): ["mistoline", "xinsirscribble"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.canny_edge): ["control_v11p_sd15_canny", "control_lora_rank128_v11p_sd15_canny"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.canny_edge): ["control-lora-canny-rank", "sai_xl_canny_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.canny_edge): ["xinsircanny", "control-lora-canny-rank", "sai_xl_canny_", "mistoline"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.depth): ["control_sd15_depth_anything", "control_v11f1p_sd15_depth", "control_lora_rank128_v11f1p_sd15_depth"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.depth): ["control-lora-depth-rank", "sai_xl_depth_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.normal): ["control_v11p_sd15_normalbae", "control_lora_rank128_v11p_sd15_normalbae"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.pose): ["control_v11p_sd15_openpose", "control_lora_rank128_v11p_sd15_openpose"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose): ["control-lora-openposexl2-rank", "thibaud_xl_openpose"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose): ["xinsiropenpose", "control-lora-openposexl2-rank", "thibaud_xl_openpose"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.segmentation): ["control_v11p_sd15_seg", "control_lora_rank128_v11p_sd15_seg"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.segmentation): ["sdxl_segmentation_ade20k_controlnet"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.blur): ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur): ["ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic", "ttplanet_controlnet_tile_realistic"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.stencil): ["control_v1p_sd15_qrcode_monster"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.stencil): ["sdxl_qrcode_monster"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.hands): ["control_sd15_inpaint_depth_hand"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.hands): ["control-lora-depth-rank", "sai_xl_depth_"],
     resource_id(ResourceKind.ip_adapter, SDVersion.sd15, ControlMode.reference): ["ip-adapter_sd15"],
@@ -766,6 +816,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, SDVersion.sd15, "lcm"): ["lcm-lora-sdv1-5.safetensors", "lcm/sd1.5/pytorch_lora_weights.safetensors"],
     resource_id(ResourceKind.lora, SDVersion.sdxl, "lcm"): ["lcm-lora-sdxl.safetensors", "lcm/sdxl/pytorch_lora_weights.safetensors"],
     resource_id(ResourceKind.lora, SDVersion.sdxl, "lightning"): ["sdxl_lightning_8step_lora"],
+    resource_id(ResourceKind.lora, SDVersion.sd15, "hyper"): ["Hyper-SD15-8steps-CFG-lora"],
+    resource_id(ResourceKind.lora, SDVersion.sdxl, "hyper"): ["Hyper-SDXL-8steps-CFG-lora"],
     resource_id(ResourceKind.lora, SDVersion.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15_lora", "ip-adapter-faceid-plus_sd15_lora"],
     resource_id(ResourceKind.lora, SDVersion.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.upscaler, SDVersion.all, UpscalerName.default): [UpscalerName.default.value],
@@ -780,13 +832,15 @@ search_paths: dict[str, list[str]] = {
 
 required_resource_ids = set(
     [
+        ResourceId(ResourceKind.clip, SDVersion.sd3, "clip_l"),
+        ResourceId(ResourceKind.clip, SDVersion.sd3, "clip_g"),
         ResourceId(ResourceKind.controlnet, SDVersion.sd15, ControlMode.inpaint),
         ResourceId(ResourceKind.controlnet, SDVersion.sd15, ControlMode.blur),
         ResourceId(ResourceKind.ip_adapter, SDVersion.sd15, ControlMode.reference),
         ResourceId(ResourceKind.ip_adapter, SDVersion.sdxl, ControlMode.reference),
         ResourceId(ResourceKind.clip_vision, SDVersion.all, "ip_adapter"),
-        ResourceId(ResourceKind.lora, SDVersion.sd15, "lcm"),
-        ResourceId(ResourceKind.lora, SDVersion.sdxl, "lcm"),
+        ResourceId(ResourceKind.lora, SDVersion.sd15, "hyper"),
+        ResourceId(ResourceKind.lora, SDVersion.sdxl, "hyper"),
         ResourceId(ResourceKind.upscaler, SDVersion.all, UpscalerName.default),
         ResourceId(ResourceKind.upscaler, SDVersion.all, UpscalerName.fast_2x),
         ResourceId(ResourceKind.upscaler, SDVersion.all, UpscalerName.fast_3x),
