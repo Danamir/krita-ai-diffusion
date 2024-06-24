@@ -148,7 +148,7 @@ class Model(QObject, ObservableProperties):
             conditioning, job_regions = ConditioningInput("", ""), []
 
         if mask is not None or self.strength < 1.0:
-            image = self._get_current_image(bounds) if not dryrun else DummyImage(extent)
+            image = self._get_current_image(bounds) if not dryrun else DummyImage(bounds.extent)
 
         if mask is not None:
             if workflow_kind is WorkflowKind.generate:
@@ -167,6 +167,7 @@ class Model(QObject, ObservableProperties):
                     inpaint_mode, mask.bounds, sd_version, pos, ctrl, self.strength
                 )
 
+        prompt = conditioning.positive  # modified in workflow.prepare
         input = workflow.prepare(
             workflow_kind,
             image or extent,
@@ -179,7 +180,7 @@ class Model(QObject, ObservableProperties):
             strength=self.strength,
             inpaint=inpaint,
         )
-        job_params = JobParams(bounds, conditioning.positive, regions=job_regions)
+        job_params = JobParams(bounds, prompt, regions=job_regions)
         return input, job_params
 
     async def enqueue_jobs(
@@ -279,7 +280,7 @@ class Model(QObject, ObservableProperties):
         workflow_kind = WorkflowKind.generate if strength == 1.0 else WorkflowKind.refine
         client = self._connection.client
         ver = client.models.version_of(self.style.sd_checkpoint)
-        min_mask_size = 512 if ver is SDVersion.sd15 else 800
+        min_mask_size = 800 if ver is SDVersion.sdxl else 512
         extent = self._doc.extent
         region_layer = None
         job_regions: list[JobRegion] = []
@@ -437,12 +438,13 @@ class Model(QObject, ObservableProperties):
             self._layer.hide()
 
     def apply_result(self, image: Image, params: JobParams, behavior: ApplyBehavior, prefix=""):
-        name = f"{prefix}{trim_text(params.prompt, 200)} ({params.seed})"
-        if len(params.regions) == 0 or behavior is ApplyBehavior.layer:
+        if len(params.regions) == 0:
             if behavior is ApplyBehavior.replace:
-                self.layers.active.remove()
-            self.layers.create(name, image, params.bounds)
-        else:
+                self.layers.update_layer_image(self.layers.active, image, params.bounds)
+            else:
+                name = f"{prefix}{trim_text(params.prompt, 200)} ({params.seed})"
+                self.layers.create(name, image, params.bounds)
+        else:  # apply to regions
             with RestoreActiveLayer(self.layers) as restore:
                 active_id = Region.link_target(self.layers.active).id_string
                 for job_region in params.regions:
@@ -465,11 +467,12 @@ class Model(QObject, ObservableProperties):
 
         # Replace content if requested and not a group layer
         if behavior is ApplyBehavior.replace and region_layer.type is not LayerType.group:
-            new_layer = region_layer.clone()
-            new_layer.write_pixels(image, params.bounds, keep_alpha=True, silent=True)
-            if region := self.regions.find_linked(region_layer):
+            region = self.regions.find_linked(region_layer)
+            new_layer = self.layers.update_layer_image(
+                region_layer, image, params.bounds, keep_alpha=True
+            )
+            if region is not None:
                 region.link(new_layer)
-            region_layer.remove()
             return new_layer
 
         # Promote layer to group if needed

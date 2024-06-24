@@ -41,6 +41,14 @@
         "minimum_steps": 4,
         "cfg": 1.5
     },
+    "Realtime - Hyper": {
+        "sampler": "euler",
+        "scheduler": "sgm_uniform",
+        "lora": "hyper",
+        "steps": 8,
+        "minimum_steps": 3,
+        "cfg": 3.5
+    },
     "Realtime - LCM": {
         "sampler": "lcm",
         "scheduler": "sgm_uniform",
@@ -56,5 +64,12 @@
         "steps": 8,
         "minimum_steps": 4,
         "cfg": 1.5
+    },
+    "SD3 - DPM++ 2M Uniform": {
+        "sampler": "dpmpp_2m",
+        "scheduler": "sgm_uniform",
+        "steps": 24,
+        "minimum_steps": 4,
+        "cfg": 5.0
     }
 }
