@@ -230,20 +230,57 @@ class ComfyWorkflow:
         start_at_step=0,
         cfg=7.0,
         seed=-1,
+        two_pass=False,
+        first_pass_sampler='dpmpp_sde',
     ):
         self.sample_count += steps - start_at_step
+        first_pass_steps = round(steps*0.6)
 
-        return self.add(
-            "SamplerCustomAdvanced",
-            output_count=2,
-            noise=self.random_noise(seed),
-            guider=self.cfg_guider(model, positive, negative, cfg),
-            sampler=self.sampler_select(sampler),
-            sigmas=self.split_sigmas(
-                self.scheduler_sigmas(model, scheduler, steps, model_version), start_at_step
-            )[1],
-            latent_image=latent_image,
-        )[1]
+        if two_pass and first_pass_steps > start_at_step:
+            first_pass_sampler = first_pass_sampler or sampler
+            sigmas = self.scheduler_sigmas(model, scheduler, steps, model_version)
+            cfg_guider = self.cfg_guider(model, positive, negative, cfg)
+
+            sigmas = self.split_sigmas(
+                sigmas, start_at_step
+            )[1]
+
+            first_sigmas, second_sigmas = self.split_sigmas(
+                sigmas, first_pass_steps - start_at_step
+            )
+
+            latent = self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.random_noise(seed),
+                guider=cfg_guider,
+                sampler=self.sampler_select(first_pass_sampler),
+                sigmas=first_sigmas,
+                latent_image=latent_image,
+            )[0]
+
+            return self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.disable_noise(),
+                guider=cfg_guider,
+                sampler=self.sampler_select(sampler),
+                sigmas=second_sigmas,
+                latent_image=latent,
+            )[1]
+
+        else:
+            return self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.random_noise(seed),
+                guider=self.cfg_guider(model, positive, negative, cfg),
+                sampler=self.sampler_select(sampler),
+                sigmas=self.split_sigmas(
+                    self.scheduler_sigmas(model, scheduler, steps, model_version), start_at_step
+                )[1],
+                latent_image=latent_image,
+            )[1]
 
     def scheduler_sigmas(
         self, model: Output, scheduler="normal", steps=20, model_version=SDVersion.sdxl
@@ -313,6 +350,12 @@ class ComfyWorkflow:
             "RandomNoise",
             output_count=1,
             noise_seed=noise_seed,
+        )
+
+    def disable_noise(self):
+        return self.add(
+            "DisableNoise",
+            output_count=1,
         )
 
     def sampler_select(self, sampler_name="dpmpp_2m_sde_gpu"):
