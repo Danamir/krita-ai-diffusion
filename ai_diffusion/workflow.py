@@ -35,21 +35,20 @@ def generate_seed():
 def _sampling_from_style(style: Style, strength: float, is_live: bool):
     sampler_name = style.live_sampler if is_live else style.sampler
     cfg = style.live_cfg_scale if is_live else style.cfg_scale
-    total_steps = style.live_sampler_steps if is_live else style.sampler_steps
+    min_steps, max_steps = style.get_steps(is_live=is_live)
     preset = SamplerPresets.instance()[sampler_name]
     result = SamplingInput(
         sampler=preset.sampler,
         scheduler=preset.scheduler,
         cfg_scale=cfg or preset.cfg,
-        total_steps=total_steps or preset.steps,
+        total_steps=max_steps,
     )
     if strength < 1.0:
-        min_steps = min(preset.minimum_steps, total_steps)
-        result.total_steps, result.start_step = _apply_strength(strength, total_steps, min_steps)
+        result.total_steps, result.start_step = apply_strength(strength, max_steps, min_steps)
     return result
 
 
-def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
+def apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
     start_at_step = round(steps * (1 - strength))
 
     if min_steps and steps - start_at_step < min_steps:
@@ -57,6 +56,18 @@ def _apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[in
         start_at_step = steps - min_steps
 
     return steps, start_at_step
+
+
+# Given the pair we got from `apply_strength`, reconstruct a weight (in percent).
+# representing a natural midpoint of the range.
+# For example, if the pair is 4/8, return 50.
+# This is used for snapping the strength widget.
+# If the resulting step-count is adjusted upward as per above, no such
+# midpoint can be reliably determined. In that case, we return None.
+def snap_to_percent(steps: int, start_at_step: int, max_steps: int) -> int | None:
+    if steps != max_steps:
+        return None
+    return round((steps - start_at_step) * 100 / steps)
 
 
 def _sampler_params(sampling: SamplingInput, strength: float | None = None):
@@ -69,7 +80,7 @@ def _sampler_params(sampling: SamplingInput, strength: float | None = None):
         seed=sampling.seed,
     )
     if strength is not None:
-        params["steps"], params["start_at_step"] = _apply_strength(strength, sampling.total_steps)
+        params["steps"], params["start_at_step"] = apply_strength(strength, sampling.total_steps)
     return params
 
 
@@ -436,7 +447,7 @@ def scale(
 def scale_to_initial(
     extent: ScaledExtent, w: ComfyWorkflow, image: Output, models: ModelDict, is_mask=False
 ):
-    if is_mask and extent.initial_scaling in (ScaleMode.resize, ScaleMode.upscale_fast):
+    if is_mask and extent.target != extent.initial:
         return w.scale_mask(image, extent.initial)
     elif not is_mask:
         return scale(extent.input, extent.initial, extent.initial_scaling, w, image, models)
@@ -490,7 +501,7 @@ def scale_refine_and_decode(
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.desired, models
     )
-    result = w.ksampler_advanced(model, positive, negative, latent, **params, two_pass=False)
+    result = w.sampler_custom_advanced(model, positive, negative, latent, models.version, **params, two_pass=False)
     image = w.vae_decode(vae, result)
     return image
 
@@ -514,11 +525,12 @@ def generate(
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.initial, models
     )
-    out_latent = w.ksampler_advanced(
+    out_latent = w.sampler_custom_advanced(
         model,
         positive,
         negative,
         latent,
+        models.version,
         two_pass=settings.use_refiner_pass,
         first_pass_sampler=settings.first_pass_sampler,
         **_sampler_params(sampling)
@@ -545,6 +557,12 @@ def fill_masked(w: ComfyWorkflow, image: Output, mask: Output, fill: FillMode, m
     elif fill is FillMode.replace:
         return w.fill_masked(image, mask, "neutral")
     return image
+
+
+def apply_grow_feather(w: ComfyWorkflow, mask: Output, inpaint: InpaintParams):
+    if inpaint.grow or inpaint.feather:
+        mask = w.expand_mask(mask, inpaint.grow, inpaint.feather)
+    return mask
 
 
 def detect_inpaint(
@@ -606,9 +624,10 @@ def inpaint(
 
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
-    in_mask = w.load_mask(ensure(images.initial_mask))
-    in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
-    cropped_mask = w.load_mask(ensure(images.hires_mask))
+    in_mask = w.load_mask(ensure(images.hires_mask))
+    in_mask = apply_grow_feather(w, in_mask, params)
+    initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
+    cropped_mask = w.crop_mask(in_mask, target_bounds)
 
     cond_base = cond.copy()
     cond_base.downscale(extent.input, extent.initial)
@@ -619,18 +638,16 @@ def inpaint(
         cond_base.control.append(
             Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
         )
+    inpaint_mask = ImageOutput(initial_mask, is_mask=True)
     if params.use_inpaint_model and models.version is SDVersion.sd15:
-        cond_base.control.append(
-            Control(ControlMode.inpaint, ImageOutput(in_image), ImageOutput(in_mask, is_mask=True))
-        )
+        cond_base.control.append(Control(ControlMode.inpaint, ImageOutput(in_image), inpaint_mask))
     if params.use_condition_mask and len(cond_base.regions) == 0:
-        focus_mask = ImageOutput(in_mask, is_mask=True)
         base_prompt = TextPrompt(merge_prompt("", cond_base.style_prompt))
         cond_base.regions = [
             Region(ImageOutput(None), Bounds(0, 0, *extent.initial), base_prompt, []),
-            Region(focus_mask, initial_bounds, cond_base.positive, []),
+            Region(inpaint_mask, initial_bounds, cond_base.positive, []),
         ]
-    in_image = fill_masked(w, in_image, in_mask, params.fill, models)
+    in_image = fill_masked(w, in_image, initial_mask, params.fill, models)
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
@@ -640,18 +657,18 @@ def inpaint(
     )
     if params.use_inpaint_model and models.version is SDVersion.sdxl:
         positive, negative, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
-            vae, in_image, in_mask, positive, negative
+            vae, in_image, initial_mask, positive, negative
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
     else:
         latent = w.vae_encode(vae, in_image)
-        latent = w.set_latent_noise_mask(latent, in_mask)
+        latent = w.set_latent_noise_mask(latent, initial_mask)
         inpaint_model = model
 
     latent = w.batch_latent(latent, batch_count)
-    out_latent = w.ksampler_advanced(
-        inpaint_model, positive, negative, latent, **_sampler_params(sampling), two_pass=False
+    out_latent = w.sampler_custom_advanced(
+        inpaint_model, positive, negative, latent, models.version, **_sampler_params(sampling), two_pass=False
     )
 
     if extent.refinement_scaling in [ScaleMode.upscale_small, ScaleMode.upscale_quality]:
@@ -684,8 +701,8 @@ def inpaint(
         positive_up, negative_up = apply_control(
             w, positive_up, negative_up, cond_upscale.all_control, res, models
         )
-        out_latent = w.ksampler_advanced(
-            model_orig, positive_up, negative_up, latent, **sampler_params, two_pass=False
+        out_latent = w.sampler_custom_advanced(
+            model, positive_up, negative_up, latent, models.version, **sampler_params, two_pass=False
         )
         out_image = w.vae_decode(vae, out_latent)
         out_image = scale_to_target(upscale_extent, w, out_image, models)
@@ -731,11 +748,12 @@ def refine(
     positive, negative = apply_control(
         w, positive, negative, cond.all_control, extent.desired, models
     )
-    sampler = w.ksampler_advanced(
+    sampler = w.sampler_custom_advanced(
         model,
         positive,
         negative,
         latent,
+        models.version,
         two_pass=settings.use_refiner_pass,
         first_pass_sampler=settings.first_pass_sampler,
         **_sampler_params(sampling)
@@ -768,22 +786,23 @@ def refine_region(
 
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
-    in_mask = w.load_mask(ensure(images.initial_mask))
-    in_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
+    in_mask = w.load_mask(ensure(images.hires_mask))
+    in_mask = apply_grow_feather(w, in_mask, inpaint)
+    initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
     if inpaint.use_inpaint_model and models.version is SDVersion.sd15:
-        c_mask = ImageOutput(in_mask, is_mask=True)
+        c_mask = ImageOutput(initial_mask, is_mask=True)
         cond.control.append(Control(ControlMode.inpaint, ImageOutput(in_image), c_mask))
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.initial, models
     )
     if models.version is SDVersion.sd15 or not inpaint.use_inpaint_model:
         latent = w.vae_encode(vae, in_image)
-        latent = w.set_latent_noise_mask(latent, in_mask)
+        latent = w.set_latent_noise_mask(latent, initial_mask)
         inpaint_model = model
     else:  # SDXL inpaint model
         positive, negative, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
-            vae, in_image, in_mask, positive, negative
+            vae, in_image, initial_mask, positive, negative
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
@@ -791,8 +810,8 @@ def refine_region(
     if batch_count > 1:
         latent = w.batch_latent(latent, batch_count)
 
-    out_latent = w.ksampler_advanced(
-        inpaint_model, positive, negative, latent, **_sampler_params(sampling), two_pass=False
+    out_latent = w.sampler_custom_advanced(
+        inpaint_model, positive, negative, latent, models.version, **_sampler_params(sampling), two_pass=False
     )
     out_image = scale_refine_and_decode(
         extent, w, cond, sampling, out_latent, prompt_pos, prompt_neg, model_orig, clip, vae, models
@@ -800,8 +819,8 @@ def refine_region(
     out_image = scale_to_target(extent, w, out_image, models)
     if extent.target != inpaint.target_bounds.extent:
         out_image = w.crop_image(out_image, inpaint.target_bounds)
-    original_mask = w.load_mask(ensure(images.hires_mask))
-    compositing_mask = w.denoise_to_compositing_mask(original_mask)
+        in_mask = w.crop_mask(in_mask, inpaint.target_bounds)
+    compositing_mask = w.denoise_to_compositing_mask(in_mask)
     out_masked = w.apply_mask(out_image, compositing_mask)
     w.send_image(out_masked)
     return w
@@ -950,8 +969,8 @@ def upscale_tiled(
 
         latent = w.vae_encode(vae, tile_image)
         latent = w.set_latent_noise_mask(latent, tile_mask)
-        sampler = w.ksampler_advanced(
-            tile_model, tile_pos, tile_neg, latent, **_sampler_params(sampling)
+        sampler = w.sampler_custom_advanced(
+            tile_model, tile_pos, tile_neg, latent, models.version, **_sampler_params(sampling)
         )
         tile_result = w.vae_decode(vae, sampler)
         out_image = w.merge_image_tile(out_image, tile_layout, i, tile_result)
@@ -1017,7 +1036,8 @@ def prepare(
 
     elif kind is WorkflowKind.inpaint:
         assert isinstance(canvas, Image) and mask and inpaint and style
-        i.images, _ = resolution.prepare_masked(canvas, mask, sd_version, style, perf)
+        i.images, _ = resolution.prepare_image(canvas, sd_version, style, perf)
+        i.images.hires_mask = mask.to_image(canvas.extent)
         upscale_extent, _ = resolution.prepare_extent(
             mask.bounds.extent, sd_version, style, perf, downscale=False
         )
@@ -1026,7 +1046,6 @@ def prepare(
         i.crop_upscale_extent = upscale_extent.extent.desired
         largest_extent = Extent.largest(i.images.extent.initial, upscale_extent.extent.desired)
         i.batch_count = resolution.compute_batch_size(largest_extent, 512, perf.batch_size)
-        i.images.hires_mask = mask.to_image()
         scaling = ScaledExtent.from_input(i.images.extent).refinement_scaling
         if scaling in [ScaleMode.upscale_small, ScaleMode.upscale_quality]:
             i.images.hires_image = Image.crop(canvas, i.inpaint.target_bounds)
@@ -1043,10 +1062,10 @@ def prepare(
     elif kind is WorkflowKind.refine_region:
         assert isinstance(canvas, Image) and mask and inpaint and style
         allow_2pass = strength >= 0.7
-        i.images, i.batch_count = resolution.prepare_masked(
-            canvas, mask, sd_version, style, perf, downscale=allow_2pass
+        i.images, i.batch_count = resolution.prepare_image(
+            canvas, sd_version, style, perf, downscale=allow_2pass
         )
-        i.images.hires_mask = mask.to_image()
+        i.images.hires_mask = mask.to_image(canvas.extent)
         i.inpaint = inpaint
         downscale_all_control_images(i.conditioning, canvas.extent, i.images.extent.desired)
 

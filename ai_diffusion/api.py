@@ -31,7 +31,6 @@ class ExtentInput:
 class ImageInput:
     extent: ExtentInput
     initial_image: Image | None = None
-    initial_mask: Image | None = None
     hires_image: Image | None = None
     hires_mask: Image | None = None
 
@@ -128,6 +127,8 @@ class InpaintParams:
     mode: InpaintMode
     target_bounds: Bounds
     fill: FillMode = FillMode.neutral
+    grow: int = 0
+    feather: int = 0
     use_inpaint_model: bool = False
     use_condition_mask: bool = False
     use_reference: bool = False

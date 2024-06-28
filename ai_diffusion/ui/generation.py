@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QMenu,
     QShortcut,
+    QMessageBox,
 )
 
 from ..properties import Binding, Bind, bind, bind_combo, bind_toggle
@@ -163,24 +164,25 @@ class HistoryWidget(QListWidget):
         self._remove_items(id.job, id.image)
 
     def _remove_items(self, job_id: str, image_index: int = -1):
-        def _item_job_id(item: QListWidgetItem | None):
+        def _job_id(item: QListWidgetItem | None):
             return item.data(Qt.ItemDataRole.UserRole) if item else None
 
         item_was_selected = False
         with theme.SignalBlocker(self):
             # Remove all the job's items before triggering potential selection changes
-            current = next(i for i in range(self.count()) if _item_job_id(self.item(i)) == job_id)
-            item = self.item(current)
-            while item and _item_job_id(item) == job_id:
-                _, index = self.item_info(item)
-                if image_index == index or (index is not None and image_index == -1):
-                    item_was_selected = item_was_selected or item.isSelected()
-                    self.takeItem(current)
-                else:
-                    if index and index > image_index:
-                        item.setData(Qt.ItemDataRole.UserRole + 1, index - 1)
-                    current += 1
+            current = next((i for i in range(self.count()) if _job_id(self.item(i)) == job_id), -1)
+            if current >= 0:
                 item = self.item(current)
+                while item and _job_id(item) == job_id:
+                    _, index = self.item_info(item)
+                    if image_index == index or (index is not None and image_index == -1):
+                        item_was_selected = item_was_selected or item.isSelected()
+                        self.takeItem(current)
+                    else:
+                        if index and index > image_index:
+                            item.setData(Qt.ItemDataRole.UserRole + 1, index - 1)
+                        current += 1
+                    item = self.item(current)
 
         if item_was_selected:
             self._model.jobs.selection = None
@@ -324,6 +326,8 @@ class HistoryWidget(QListWidget):
                 )
                 menu.setToolTipsVisible(True)
             menu.addAction("Discard Image", self._discard_image)
+            menu.addSeparator()
+            menu.addAction("Clear History", self._clear_all)
             menu.exec(self.mapToGlobal(pos))
 
     def _show_context_menu_dropdown(self):
@@ -358,6 +362,18 @@ class HistoryWidget(QListWidget):
         for item in items:
             job_id, image_index = self.item_info(item)
             self._model.jobs.discard(job_id, image_index)
+
+    def _clear_all(self):
+        reply = QMessageBox.warning(
+            self,
+            "Clear History",
+            "Are you sure you want to discard all generated images?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._model.jobs.clear()
+            self.clear()
 
 
 class CustomInpaintWidget(QWidget):
@@ -586,6 +602,7 @@ class GenerationWidget(QWidget):
             self.custom_inpaint.model = model
             self.generate_button.model = model
             self.queue_button.model = model
+            self.strength_slider.model = model
             self.history.model_ = model
             self.update_generate_button()
 
