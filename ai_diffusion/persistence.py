@@ -218,8 +218,10 @@ def import_prompt_from_file(model: Model):
                 for node in prompt.values():
                     if node["class_type"] in _comfy_sampler_types:
                         inputs = node["inputs"]
-                        model.regions.positive = _find_text_prompt(prompt, inputs["positive"][0])
-                        model.regions.negative = _find_text_prompt(prompt, inputs["negative"][0])
+                        if inputs.get("positive", None) is not None:
+                            model.regions.positive = _find_text_prompt_custom(prompt, inputs["positive"][0])
+                        if inputs.get("negative", None) is not None:
+                            model.regions.negative = _find_text_prompt_custom(prompt, inputs["negative"][0])
 
         except Exception as e:
             log.warning(f"Failed to read PNG metadata from {filename}: {e}")
@@ -235,4 +237,25 @@ def _find_text_prompt(workflow: dict[str, dict], node_key: str):
         for input in node.get("inputs", {}).values():
             if isinstance(input, list):
                 return _find_text_prompt(workflow, input[0])
+    return ""
+
+
+def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str):
+    if node := workflow.get(node_key):
+        if node["class_type"] == "CLIPTextEncode":
+            input = node.get("inputs", {}).get("text", "")
+            if isinstance(input, list):
+                return _find_text_prompt_custom(workflow, input[0])
+            else:
+                return input
+        elif node["class_type"] == "ImpactWildcardProcessor":
+            input = node.get("inputs", {}).get("populated_text", "")
+            if isinstance(input, list):
+                return _find_text_prompt_custom(workflow, input[0])
+            else:
+                return input
+
+        for input in node.get("inputs", {}).values():
+            if isinstance(input, list):
+                return _find_text_prompt_custom(workflow, input[0])
     return ""
