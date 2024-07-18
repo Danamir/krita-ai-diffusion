@@ -1,4 +1,5 @@
 from dataclasses import Field, dataclass, field, is_dataclass, fields
+from copy import copy
 from enum import Enum
 from types import GenericAlias, UnionType
 from typing import Any, get_args, get_origin
@@ -6,7 +7,7 @@ import math
 
 from .image import Bounds, Extent, Image, ImageCollection, ImageFileFormat
 from .resources import ControlMode, SDVersion
-from .util import ensure
+from .util import ensure, clamp
 
 
 class WorkflowKind(Enum):
@@ -31,6 +32,7 @@ class ExtentInput:
 class ImageInput:
     extent: ExtentInput
     initial_image: Image | None = None
+    initial_mask: Image | None = None  # deprecated (1.20.0) - hires_mask is scaled during workflow
     hires_image: Image | None = None
     hires_mask: Image | None = None
 
@@ -132,6 +134,12 @@ class InpaintParams:
     use_inpaint_model: bool = False
     use_condition_mask: bool = False
     use_reference: bool = False
+
+    def clamped(self):
+        params = copy(self)
+        params.grow = clamp(params.grow, 0, 499)
+        params.feather = clamp(params.feather, 0, 499)
+        return params
 
 
 @dataclass

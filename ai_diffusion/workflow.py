@@ -338,7 +338,13 @@ def apply_control(
             image = w.inpaint_preprocessor(image, control.mask.load(w))
         if control.mode.is_lines:  # ControlNet expects white lines on black background
             image = w.invert_image(image)
-        controlnet = w.load_controlnet(models[control.mode])
+        if model := models.find(control.mode):
+            controlnet = w.load_controlnet(model)
+        elif model := models.find(ControlMode.universal):
+            controlnet = w.load_controlnet(model)
+            controlnet = w.set_controlnet_type(controlnet, control.mode)
+        else:
+            raise Exception(f"ControlNet model not found for mode {control.mode}")
         positive, negative = w.apply_controlnet(
             positive,
             negative,
@@ -626,8 +632,14 @@ def inpaint(
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.hires_mask))
     in_mask = apply_grow_feather(w, in_mask, params)
-    initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
-    cropped_mask = w.crop_mask(in_mask, target_bounds)
+    if images.initial_mask:
+        # Deprecated in 1.20.0 - initial_mask is no longer used
+        initial_mask = w.load_mask(images.initial_mask)
+        initial_mask = scale_to_initial(extent, w, initial_mask, models, is_mask=True)
+        cropped_mask = in_mask
+    else:
+        initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
+        cropped_mask = w.crop_mask(in_mask, target_bounds)
 
     cond_base = cond.copy()
     cond_base.downscale(extent.input, extent.initial)

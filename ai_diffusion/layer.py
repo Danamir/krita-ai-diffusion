@@ -16,6 +16,7 @@ class LayerType(Enum):
     group = "grouplayer"
     file = "filelayer"
     clone = "clonelayer"
+    fill = "filllayer"
     filter = "filterlayer"
     transparency = "transparencymask"
     selection = "selectionmask"
@@ -32,6 +33,7 @@ class LayerType(Enum):
             LayerType.file,
             LayerType.clone,
             LayerType.filter,
+            LayerType.fill,
         ]
 
     @property
@@ -141,7 +143,7 @@ class Layer(QObject):
 
     @property
     def child_layers(self):
-        return [self._manager.wrap(child) for child in self._node.childNodes()]
+        return [self._manager.wrap(child) for child in self._node.childNodes() if _is_real(child)]
 
     @property
     def is_root(self):
@@ -210,6 +212,12 @@ class Layer(QObject):
     def remove(self):
         self._node.remove()
         self._manager.update()
+
+    def remove_later(self):
+        eventloop.run(self._remove_later())
+
+    async def _remove_later(self):
+        self.remove()
 
     def compute_bounds(self):
         bounds = self.bounds
@@ -323,7 +331,6 @@ class LayerManager(QObject):
     removed = pyqtSignal(Layer)
 
     _doc: krita.Document | None
-    _root: Layer | None
     _layers: dict[QUuid, Layer]
     _active_id: QUuid
     _last_active: Layer | None = None
@@ -336,8 +343,7 @@ class LayerManager(QObject):
         self._layers = {}
         if doc is not None:
             root = doc.rootNode()
-            self._root = Layer(self, root)
-            self._layers = {self._root.id: self._root}
+            self._layers = {root.uniqueId(): Layer(self, root)}
             self._active_id = doc.activeNode().uniqueId()
             self.update()
             self._timer = QTimer()
@@ -345,7 +351,6 @@ class LayerManager(QObject):
             self._timer.timeout.connect(self.update)
             self._timer.start()
         else:
-            self._root = None
             self._active_id = QUuid()
 
     def __del__(self):
@@ -390,7 +395,7 @@ class LayerManager(QObject):
                     self._layers[id] = Layer(self, n)
                     changes = True
 
-            removals.remove(self.root.id)
+            removals.discard(root_node.uniqueId())
             for id in removals:
                 if self._layers[id].is_confirmed:
                     self.removed.emit(self._layers[id])
@@ -417,21 +422,27 @@ class LayerManager(QObject):
 
     @property
     def root(self):
-        assert self._root is not None
-        return self._root
+        assert self._doc is not None
+        root = ensure(self._doc.rootNode(), "Document root node was None")
+        return self.wrap(root)
 
     @property
     def active(self):
-        assert self._doc is not None
-        layer = self.find(self._doc.activeNode().uniqueId())
-        if layer is None:
-            layer = self.updated()._layers.get(self._active_id)
-        if layer is None:
-            log.warning("Active layer not found in layer tree")
-            layer = self._last_active
-        else:
-            self._last_active = layer
-        return ensure(layer, "Active layer not found in layer tree (no fallback)")
+        try:
+            assert self._doc is not None
+            layer = self.find(self._doc.activeNode().uniqueId())
+            if layer is None:
+                layer = self.updated()._layers.get(self._active_id)
+            if layer is None:
+                # Active layer is not in the layer tree yet, can happen immediately after creating
+                # a new layer or merging existing layers.
+                layer = self._last_active
+            else:
+                self._last_active = layer
+            return ensure(layer, "Active layer not found in layer tree (no fallback)")
+        except Exception as e:
+            log.error(f"Error getting active layer: {e}")
+            return self.root
 
     @active.setter
     def active(self, layer: Layer):
@@ -507,7 +518,7 @@ class LayerManager(QObject):
         content = layer.get_pixels(layer_bounds)
         content.draw_image(image, bounds.relative_to(layer_bounds).offset, keep_alpha=keep_alpha)
         replacement = self.create(layer.name, content, layer_bounds, above=layer)
-        layer.remove()
+        layer.remove_later()
         return replacement
 
     _image_types = [t.value for t in LayerType if t.is_image]
@@ -543,6 +554,15 @@ class LayerManager(QObject):
 
 def traverse_layers(node: krita.Node, type_filter: list[str] | None = None):
     for child in node.childNodes():
-        if not type_filter or child.type() in type_filter:
+        type = child.type()
+        if _is_real(type) and (not type_filter or type in type_filter):
             yield child
         yield from traverse_layers(child, type_filter)
+
+
+def _is_real(node_type: krita.Node | str):
+    # Krita sometimes inserts "fake" nodes for processing, like decorations-wrapper-layer
+    # They don't have a layer type and we want to ignore them
+    if isinstance(node_type, krita.Node):
+        node_type = node_type.type()
+    return node_type != ""

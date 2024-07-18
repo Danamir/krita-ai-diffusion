@@ -6,10 +6,10 @@ from typing import NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.19.0"
+version = "1.21.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "887a6341ed14c9904230cf55a0eabe95cd0218d3"
+comfy_version = "374e093e09c94b528d7c9dfc337c65cc5c433ee3"
 
 
 class CustomNode(NamedTuple):
@@ -25,21 +25,21 @@ required_custom_nodes = [
         "ControlNet Preprocessors",
         "comfyui_controlnet_aux",
         "https://github.com/Fannovel16/comfyui_controlnet_aux",
-        "589af18adae7ff50009a0e021781dd1aa39c32e3",
+        "6f1ba1c10df84af6d356119ccf4ebcf796a10e1c",
         ["InpaintPreprocessor"],
     ),
     CustomNode(
         "IP-Adapter",
         "ComfyUI_IPAdapter_plus",
         "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
-        "f904b4c3c3adbda990f32b90eb52e1924467c9ef",
+        "8208e27bf10e9b5b36546dd64c4b820b168c2724",
         ["IPAdapterModelLoader", "IPAdapter"],
     ),
     CustomNode(
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "aff32e8da6db5db73bc6f84b30c87862e211544c",
+        "9d533984c2b44bc0519fde2875b976493c6e90a0",
         [
             "ETN_LoadImageBase64",
             "ETN_LoadMaskBase64",
@@ -51,7 +51,7 @@ required_custom_nodes = [
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "9927f44cb4a9878f1737cbabf8a29d2fc8182d0f",
+        "717cb7717daf9f10979940163f708e35ee8eda05",
         ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint"],
     ),
 ]
@@ -143,6 +143,7 @@ class ControlMode(Enum):
     composition = 15
     face = 13
     inpaint = 1
+    universal = 16
     scribble = 2
     line_art = 3
     soft_edge = 4
@@ -170,6 +171,7 @@ class ControlMode(Enum):
             ControlMode.inpaint,
             ControlMode.blur,
             ControlMode.stencil,
+            ControlMode.universal,
         ]
 
     @property
@@ -184,6 +186,10 @@ class ControlMode(Enum):
             ControlMode.style,
             ControlMode.composition,
         ]
+
+    @property
+    def is_internal(self):  # don't show in control layer mode dropdown
+        return self in [ControlMode.inpaint, ControlMode.universal]
 
     @property
     def is_part_of_image(self):  # not only used as guidance hint
@@ -301,7 +307,7 @@ required_models = [
         },
     ),
     ModelResource(
-        "ControlNet Tile",
+        "ControlNet Unblur",
         ResourceId(ResourceKind.controlnet, SDVersion.sd15, ControlMode.blur),
         {
             Path(
@@ -551,48 +557,12 @@ optional_models = [
         requirements=ModelRequirements.insightface,
     ),
     ModelResource(
-        "ControlNet Line Art (XL)",
-        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art),
+        "ControlNet Universal (XL)",
+        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.universal),
         {
             Path(
-                "models/controlnet/mistoLine_rank256.safetensors"
-            ): "https://huggingface.co/TheMistoAI/MistoLine/resolve/main/mistoLine_rank256.safetensors",
-        },
-    ),
-    ModelResource(
-        "ControlNet Canny Edge (XL)",
-        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.canny_edge),
-        {
-            Path(
-                "models/controlnet/sai_xl_canny_256lora.safetensors"
-            ): "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/sai_xl_canny_256lora.safetensors",
-        },
-    ),
-    ModelResource(
-        "ControlNet Depth (XL)",
-        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.depth),
-        {
-            Path(
-                "models/controlnet/sai_xl_depth_256lora.safetensors"
-            ): "https://huggingface.co/lllyasviel/sd_control_collection/resolve/main/sai_xl_depth_256lora.safetensors",
-        },
-    ),
-    ModelResource(
-        "ControlNet Pose (XL)",
-        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose),
-        {
-            Path(
-                "models/controlnet/controlnetxlCNXL_xinsirOpenpose.safetensors"
-            ): "https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors",
-        },
-    ),
-    ModelResource(
-        "ControlNet Unblur (XL)",
-        ResourceId(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur),
-        {
-            Path(
-                "models/controlnet/TTPLANET_Controlnet_Tile_realistic_v2_fp16.safetensors"
-            ): "https://huggingface.co/TTPlanet/TTPLanet_SDXL_Controlnet_Tile_Realistic/resolve/main/TTPLANET_Controlnet_Tile_realistic_v2_fp16.safetensors",
+                "models/controlnet/xinsir-controlnet-union-sdxl-1.0-promax.safetensors"
+            ): "https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors",
         },
     ),
     ModelResource(
@@ -744,6 +714,7 @@ _control_text = {
     ControlMode.style: "Style",
     ControlMode.composition: "Composition",
     ControlMode.face: "Face",
+    ControlMode.universal: "Universal",
     ControlMode.scribble: "Scribble",
     ControlMode.line_art: "Line Art",
     ControlMode.soft_edge: "Soft Edge",
@@ -787,23 +758,24 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.clip, SDVersion.sd3, "clip_l") : ["clip_l"],
     resource_id(ResourceKind.clip, SDVersion.sd3, "clip_g") : ["clip_g"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.inpaint):  ["control_v11p_sd15_inpaint"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.universal):  ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.scribble): ["control_v11p_sd15_scribble", "control_lora_rank128_v11p_sd15_scribble"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.scribble): ["xinsirscribble", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.scribble): ["xinsirscribble", "scribble-sdxl", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.line_art): ["control_v11p_sd15_lineart", "control_lora_rank128_v11p_sd15_lineart"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art): ["xinsirscribble", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.line_art): ["xinsirscribble", "mistoline", "scribble-sdxl", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.soft_edge): ["control_v11p_sd15_softedge", "control_lora_rank128_v11p_sd15_softedge"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.soft_edge): ["mistoline", "xinsirscribble"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.soft_edge): ["mistoline", "xinsirscribble", "scribble-sdxl"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.canny_edge): ["control_v11p_sd15_canny", "control_lora_rank128_v11p_sd15_canny"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.canny_edge): ["xinsircanny", "control-lora-canny-rank", "sai_xl_canny_", "mistoline"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.canny_edge): ["xinsircanny", "canny-sdxl" "control-lora-canny-rank", "sai_xl_canny_", "mistoline"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.depth): ["control_sd15_depth_anything", "control_v11f1p_sd15_depth", "control_lora_rank128_v11f1p_sd15_depth"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.depth): ["control-lora-depth-rank", "sai_xl_depth_"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.depth): ["xinsirdepth", "depth-sdxl", "control-lora-depth-rank", "sai_xl_depth_"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.normal): ["control_v11p_sd15_normalbae", "control_lora_rank128_v11p_sd15_normalbae"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.pose): ["control_v11p_sd15_openpose", "control_lora_rank128_v11p_sd15_openpose"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose): ["xinsiropenpose", "control-lora-openposexl2-rank", "thibaud_xl_openpose"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.pose): ["xinsiropenpose", "openpose-sdxl", "control-lora-openposexl2-rank", "thibaud_xl_openpose"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.segmentation): ["control_v11p_sd15_seg", "control_lora_rank128_v11p_sd15_seg"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.segmentation): ["sdxl_segmentation_ade20k_controlnet"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.blur): ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],
-    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur): ["ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic", "ttplanet_controlnet_tile_realistic"],
+    resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.blur): ["xinsirtile", "tile-sdxl", "ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic", "ttplanet_controlnet_tile_realistic"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.stencil): ["control_v1p_sd15_qrcode_monster"],
     resource_id(ResourceKind.controlnet, SDVersion.sdxl, ControlMode.stencil): ["sdxl_qrcode_monster"],
     resource_id(ResourceKind.controlnet, SDVersion.sd15, ControlMode.hands): ["control_sd15_inpaint_depth_hand"],

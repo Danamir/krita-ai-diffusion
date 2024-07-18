@@ -221,7 +221,7 @@ class Model(QObject, ObservableProperties):
         else:
             conditioning, job_regions = ConditioningInput("4k uhd"), []
         models = client.models.for_checkpoint(self.style.sd_checkpoint)
-        has_unblur = models.control.find(ControlMode.blur) is not None
+        has_unblur = models.control.find(ControlMode.blur, allow_universal=True) is not None
         if has_unblur and params.unblur_strength > 0.0:
             control = ControlInput(ControlMode.blur, None, params.unblur_strength)
             conditioning.control.append(control)
@@ -698,8 +698,8 @@ class UpscaleWorkspace(QObject, ObservableProperties):
         model._connection.models_changed.connect(self._init_model)
 
     def _init_model(self):
-        if self.upscaler == "":
-            if client := self._model._connection.client_if_connected:
+        if client := self._model._connection.client_if_connected:
+            if self.upscaler not in client.models.upscalers:
                 self.upscaler = client.models.default_upscaler
 
     @property
