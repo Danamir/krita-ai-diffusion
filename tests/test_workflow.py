@@ -582,7 +582,7 @@ def test_ip_adapter_batch(qtapp, client):
     run_and_save(qtapp, client, job, "test_ip_adapter_batch")
 
 
-def test_style_composition(qtapp, client):
+def test_style_composition_sdxl(qtapp, client):
     style_image = Image.load(image_dir / "watercolor.webp")
     composition_image = Image.load(image_dir / "flowers.webp")
     control = [
@@ -690,6 +690,19 @@ def test_outpaint_resolution_multiplier(qtapp, client):
         perf=perf_settings,
     )
     run_and_save(qtapp, client, job, f"test_outpaint_resolution_multiplier", image, mask)
+
+
+def test_nsfw_filter(qtapp, client):
+    params = dict(cond=ConditioningInput("nude"))
+    job = create(WorkflowKind.generate, client, canvas=Extent(512, 512), **params)
+    job.nsfw_filter = 0.8
+    run_and_save(qtapp, client, job, "test_nsfw_filter")
+
+
+def test_translation(qtapp, client):
+    cond = ConditioningInput("rote (kerze) auf einer fensterbank", style="photo", language="de")
+    job = create(WorkflowKind.generate, client, canvas=Extent(512, 512), cond=cond)
+    run_and_save(qtapp, client, job, "test_translation")
 
 
 inpaint_benchmark = {

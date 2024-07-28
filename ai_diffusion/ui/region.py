@@ -1,18 +1,21 @@
 from __future__ import annotations
 from enum import Enum
 from PyQt5.QtWidgets import QWidget, QLabel, QToolButton, QHBoxLayout, QVBoxLayout, QFrame, QMenu
-from PyQt5.QtGui import QMouseEvent, QResizeEvent, QPixmap, QImage, QPainter, QIcon
-from PyQt5.QtCore import QObject, QEvent, Qt, QMetaObject, pyqtSignal
+from PyQt5.QtGui import QGuiApplication, QMouseEvent, QResizeEvent, QPixmap, QImage, QPainter, QIcon
+from PyQt5.QtCore import QObject, QEvent, Qt, QMetaObject, QSize, pyqtSignal
 
 from ..root import root
+from ..client import Client
 from ..image import Extent, Bounds
 from ..properties import Binding, bind
 from ..document import LayerType
-from ..model import Region, RootRegion, RegionLink
+from ..region import Region, RootRegion, RegionLink, translate_prompt
+from ..localization import translate as _
+from ..util import ensure
+from .. import eventloop
 from .control import ControlListWidget
 from .widget import TextPromptWidget
 from .settings import settings
-from ..util import ensure
 from . import theme
 
 
@@ -55,7 +58,7 @@ class InactiveRegionWidget(QFrame):
             if isinstance(region, Region):
                 self._text = f"{region.name} - click to add regional text"
             else:
-                self._text = "Common text prompt - click to add content"
+                self._text = _("Common text prompt - click to add content")
 
     def mousePressEvent(self, a0: QMouseEvent | None) -> None:
         self.activated.emit(self.region)
@@ -83,6 +86,7 @@ class ActiveRegionWidget(QFrame):
     _bindings: list[QMetaObject.Connection]
     _header_style: PromptHeader
     _max_lines: int = 99
+    _translation_enabled: bool = True
 
     def __init__(self, root: RootRegion, parent: QWidget, header=PromptHeader.full):
         super().__init__(parent)
@@ -106,7 +110,7 @@ class ActiveRegionWidget(QFrame):
         self._remove_button = QToolButton(self)
         self._remove_button.setIcon(theme.icon("remove"))
         self._remove_button.setAutoRaise(True)
-        self._remove_button.setToolTip("Remove this region")
+        self._remove_button.setToolTip(_("Remove this region"))
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 2, 0)
@@ -130,18 +134,18 @@ class ActiveRegionWidget(QFrame):
         self._no_region = QWidget(self)
         self._no_region.setVisible(False)
 
-        self._no_region_label = QLabel("Active layer is not linked to a region", self._no_region)
+        self._no_region_label = QLabel(_("Active layer is not linked to a region"), self._no_region)
         self._no_region_label.setStyleSheet(f"font-style: italic; color: {theme.grey};")
 
         self._new_region_button = QToolButton(self._no_region)
         self._new_region_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._new_region_button.setIcon(theme.icon("region-add"))
-        self._new_region_button.setText("New region")
+        self._new_region_button.setText(_("New region"))
 
         self._link_region_button = QToolButton(self._no_region)
         self._link_region_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._link_region_button.setIcon(theme.icon("link"))
-        self._link_region_button.setText("Link region")
+        self._link_region_button.setText(_("Link region"))
         self._link_region_button.clicked.connect(self._show_link_menu)
 
         no_region_layout = QHBoxLayout()
@@ -166,6 +170,17 @@ class ActiveRegionWidget(QFrame):
         layout.addWidget(self.negative)
         layout.addWidget(self._no_region)
         self.setLayout(layout)
+
+        font_size = self.font().pointSize()
+        self._language_button = QToolButton(self)
+        self._language_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._language_button.setText(settings.prompt_translation.upper())
+        self._language_button.setStyleSheet(
+            f"QToolButton {{ font-size: {max(6, font_size-2)}pt; background: #40808080;"
+            " border: 1px solid #60808080; border-radius: 2px; }"
+        )
+        self._language_button.clicked.connect(self._toggle_translation_enabled)
+        self._layout_language_button()
 
         self._setup_bindings(self._region)
         settings.changed.connect(self.update_settings)
@@ -211,9 +226,11 @@ class ActiveRegionWidget(QFrame):
         self._bindings += [
             self._root.active_layer_changed.connect(self._update_links),
             self._new_region_button.clicked.connect(self._root.create_region_layer),
+            self._root._model.translation_enabled_changed.connect(self._update_language),
         ]
         self._update_header()
         self._update_links()
+        self._update_language()
         self.positive.move_cursor_to_end()
         self.negative.setVisible(is_root_region and settings.show_negative_prompt)
         self._link_button.setVisible(not is_root_region)
@@ -243,33 +260,33 @@ class ActiveRegionWidget(QFrame):
 
     def _update_links(self):
         if isinstance(self._region, RootRegion):
-            self._header_label.setText("Text prompt common to all regions")
+            self._header_label.setText(_("Text prompt common to all regions"))
             self._header_icon.set_region(self._region)
         elif isinstance(self._region, Region):
             theme.set_text_clipped(
-                self._header_label, f"{self._region.name} - Regional text prompt"
+                self._header_label, f"{self._region.name} - " + _("Regional text prompt")
             )
             active_layer = self._root.layers.active
             link_enabled = False
             if self._region.is_linked(active_layer, RegionLink.direct):
                 icon = "link-active"
-                desc = "Active layer is linked to this region - click to unlink"
+                desc = _("Active layer is linked to this region - click to unlink")
                 link_enabled = True
             elif self._root.is_linked(active_layer, RegionLink.indirect):
                 icon = "link"
-                desc = "Active layer is linked to this region via a group layer"
+                desc = _("Active layer is linked to this region via a group layer")
             elif active_layer.type not in [LayerType.paint, LayerType.group]:
                 icon = "link-disabled"
-                desc = "Only paint layers and groups and be linked to regions"
+                desc = _("Only paint layers and groups and be linked to regions")
             elif self._root.is_linked(active_layer, RegionLink.direct):
                 icon = "link-disabled"
-                desc = "Active layer is already linked to another region"
+                desc = _("Active layer is already linked to another region")
             elif Region.link_target(active_layer) is not active_layer:
                 icon = "link-disabled"
-                desc = "Active layer is part of a group - select the group layer to link it"
+                desc = _("Active layer is part of a group - select the group layer to link it")
             else:
                 icon = "link-off"
-                desc = "Active layer is not linked - click to link it to this region"
+                desc = _("Active layer is not linked - click to link it to this region")
                 link_enabled = True
             self._link_button.setIcon(theme.icon(icon))
             self._link_button.setEnabled(link_enabled)
@@ -282,9 +299,9 @@ class ActiveRegionWidget(QFrame):
         self._new_region_button.setEnabled(can_link)
         self._link_region_button.setEnabled(can_link)
         if can_link:
-            self._no_region_label.setText("Active layer is not linked to a region")
+            self._no_region_label.setText(_("Active layer is not linked to a region"))
         else:
-            self._no_region_label.setText("Active layer cannot be linked to a region")
+            self._no_region_label.setText(_("Active layer cannot be linked to a region"))
 
     def _show_link_menu(self):
         active_layer = self._root.layers.active
@@ -293,7 +310,7 @@ class ActiveRegionWidget(QFrame):
             if region is not self._region:
                 name = region.positive.replace("\n", " ")
                 if name == "":
-                    name = "<No text prompt>"
+                    name = _("<No text prompt>")
                 if len(name) > 20:
                     name = name[:17] + "..."
 
@@ -321,9 +338,70 @@ class ActiveRegionWidget(QFrame):
     def update_settings(self, key: str, value):
         if key == "prompt_line_count":
             self.positive.line_count = min(value, self._max_lines)
+            self._layout_language_button()
         elif key == "show_negative_prompt":
             self.negative.text = ""
             self.negative.setVisible(value and isinstance(self._region, RootRegion))
+            self._layout_language_button()
+        elif key == "prompt_translation":
+            self._update_language()
+
+    async def _replace_with_translation(self, client: Client):
+        region = self.region
+        if region is None:
+            return
+        if positive := region.positive:
+            translated = await client.translate(positive, settings.prompt_translation)
+            if self.region is region and positive == region.positive:
+                region.positive = translated
+        if isinstance(region, RootRegion) and region.negative:
+            negative = region.negative
+            translated = await client.translate(negative, settings.prompt_translation)
+            if self.region is region and negative == region.negative:
+                region.negative = translated
+
+    def _toggle_translation_enabled(self):
+        model = self._root._model
+        ctrl_down = QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier
+        if model.translation_enabled and bool(ctrl_down) and self.region is not None:
+            translate_prompt(self.region)
+        model.translation_enabled = not model.translation_enabled
+
+    _lang_help_enabled = _(
+        "Prompt translation is active! Click to disable and switch to original input."
+    )
+    _lang_help_disabled = _(
+        "Translation is disabled. Click to enable prompt translation from your language to English"
+    )
+    _lang_help_translate = _("Use Ctrl+Click to replace the text with a translation immediately.")
+
+    def _update_language(self):
+        self._language_button.setVisible(bool(settings.prompt_translation))
+        if settings.prompt_translation:
+            enabled = self._root._model.translation_enabled
+            lang = settings.prompt_translation if enabled else "en"
+            self._language_button.setText(lang.upper())
+            if enabled:
+                text = self._lang_help_enabled
+                if client := root.connection.client_if_connected:
+                    if client.supports_translation:
+                        text += "\n" + self._lang_help_translate
+            else:
+                text = self._lang_help_disabled
+            self._language_button.setToolTip(text)
+
+    def _layout_language_button(self):
+        if settings.prompt_translation:
+            pos = self.positive.geometry().bottomRight()
+            if self.negative.isVisible():
+                pos = self.negative.geometry().bottomRight()
+            s = QSize(self.fontMetrics().width("EN"), self.fontMetrics().height())
+            self._language_button.move(pos.x() - s.width() - 2, pos.y() - s.height() - 2)
+            self._language_button.resize(s)
+
+    def resizeEvent(self, a0):
+        super().resizeEvent(a0)
+        self._layout_language_button()
 
     def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
         if a1 and a1.type() == QEvent.Type.FocusIn:
@@ -454,10 +532,10 @@ class RegionThumbnailWidget(QLabel):
                 icon_image = QPixmap.fromImage(image)
             else:
                 icon_image = theme.icon("region-prompt")
-            self.setToolTip(f"Text prompt for region {region.name}")
+            self.setToolTip(_("Text prompt for region") + f" {region.name}")
         else:
             icon_image = theme.icon("root")
-            self.setToolTip(f"Text which is common to all regions")
+            self.setToolTip(_("Text which is common to all regions"))
         if isinstance(icon_image, QIcon):
             size = int(1.2 * font_height)
             offset = (icon_size - size) // 2

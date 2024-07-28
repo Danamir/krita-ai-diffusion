@@ -440,7 +440,7 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str, models: ModelDict = None, split_conditioning=False):
+    def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict = None, split_conditioning=False):
         if models and models.version == SDVersion.sdxl:
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
@@ -767,6 +767,14 @@ class ComfyWorkflow:
 
     def apply_mask(self, image: Output, mask: Output):
         return self.add("ETN_ApplyMaskToImage", 1, image=image, mask=mask)
+
+    def translate(self, text: str | Output):
+        return self.add("ETN_Translate", 1, text=text)
+
+    def nsfw_filter(self, image: Output, sensitivity: float):
+        if sensitivity > 0:
+            return self.add("ETN_NSFWFilter", 1, image=image, sensitivity=sensitivity)
+        return image
 
     def load_image(self, image: Image):
         if self._run_mode is ComfyRunMode.runtime:

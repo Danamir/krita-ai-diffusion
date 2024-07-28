@@ -9,7 +9,7 @@ from typing import NamedTuple, Sequence
 version = "1.21.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "374e093e09c94b528d7c9dfc337c65cc5c433ee3"
+comfy_version = "14764aa2e2e2b282c4a4dffbfab4c01d3e46e8a7"
 
 
 class CustomNode(NamedTuple):
@@ -26,33 +26,28 @@ required_custom_nodes = [
         "comfyui_controlnet_aux",
         "https://github.com/Fannovel16/comfyui_controlnet_aux",
         "6f1ba1c10df84af6d356119ccf4ebcf796a10e1c",
-        ["InpaintPreprocessor"],
+        ["InpaintPreprocessor", "DepthAnythingV2Preprocessor"],
     ),
     CustomNode(
         "IP-Adapter",
         "ComfyUI_IPAdapter_plus",
         "https://github.com/cubiq/ComfyUI_IPAdapter_plus",
-        "8208e27bf10e9b5b36546dd64c4b820b168c2724",
+        "78ac59c61c8caf33e3419d2c8f70838b2da0fb04",
         ["IPAdapterModelLoader", "IPAdapter"],
     ),
     CustomNode(
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "9d533984c2b44bc0519fde2875b976493c6e90a0",
-        [
-            "ETN_LoadImageBase64",
-            "ETN_LoadMaskBase64",
-            "ETN_SendImageWebSocket",
-            "ETN_ApplyMaskToImage",
-        ],
+        "5bad00f72f13e6a18ccbf882a660800bc3897aee",
+        ["ETN_LoadImageBase64", "ETN_LoadMaskBase64", "ETN_SendImageWebSocket", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
         "717cb7717daf9f10979940163f708e35ee8eda05",
-        ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint"],
+        ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint", "INPAINT_ExpandMask"],
     ),
 ]
 
@@ -201,7 +196,9 @@ class ControlMode(Enum):
 
     @property
     def text(self):
-        return _control_text[self]
+        from . import control
+
+        return control.control_mode_text[self]
 
 
 class ResourceId(NamedTuple):
@@ -632,6 +629,15 @@ prefetch_models = [
             ): "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx",
         },
     ),
+    ModelResource(
+        "NSFW Filter",
+        ResourceId(ResourceKind.preprocessor, SDVersion.all, "safetychecker"),
+        {
+            Path(
+                "custom_nodes/comfyui-tooling-nodes/safetychecker/model.safetensors"
+            ): "https://huggingface.co/CompVis/stable-diffusion-safety-checker/resolve/refs%2Fpr%2F41/model.safetensors"
+        },
+    ),
 ]
 
 deprecated_models = [
@@ -706,27 +712,6 @@ def all_models(include_deprecated=False):
     if include_deprecated:
         result = chain(result, deprecated_models)
     return result
-
-
-_control_text = {
-    ControlMode.reference: "Reference",
-    ControlMode.inpaint: "Inpaint",
-    ControlMode.style: "Style",
-    ControlMode.composition: "Composition",
-    ControlMode.face: "Face",
-    ControlMode.universal: "Universal",
-    ControlMode.scribble: "Scribble",
-    ControlMode.line_art: "Line Art",
-    ControlMode.soft_edge: "Soft Edge",
-    ControlMode.canny_edge: "Canny Edge",
-    ControlMode.depth: "Depth",
-    ControlMode.normal: "Normal",
-    ControlMode.pose: "Pose",
-    ControlMode.segmentation: "Segment",
-    ControlMode.blur: "Unblur",
-    ControlMode.stencil: "Stencil",
-    ControlMode.hands: "Hands",
-}
 
 
 def resource_id(

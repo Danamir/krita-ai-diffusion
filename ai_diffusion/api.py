@@ -103,6 +103,7 @@ class ConditioningInput:
     style: str = ""
     control: list[ControlInput] = field(default_factory=list)
     regions: list[RegionInput] = field(default_factory=list)
+    language: str = ""
 
 
 class InpaintMode(Enum):
@@ -154,6 +155,7 @@ class WorkflowInput:
     upscale_model: str = ""
     control_mode: ControlMode = ControlMode.reference
     batch_count: int = 1
+    nsfw_filter: float = 0.0
 
     @property
     def extent(self):

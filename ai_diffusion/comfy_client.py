@@ -10,7 +10,7 @@ from typing import NamedTuple, Optional, Sequence
 
 from .api import WorkflowInput
 from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
-from .client import filter_supported_styles
+from .client import TranslationPackage, filter_supported_styles
 from .image import Image, ImageCollection
 from .network import RequestManager, NetworkError
 from .websockets.src.websockets import client as websockets_client
@@ -19,6 +19,7 @@ from .style import Styles
 from .resources import ControlMode, MissingResource, ResourceKind, SDVersion, UpscalerName
 from .resources import resource_id
 from .settings import PerformanceSettings, settings
+from .localization import translate as _
 from .util import client_logger as log
 from .workflow import create as create_workflow
 from . import resources, util
@@ -76,6 +77,7 @@ class ComfyClient(Client):
     _jobs: deque[JobInfo]
     _active: Optional[JobInfo] = None
     _supported_sd_versions: list[SDVersion]
+    _supported_languages: list[TranslationPackage]
 
     @staticmethod
     async def connect(url=default_url, access_token=""):
@@ -84,6 +86,7 @@ class ComfyClient(Client):
 
         # Retrieve system info
         client.device_info = DeviceInfo.parse(await client._get("system_stats"))
+        client._supported_languages = await _list_languages(client)
 
         # Try to establish websockets connection
         wsurl = websocket_url(client.url)
@@ -91,7 +94,7 @@ class ComfyClient(Client):
             async with websockets_client.connect(f"{wsurl}/ws?clientId={client._id}"):
                 pass
         except Exception as e:
-            msg = f"Could not establish websocket connection at {wsurl}: {str(e)}"
+            msg = _("Could not establish websocket connection at") + f" {wsurl}: {str(e)}"
             raise Exception(msg)
 
         # Check custom nodes
@@ -102,8 +105,6 @@ class ComfyClient(Client):
             if any(node not in nodes for node in package.nodes)
         ]
         if len(missing) > 0:
-            if "IPAdapterApply" in nodes:
-                raise Exception("Custom node 'ComfyUI_IPAdapter_plus' is outdated, please update.")
             raise MissingResource(ResourceKind.node, missing)
 
         # Check for required and optional model resources
@@ -185,7 +186,7 @@ class ComfyClient(Client):
                 log.warning(f"Websocket connection closed: {str(e)}")
                 yield ClientMessage(ClientEvent.disconnected)
             except OSError as e:
-                msg = f"Could not connect to websocket server at {url}: {str(e)}"
+                msg = _("Could not connect to websocket server at") + f"{url}: {str(e)}"
                 yield ClientMessage(ClientEvent.error, error=msg)
             except asyncio.CancelledError:
                 await websocket.close()
@@ -305,12 +306,27 @@ class ComfyClient(Client):
         models.vae = nodes["VAELoader"]["input"]["required"]["vae_name"][0]
         models.loras = nodes["LoraLoader"]["input"]["required"]["lora_name"][0]
 
+    async def translate(self, text: str, lang: str):
+        try:
+            return await self._get(f"api/etn/translate/{lang}/{text}")
+        except NetworkError as e:
+            log.error(f"Could not translate text: {str(e)}")
+            return text
+
     def supports_version(self, version: SDVersion):
         return version in self._supported_sd_versions
 
     @property
     def supports_ip_adapter(self):
         return True
+
+    @property
+    def supports_translation(self):
+        return True
+
+    @property
+    def supported_languages(self):
+        return self._supported_languages
 
     @property
     def performance_settings(self):
@@ -503,6 +519,15 @@ def _ensure_supported_style(client: Client):
             default.save()
         else:
             Styles.list().create("default", checkpoint)
+
+
+async def _list_languages(client: ComfyClient) -> list[TranslationPackage]:
+    try:
+        result = await client._get("api/etn/languages")
+        return TranslationPackage.from_list(result)
+    except NetworkError as e:
+        log.error(f"Could not list available languages for translation: {str(e)}")
+        return []
 
 
 def _extract_message_png_image(data: memoryview):

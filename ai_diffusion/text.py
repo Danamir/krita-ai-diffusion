@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Tuple, List, NamedTuple
 
 from .api import LoraInput
+from .localization import translate as _
 from .util import client_logger as log
 from .settings import settings
 
@@ -19,7 +20,10 @@ class LoraId(NamedTuple):
         return LoraId(original, original.replace("\\", "/").removesuffix(".safetensors"))
 
 
-def merge_prompt(prompt: str, style_prompt: str):
+def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
+    if language and prompt:
+        prompt = f"lang:{language} {prompt} lang:en "
+
     if settings.split_conditioning_sdxl and (" . " in prompt or " . " in style_prompt):
         if " . " not in prompt:
             prompt += " . "
@@ -56,7 +60,7 @@ def extract_loras(prompt: str, client_loras: list[str]):
                 lora_name = client_lora
 
         if not lora_name:
-            error = f"LoRA not found : {match[0]}"
+            error = _("LoRA not found") + f": {match[0]}"
             log.warning(error)
             raise Exception(error)
 
@@ -64,7 +68,7 @@ def extract_loras(prompt: str, client_loras: list[str]):
         try:
             lora_strength = float(lora_strength)
         except ValueError:
-            error = f"Invalid LoRA strength for {match[0]} : {lora_strength}"
+            error = _("Invalid LoRA strength for") + f" {match[0]}: {lora_strength}"
             log.warning(error)
             raise Exception(error)
 

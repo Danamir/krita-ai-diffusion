@@ -11,6 +11,7 @@ import uuid
 from . import eventloop, workflow, util
 from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput
 from .api import InpaintMode, InpaintParams, FillMode
+from .localization import translate as _
 from .util import clamp, ensure, trim_text, client_logger as log
 from .settings import ApplyBehavior, settings
 from .network import NetworkError
@@ -55,6 +56,7 @@ class Model(QObject, ObservableProperties):
     seed = Property(0, persist=True)
     fixed_seed = Property(False, persist=True)
     queue_front = Property(False, persist=True)
+    translation_enabled = Property(True, persist=True)
     inpaint: CustomInpaint
     upscale: "UpscaleWorkspace"
     live: "LiveWorkspace"
@@ -71,6 +73,7 @@ class Model(QObject, ObservableProperties):
     seed_changed = pyqtSignal(int)
     fixed_seed_changed = pyqtSignal(bool)
     queue_front_changed = pyqtSignal(bool)
+    translation_enabled_changed = pyqtSignal(bool)
     progress_changed = pyqtSignal(float)
     error_changed = pyqtSignal(str)
     has_error_changed = pyqtSignal(bool)
@@ -145,6 +148,7 @@ class Model(QObject, ObservableProperties):
 
         if not dryrun:
             conditioning, job_regions = process_regions(self.regions, bounds, region_layer)
+            conditioning.language = self.prompt_translation_language
         else:
             conditioning, job_regions = ConditioningInput("", ""), []
 
@@ -216,6 +220,7 @@ class Model(QObject, ObservableProperties):
         upscaler = params.upscaler or client.models.default_upscaler
         if params.use_prompt and not dryrun:
             conditioning, job_regions = process_regions(self.regions, bounds, min_coverage=0)
+            conditioning.language = self.prompt_translation_language
             for region in job_regions:
                 region.bounds = Bounds.scale(region.bounds, params.factor)
         else:
@@ -309,12 +314,13 @@ class Model(QObject, ObservableProperties):
         if mask is not None or self.live.strength < 1.0:
             image = self._get_current_image(bounds)
 
-        cond, job_regions = process_regions(self.regions, bounds)
+        conditioning, job_regions = process_regions(self.regions, bounds)
+        conditioning.language = self.prompt_translation_language
 
         input = workflow.prepare(
             workflow_kind,
             image or bounds.extent,
-            cond,
+            conditioning,
             self.style,
             self.seed,
             client.models,
@@ -326,7 +332,7 @@ class Model(QObject, ObservableProperties):
         )
         if input != last_input:
             self.clear_error()
-            params = JobParams(bounds, cond.positive, regions=job_regions)
+            params = JobParams(bounds, conditioning.positive, regions=job_regions)
             await self.enqueue_jobs(input, JobKind.live_preview, params)
             return input
 
@@ -413,7 +419,7 @@ class Model(QObject, ObservableProperties):
             self.progress = 0
         elif message.event is ClientEvent.error:
             self.jobs.notify_cancelled(job)
-            self.report_error(f"Server execution error: {message.error}")
+            self.report_error(_("Server execution error") + f": {message.error}")
 
     def update_preview(self):
         if selection := self.jobs.selection:
@@ -580,6 +586,10 @@ class Model(QObject, ObservableProperties):
                 return workflow.detect_inpaint_mode(self.document.extent, bounds)
             return InpaintMode.fill
         return self.inpaint.mode
+
+    @property
+    def prompt_translation_language(self):
+        return settings.prompt_translation if self.translation_enabled else ""
 
     @property
     def sd_version(self):
@@ -767,7 +777,7 @@ class LiveWorkspace(QObject, ObservableProperties):
         if self.is_recording != active:
             if active and not self._start_recording():
                 self._model.report_error(
-                    "Cannot save recorded frames, document must be saved first!"
+                    _("Cannot save recorded frames, document must be saved first!")
                 )
                 return
             self._is_recording = active
@@ -909,6 +919,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         m = self._model
         bounds = Bounds(0, 0, *m.document.extent)
         conditioning, _ = process_regions(m.regions, bounds, self._model.layers.root)
+        conditioning.language = m.prompt_translation_language
         return workflow.prepare(
             WorkflowKind.generate if m.strength == 1.0 else WorkflowKind.refine,
             canvas,
@@ -933,7 +944,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
     def generate_batch(self):
         doc = self._model.document
         if self._model.strength < 1.0 and not self._model.layers.active.is_animated:
-            self._model.report_error("The active layer does not contain an animation.")
+            self._model.report_error(_("The active layer does not contain an animation."))
             return
 
         if doc.filename:
@@ -942,7 +953,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
             folder.mkdir(exist_ok=True)
             self._keyframes_folder = folder
         else:
-            self._model.report_error("Document must be saved before generating an animation.")
+            self._model.report_error(_("Document must be saved before generating an animation."))
             return
 
         self._model.clear_error()
@@ -973,7 +984,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
     def handle_job_finished(self, job: Job):
         if job.kind is JobKind.animation_batch:
             assert self._keyframes_folder is not None
-            frame, _, end = job.params.frame
+            frame, __, end = job.params.frame
             keyframes = self._keyframes.setdefault(job.params.animation_id, [])
             if len(job.results) > 0:
                 image = job.results[0]
@@ -991,14 +1002,14 @@ class AnimationWorkspace(QObject, ObservableProperties):
             if len(job.results) > 0:
                 doc = self._model.document
                 if job.params.frame[0] != doc.current_time:
-                    self._model.report_error("Generated frame does not match current time")
+                    self._model.report_error(_("Generated frame does not match current time"))
                     return
                 if layer := self._model.layers.find(self.target_layer):
                     image = job.results[0]
                     layer.write_pixels(image, job.params.bounds, make_visible=False)
                     self.target_image_changed.emit(image)
                 else:
-                    self._model.report_error("Target layer not found")
+                    self._model.report_error(_("Target layer not found"))
 
     def _import_animation(self, job: Job):
         doc = self._model.document
