@@ -238,7 +238,11 @@ class ComfyWorkflow:
         if two_pass and first_pass_steps > start_at_step:
             first_pass_sampler = first_pass_sampler or sampler
             sigmas = self.scheduler_sigmas(model, scheduler, steps, model_version)
-            cfg_guider = self.cfg_guider(model, positive, negative, cfg)
+
+            if model_version is SDVersion.flux:
+                guider = self.basic_guider(model, positive)
+            else:
+                guider = self.cfg_guider(model, positive, negative, cfg)
 
             sigmas = self.split_sigmas(
                 sigmas, start_at_step
@@ -252,7 +256,7 @@ class ComfyWorkflow:
                 "SamplerCustomAdvanced",
                 output_count=2,
                 noise=self.random_noise(seed),
-                guider=cfg_guider,
+                guider=guider,
                 sampler=self.sampler_select(first_pass_sampler),
                 sigmas=first_sigmas,
                 latent_image=latent_image,
@@ -262,18 +266,23 @@ class ComfyWorkflow:
                 "SamplerCustomAdvanced",
                 output_count=2,
                 noise=self.disable_noise(),
-                guider=cfg_guider,
+                guider=guider,
                 sampler=self.sampler_select(sampler),
                 sigmas=second_sigmas,
                 latent_image=latent,
             )[1]
 
         else:
+            if model_version is SDVersion.flux:
+                guider = self.basic_guider(model, positive)
+            else:
+                guider = self.cfg_guider(model, positive, negative, cfg)
+
             return self.add(
                 "SamplerCustomAdvanced",
                 output_count=2,
                 noise=self.random_noise(seed),
-                guider=self.cfg_guider(model, positive, negative, cfg),
+                guider=guider,
                 sampler=self.sampler_select(sampler),
                 sigmas=self.split_sigmas(
                     self.scheduler_sigmas(model, scheduler, steps, model_version), start_at_step
@@ -333,6 +342,9 @@ class ComfyWorkflow:
             sigmas=sigmas,
             step=step,
         )
+
+    def basic_guider(self, model: Output, positive: Output):
+        return self.add("BasicGuider", 1, model=model, conditioning=positive)
 
     def cfg_guider(self, model: Output, positive: Output, negative: Output, cfg=7.0):
         return self.add(
