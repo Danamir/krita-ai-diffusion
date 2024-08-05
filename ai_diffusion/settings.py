@@ -186,6 +186,13 @@ class Settings(QObject):
         _("Show Steps"), False, _("Display the number of steps to be evaluated in the weights box.")
     )
 
+    tag_files: list[str]
+    _tag_files = Setting(
+        _("Tag Auto-Completion"),
+        list(),
+        _("Enable text completion for tags from the selected files"),
+    )
+
     apply_behavior: ApplyBehavior
     _apply_behavior = Setting(
         _("Apply Behavior"),

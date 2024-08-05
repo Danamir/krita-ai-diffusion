@@ -1,4 +1,5 @@
 from __future__ import annotations
+from krita import Krita
 
 from typing import Optional, cast
 from PyQt5.QtWidgets import (
@@ -34,7 +35,7 @@ from ..localization import Localization, translate as _
 from .. import eventloop, util, __version__
 from .server import ServerWidget
 from .settings_widgets import SpinBoxSetting, SliderSetting, SwitchSetting, TextSetting
-from .settings_widgets import SettingsTab, ComboBoxSetting
+from .settings_widgets import SettingsTab, ComboBoxSetting, FileListSetting
 from .style import StylePresets
 from .theme import add_header, red, yellow, green, grey
 
@@ -424,6 +425,19 @@ class InterfaceSettings(SettingsTab):
             "show_negative_prompt",
             SwitchSetting(S._show_negative_prompt, (_("Show"), _("Hide")), self),
         )
+
+        self.add("tag_files", FileListSetting(S._tag_files, files=self._tag_files(), parent=self))
+        self._widgets["tag_files"].add_button(
+            Krita.instance().icon("reload-preset"),
+            _("Look for new tag files"),
+            self._update_tag_files,
+        )
+        self._widgets["tag_files"].add_button(
+            Krita.instance().icon("document-open"),
+            _("Open folder where custom tag files can be placed"),
+            self._open_tag_folder,
+        )
+
         self.add("auto_preview", SwitchSetting(S._auto_preview, parent=self))
         self.add("show_steps", SwitchSetting(S._show_steps, parent=self))
         self.add("new_seed_after_apply", SwitchSetting(S._new_seed_after_apply, parent=self))
@@ -434,6 +448,25 @@ class InterfaceSettings(SettingsTab):
         self.update_translation(root.connection.client_if_connected)
 
         self._layout.addStretch()
+
+    def _tag_files(self) -> list[str]:
+        plugin_tags_path = util.plugin_dir / "tags"
+        user_tags_path = util.user_data_dir / "tags"
+        files = set()
+        for path in plugin_tags_path.glob("*.csv"):
+            files.add(path.stem)
+        for path in user_tags_path.glob("*.csv"):
+            files.add(path.stem)
+
+        return list(files)
+
+    def _update_tag_files(self):
+        self._widgets["tag_files"].reset_files(self._tag_files())
+
+    def _open_tag_folder(self):
+        user_tag_folder = util.user_data_dir / "tags"
+        user_tag_folder.mkdir(exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(user_tag_folder)))
 
     def update_translation(self, client: Client | None):
         translation: ComboBoxSetting = self._widgets["prompt_translation"]
