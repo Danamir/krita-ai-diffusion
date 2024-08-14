@@ -235,7 +235,7 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
         first_pass_steps = round(steps*0.6)
 
-        if two_pass and first_pass_steps > start_at_step:
+        if two_pass and first_pass_steps > start_at_step and not model_version.flux:
             first_pass_sampler = first_pass_sampler or sampler
             sigmas = self.scheduler_sigmas(model, scheduler, steps, model_version)
 
@@ -396,6 +396,9 @@ class ComfyWorkflow:
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
     def load_checkpoint(self, checkpoint: str):
+        if (checkpoint.startswith("flux") or "\\flux" in checkpoint or "/flux" in checkpoint) and "nf4" in checkpoint:
+           return self.add("CheckpointLoaderNF4", 3, ckpt_name=checkpoint)
+
         return self.add_cached("CheckpointLoaderSimple", 3, ckpt_name=checkpoint)
 
     def load_dual_clip(self, clip_name1: str, clip_name2: str, type="sd3"):
