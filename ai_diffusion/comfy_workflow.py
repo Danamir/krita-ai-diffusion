@@ -456,7 +456,7 @@ class ComfyWorkflow:
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
     def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict = None, split_conditioning=False):
-        if models and models.version == SDVersion.sdxl:
+        if models and models.version in (SDVersion.sdxl, SDVersion.flux):
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
                     text_g, text_l = text.split(" . ")
@@ -475,7 +475,10 @@ class ComfyWorkflow:
                 text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
                 text_l = text_g
 
-            return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
+            if models.version == SDVersion.flux:
+                return self.add("CLIPTextEncodeFlux", 1, clip=clip, clip_l=text_l, t5xxl=text_g, guidance=3.5)
+            else:
+                return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
         else:
             return self.add("CLIPTextEncode", 1, clip=clip, text=text)
 
