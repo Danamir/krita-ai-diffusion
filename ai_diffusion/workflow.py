@@ -524,6 +524,13 @@ def scale_refine_and_decode(
     return image
 
 
+def ensure_minimum_extent(w: ComfyWorkflow, image: Output, extent: Extent, min_extent: int):
+    # For example, upscale with model requires minimum size of 32x32
+    if extent.shortest_side < min_extent:
+        image = w.scale_image(image, extent * (min_extent / extent.shortest_side))
+    return image
+
+
 class MiscParams(NamedTuple):
     batch_count: int
     nsfw_filter: float
@@ -711,6 +718,7 @@ def inpaint(
         upscale_model = w.load_upscale_model(upscaler)
         upscale = w.vae_decode(vae, out_latent)
         upscale = w.crop_image(upscale, initial_bounds)
+        upscale = ensure_minimum_extent(w, upscale, initial_bounds.extent, 32)
         upscale = w.upscale_image(upscale_model, upscale)
         upscale = w.scale_image(upscale, upscale_extent.desired)
         latent = w.vae_encode(vae, upscale)
@@ -827,16 +835,16 @@ def refine_region(
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.initial, models
     )
-    if models.version is SDVersion.sd15 or not inpaint.use_inpaint_model:
-        latent = w.vae_encode(vae, in_image)
-        latent = w.set_latent_noise_mask(latent, initial_mask)
-        inpaint_model = model
-    else:  # SDXL inpaint model
+    if inpaint.use_inpaint_model and models.version is SDVersion.sdxl:
         positive, negative, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
             vae, in_image, initial_mask, positive, negative
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
+    else:
+        latent = w.vae_encode(vae, in_image)
+        latent = w.set_latent_noise_mask(latent, initial_mask)
+        inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
     out_latent = w.sampler_custom_advanced(
