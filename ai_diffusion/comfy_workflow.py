@@ -235,14 +235,11 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
         first_pass_steps = round(steps*0.6)
 
-        if two_pass and first_pass_steps > start_at_step and not model_version.flux:
+        if two_pass and first_pass_steps > start_at_step and model_version is not SDVersion.flux:
             first_pass_sampler = first_pass_sampler or sampler
             sigmas = self.scheduler_sigmas(model, scheduler, steps, model_version)
 
-            if model_version is SDVersion.flux:
-                guider = self.basic_guider(model, positive)
-            else:
-                guider = self.cfg_guider(model, positive, negative, cfg)
+            guider = self.cfg_guider(model, positive, negative, cfg)
 
             sigmas = self.split_sigmas(
                 sigmas, start_at_step
