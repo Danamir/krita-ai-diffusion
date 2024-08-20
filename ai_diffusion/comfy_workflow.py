@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import os
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple, Tuple, Literal, overload, Any
@@ -394,7 +396,13 @@ class ComfyWorkflow:
 
     def load_checkpoint(self, checkpoint: str):
         if (checkpoint.startswith("flux") or "\\flux" in checkpoint or "/flux" in checkpoint) and "nf4" in checkpoint:
-           return self.add("CheckpointLoaderNF4", 3, ckpt_name=checkpoint)
+            # Replace NF4 checkpoint by UNET version, inject T5XXL Q8 GGUF & vae loaders
+            return (
+                self.add("UNETLoaderNF4", 1, ckpt_name=os.path.join("flux", os.path.basename(checkpoint))),
+                self.add("DualCLIPLoaderGGUF", 1, clip_name1="CLIP\\clip_l.safetensors", clip_name2="T5\\t5-v1_1-xxl-encoder-Q8_0.gguf", type="flux"),
+                self.add("VAELoader", 1, vae_name="ae.sft"),
+            )
+            # return self.add("CheckpointLoaderNF4", 3, ckpt_name=os.path.basename(checkpoint))
 
         return self.add_cached("CheckpointLoaderSimple", 3, ckpt_name=checkpoint)
 
