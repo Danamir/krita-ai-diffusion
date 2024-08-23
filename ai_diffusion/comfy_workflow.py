@@ -395,14 +395,38 @@ class ComfyWorkflow:
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
     def load_checkpoint(self, checkpoint: str):
-        if (checkpoint.startswith("flux") or "\\flux" in checkpoint or "/flux" in checkpoint) and "nf4" in checkpoint:
-            # Replace NF4 checkpoint by UNET version, inject T5XXL Q8 GGUF & vae loaders
-            return (
-                self.add("UNETLoaderNF4", 1, ckpt_name=os.path.join("flux", os.path.basename(checkpoint))),
-                self.add("DualCLIPLoaderGGUF", 1, clip_name1="CLIP\\clip_l.safetensors", clip_name2="T5\\t5-v1_1-xxl-encoder-Q8_0.gguf", type="flux"),
-                self.add("VAELoader", 1, vae_name="ae.sft"),
-            )
-            # return self.add("CheckpointLoaderNF4", 3, ckpt_name=os.path.basename(checkpoint))
+        if "__unet__" in checkpoint:
+            # -Configuration-
+            clip_l_name = "CLIP\\clip_l.safetensors"
+            t5xxl_name = "T5\\t5-v1_1-xxl-encoder-Q8_0.gguf"  # GGUF T5XXL
+            # t5xxl_name = "T5\\t5xxl_fp8_e4m3fn.safetensors"  # Standard T5XXL
+            vae_name = "ae.sft"
+
+            # UNET loading
+            unet_name = os.path.basename(checkpoint)
+            unet_name = unet_name.replace("__unet__", "")
+            unet_name = os.path.join(*unet_name.split("__"))  # handle unet subdirectories
+
+            if ".gguf" in unet_name:
+                unet_name = unet_name.replace(".gguf.safetensors", ".gguf")
+                model_output = self.add("UnetLoaderGGUF", 1, unet_name=unet_name)
+            elif "nf4" in unet_name:
+                model_output = self.add("UNETLoaderNF4", 1, unet_name=unet_name)
+            else:
+                model_output = self.add("UNETLoader", 1, unet_name=unet_name)
+
+            # CLIP loading
+            model_type = "flux" if "flux" in unet_name else "sdxl"  # detect model type
+
+            if clip_l_name.endswith(".gguf") or t5xxl_name.endswith(".gguf"):
+                clip_output = self.add("DualCLIPLoaderGGUF", 1, clip_name1=clip_l_name, clip_name2=t5xxl_name, type=model_type)
+            else:
+                clip_output = self.add("DualCLIPLoader", 1, clip_name1=clip_l_name, clip_name2=t5xxl_name, type=model_type)
+
+            # VAE loading
+            vae_output = self.add("VAELoader", 1, vae_name=vae_name)
+
+            return (model_output, clip_output, vae_output)
 
         return self.add_cached("CheckpointLoaderSimple", 3, ckpt_name=checkpoint)
 
