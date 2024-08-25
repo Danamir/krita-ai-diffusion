@@ -403,9 +403,18 @@ class ComfyWorkflow:
             vae_name = "ae.sft"
 
             # UNET loading
-            unet_name = os.path.basename(checkpoint)
+            from .util import client_logger as log
+            unet_name = checkpoint
+            for separator in ("/", "\\"):
+                if separator in checkpoint:
+                    unet_name = checkpoint[checkpoint.rindex(separator)+1:]
+                    break
+
+            log.debug(f"unet basename {unet_name} from {checkpoint}")
             unet_name = unet_name.replace("__unet__", "")
-            unet_name = os.path.join(*unet_name.split("__"))  # handle unet subdirectories
+            unet_name = separator.join(unet_name.split("__"))  # handle unet subdirectories
+            log.debug(f"final unet name {unet_name}")
+            log.debug(f"separator {separator}")
 
             if ".gguf" in unet_name:
                 unet_name = unet_name.replace(".gguf.safetensors", ".gguf")
