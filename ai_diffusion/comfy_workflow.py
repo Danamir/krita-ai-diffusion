@@ -398,7 +398,7 @@ class ComfyWorkflow:
         if "__unet__" in checkpoint:
             # -Configuration-
             clip_l_name = "CLIP\\clip_l.safetensors"
-            t5xxl_name = "T5\\t5-v1_1-xxl-encoder-Q8_0.gguf"  # GGUF T5XXL
+            t5xxl_name = "T5\\t5-v1_1-xxl-encoder-Q6_K.gguf"  # GGUF T5XXL
             # t5xxl_name = "T5\\t5xxl_fp8_e4m3fn.safetensors"  # Standard T5XXL
             vae_name = "ae.sft"
 
