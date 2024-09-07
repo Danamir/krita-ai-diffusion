@@ -12,6 +12,7 @@ from .api import ExtentInput, InpaintMode, InpaintParams, FillMode, Conditioning
 from .api import RegionInput
 from .image import Bounds, Extent, Image, Mask, Point, multiple_of
 from .client import ClientModels, ModelDict
+from .files import FileLibrary
 from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, TileLayout, get_inpaint_reference
 from .resources import ControlMode, SDVersion, UpscalerName, ResourceKind
@@ -1032,6 +1033,7 @@ def prepare(
     style: Style,
     seed: int,
     models: ClientModels,
+    files: FileLibrary,
     perf: PerformanceSettings,
     mask: Mask | None = None,
     strength: float = 1.0,
@@ -1046,18 +1048,19 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, models.loras)
+    i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, files.loras)
     i.conditioning.negative = merge_prompt(cond.negative, style.negative_prompt, cond.language)
     i.conditioning.style = style.style_prompt
     for idx, region in enumerate(i.conditioning.regions):
         assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
-        region.positive, region_loras = extract_loras(region.positive, models.loras)
+        region.positive, region_loras = extract_loras(region.positive, files.loras)
         extra_loras += region_loras
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models()
+    i.conditioning.positive += _collect_lora_triggers(i.models.loras, files)
     i.models.loras = unique(i.models.loras + extra_loras, key=lambda l: l.name)
-    _check_server_has_models(i.models, models, style.name)
+    _check_server_has_models(i.models, models, files, style.name)
 
     sd_version = i.models.version = models.version_of(style.sd_checkpoint)
     model_set = models.for_version(sd_version)
@@ -1270,7 +1273,19 @@ def _get_sampling_lora(style: Style, is_live: bool, model_set: ModelDict, models
     return []
 
 
-def _check_server_has_models(input: CheckpointInput, models: ClientModels, style_name: str):
+def _collect_lora_triggers(loras: list[LoraInput], files: FileLibrary):
+    def trigger_words(lora: LoraInput) -> str:
+        if file := files.loras.find(lora.name):
+            return file.meta("lora_triggers", "")
+        return ""
+
+    result = " ".join(trigger_words(lora) for lora in loras)
+    return " " + result if result else ""
+
+
+def _check_server_has_models(
+    input: CheckpointInput, models: ClientModels, files: FileLibrary, style_name: str
+):
     if input.checkpoint not in models.checkpoints:
         raise ValueError(
             _(
@@ -1281,6 +1296,9 @@ def _check_server_has_models(input: CheckpointInput, models: ClientModels, style
         )
     for lora in input.loras:
         if lora.name not in models.loras:
+            if lora_info := files.loras.find_local(lora.name):
+                lora.storage_id = lora_info.compute_hash()
+                continue  # local file available, can be uploaded to server
             raise ValueError(
                 _(
                     "The LoRA '{lora}' used by style '{style}' is not available on the server",
