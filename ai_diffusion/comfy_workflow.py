@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple, Tuple, Literal, overload, Any
@@ -8,7 +7,6 @@ from uuid import uuid4
 import json
 
 from .client import ModelDict
-from .style import SDVersion
 from .image import Bounds, Extent, Image
 from .resources import Arch, ControlMode
 
@@ -237,7 +235,7 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
         first_pass_steps = round(steps*0.6)
 
-        if two_pass and first_pass_steps > start_at_step and model_version is not SDVersion.flux:
+        if two_pass and first_pass_steps > start_at_step and model_version is not Arch.flux:
             first_pass_sampler = first_pass_sampler or sampler
             sigmas = self.scheduler_sigmas(model, scheduler, steps, model_version)
 
@@ -410,11 +408,8 @@ class ComfyWorkflow:
                     unet_name = checkpoint[checkpoint.rindex(separator)+1:]
                     break
 
-            log.debug(f"unet basename {unet_name} from {checkpoint}")
             unet_name = unet_name.replace("__unet__", "")
             unet_name = separator.join(unet_name.split("__"))  # handle unet subdirectories
-            log.debug(f"final unet name {unet_name}")
-            log.debug(f"separator {separator}")
 
             if ".gguf" in unet_name:
                 unet_name = unet_name.replace(".gguf.safetensors", ".gguf")
@@ -442,6 +437,8 @@ class ComfyWorkflow:
     def load_diffusion_model(self, model_name: str):
         if model_name.endswith(".gguf"):
             return self.add_cached("UnetLoaderGGUF", 1, unet_name=model_name)
+        elif "nf4" in model_name:
+            return self.add("UNETLoaderNF4", 1, unet_name=model_name)
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
 
     def load_clip(self, clip_name: str, type: str):
@@ -503,7 +500,7 @@ class ComfyWorkflow:
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
     def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict = None, split_conditioning=False):
-        if models and models.version in (SDVersion.sdxl, SDVersion.flux):
+        if models and models.arch in (Arch.sdxl, Arch.flux):
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
                     text_g, text_l = text.split(" . ")
@@ -522,7 +519,7 @@ class ComfyWorkflow:
                 text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
                 text_l = text_g
 
-            if models.version == SDVersion.flux:
+            if models.arch == Arch.flux:
                 return self.add("CLIPTextEncodeFlux", 1, clip=clip, clip_l=text_l, t5xxl=text_g, guidance=3.5)
             else:
                 return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
