@@ -27,13 +27,10 @@ from .workflow import create as create_workflow
 from . import resources, util
 
 if util.is_macos:
-    try:
-        import certifi  # type: ignore
-        import os
+    import os
 
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-    except Exception as e:
-        log.error(f"Error setting SSL_CERT_FILE on MacOS: {e}")
+    if "SSL_CERT_FILE" not in os.environ:
+        os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
 
 
 @dataclass
