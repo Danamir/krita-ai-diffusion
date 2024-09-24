@@ -235,7 +235,8 @@ class PromptAutoComplete:
         self._completer.complete(rect)
 
     def _insert_completion(self, completion):
-        completion = completion.replace("(", "\\(").replace(")", "\\)")
+        if not self.is_lora_mode:
+            completion = completion.replace("(", "\\(").replace(")", "\\)")
         text = self._widget.text()
         pos = self._widget.cursorPosition()
         prefix_len = len(self._completion_prefix)
@@ -248,6 +249,12 @@ class PromptAutoComplete:
     @property
     def is_active(self):
         return self._popup.isVisible()
+
+    @property
+    def is_lora_mode(self):
+        prefix = self._current_text()
+        name = prefix.removeprefix("<lora:")
+        return len(prefix) > len(name)
 
     action_keys = [
         Qt.Key.Key_Enter,
