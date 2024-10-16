@@ -25,6 +25,7 @@ class ClientEvent(Enum):
     disconnected = 5
     queued = 6
     upload = 7
+    published = 8
 
 
 class ClientMessage(NamedTuple):
@@ -32,7 +33,7 @@ class ClientMessage(NamedTuple):
     job_id: str = ""
     progress: float = 0
     images: ImageCollection | None = None
-    result: dict | None = None
+    result: dict | SharedWorkflow | None = None
     error: str | None = None
 
 
@@ -66,6 +67,11 @@ class DeviceInfo(NamedTuple):
         except Exception as e:
             log.error(f"Could not parse device info {data}: {str(e)}")
             return DeviceInfo("cpu", "unknown", 0)
+
+
+class SharedWorkflow(NamedTuple):
+    publisher: str
+    workflow: dict
 
 
 class CheckpointInfo(NamedTuple):
@@ -227,6 +233,14 @@ class TranslationPackage(NamedTuple):
         return [TranslationPackage.from_dict(item) for item in data]
 
 
+class ClientFeatures(NamedTuple):
+    ip_adapter: bool
+    translation: bool
+    languages: list[TranslationPackage]
+    max_upload_size: int = 0
+    max_control_layers: int = 1000
+
+
 class Client(ABC):
     url: str
     models: ClientModels
@@ -265,23 +279,10 @@ class Client(ABC):
         return True
 
     @property
-    def supports_ip_adapter(self) -> bool:
-        return True
-
-    @property
-    def supports_translation(self) -> bool:
-        return False
-
-    @property
-    def supported_languages(self) -> list[TranslationPackage]:
-        return []
+    def features(self) -> ClientFeatures: ...
 
     @property
     def performance_settings(self) -> PerformanceSettings: ...
-
-    @property
-    def max_upload_size(self) -> int:
-        return 0  # in bytes, 0 means unlimited
 
     async def __aenter__(self):
         return self

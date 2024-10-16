@@ -281,7 +281,7 @@ class ComboBoxSetting(SettingWidget):
             self.set_items(setting.items)
 
         self._combo.setMinimumWidth(230)
-        self._combo.currentIndexChanged.connect(self._change_value)
+        self._combo.activated.connect(self._change_value)
         self.set_widget(self._combo)
         self._original_text = self._key_label.text()
 
@@ -472,6 +472,8 @@ class SettingsWriteGuard:
 
 def _add_title(layout: QVBoxLayout, title: str):
     title_label = QLabel(title)
-    title_label.setStyleSheet("font-size: 12pt")
+    font = title_label.font()
+    font.setPointSize(font.pointSize() + 2)
+    title_label.setFont(font)
     layout.addWidget(title_label)
     layout.addSpacing(6)

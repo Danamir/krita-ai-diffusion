@@ -4,18 +4,17 @@ import subprocess
 import os
 import sys
 import asyncio
-import dotenv
 
 from ai_diffusion.api import WorkflowInput, WorkflowKind, ControlInput, ImageInput, CheckpointInput
-from ai_diffusion.api import SamplingInput, ConditioningInput, ExtentInput
+from ai_diffusion.api import SamplingInput, ConditioningInput, ExtentInput, RegionInput
 from ai_diffusion.client import Client, ClientEvent
-from ai_diffusion.cloud_client import CloudClient
-from ai_diffusion.image import Extent, Image
+from ai_diffusion.cloud_client import CloudClient, enumerate_features, apply_limits
+from ai_diffusion.image import Extent, Image, Bounds
 from ai_diffusion.resources import ControlMode, Arch
 from ai_diffusion.util import ensure
+from .conftest import has_local_cloud
 from .config import root_dir, test_dir, result_dir
 
-dotenv.load_dotenv(root_dir / "service" / "web" / ".env.local")
 pod_main = root_dir / "service" / "pod" / "pod.py"
 run_dir = test_dir / "pod"
 
@@ -78,6 +77,8 @@ async def receive_images(client: Client, work: WorkflowInput):
 def cloud_client(pytestconfig, qtapp, pod_server):
     if pytestconfig.getoption("--ci"):
         pytest.skip("Diffusion is disabled on CI")
+    if not has_local_cloud:
+        pytest.skip("Local cloud service not found")
     url = os.environ["TEST_SERVICE_URL"]
     token = os.environ["TEST_SERVICE_TOKEN"]
     return qtapp.run(CloudClient.connect(url, token))
@@ -131,18 +132,13 @@ def test_large_image(qtapp, cloud_client):
     run_and_save(qtapp, cloud_client, workflow, "pod_large_image")
 
 
-@pytest.mark.parametrize("scenario", ["resolution", "steps", "control", "max_pixels"])
+@pytest.mark.parametrize("scenario", ["resolution", "steps", "max_pixels"])
 def test_validation(qtapp, cloud_client: CloudClient, scenario: str):
     workflow = create_simple_workflow()
     if scenario == "resolution":
         workflow.images = ImageInput.from_extent(Extent(19000, 512))
     elif scenario == "steps":
         ensure(workflow.sampling).total_steps = 200
-    elif scenario == "control":
-        img = Image.create(Extent(4, 4))
-        control = ensure(workflow.conditioning).control
-        for i in range(7):
-            control.append(ControlInput(ControlMode.depth, img))
     elif scenario == "max_pixels":
         workflow.images = ImageInput.from_extent(Extent(3840, 2168))  # > 4k
 
@@ -202,3 +198,26 @@ def test_compute_cost(qtapp, cloud_client: CloudClient, params):
         assert service_cost == input.cost
 
     qtapp.run(check())
+
+
+def test_features_limits():
+    features = enumerate_features({"max_control_layers": 2})
+    image = Image.create(Extent(4, 4))
+    control_layers = [
+        ControlInput(ControlMode.blur, image),
+        ControlInput(ControlMode.line_art, image),
+        ControlInput(ControlMode.depth, image),
+    ]
+    work = WorkflowInput(
+        WorkflowKind.generate,
+        models=CheckpointInput("ckpt", self_attention_guidance=True),
+        conditioning=ConditioningInput(
+            "prompt",
+            control=control_layers,
+            regions=[RegionInput(image, Bounds(0, 0, 4, 4), "positive", control_layers)],
+        ),
+    )
+    apply_limits(work, features)
+    assert work.conditioning and len(work.conditioning.control) == 2
+    assert work.conditioning and len(work.conditioning.regions[0].control) == 2
+    assert work.models and work.models.self_attention_guidance is False

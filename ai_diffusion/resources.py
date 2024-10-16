@@ -6,10 +6,10 @@ from typing import NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.24.0"
+version = "1.26.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "cd4955367e4170b88ba839efccb6d2ed0dd963ad"
+comfy_version = "1b8089528502a881d0ed2918b2abd54441743dd0"
 
 
 class CustomNode(NamedTuple):
@@ -39,7 +39,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "e0d0c3cc2cbb1e055014d0b27851e61dd24748e4",
+        "0b01696f5b5da436b0f3e15660c13e9b2089ece6",
         ["ETN_LoadImageBase64", "ETN_LoadMaskBase64", "ETN_SendImageWebSocket", "ETN_Translate"],
     ),
     CustomNode(
@@ -847,15 +847,15 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.inpaint): ["flux.1-dev-controlnet-inpaint"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.universal): ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble): ["control_v11p_sd15_scribble", "control_lora_rank128_v11p_sd15_scribble"],
-    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.scribble): ["xinsirscribble", "scribble-sdxl", "mistoline", "control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.scribble): ["xinsirscribble", "scribble-sdxl", "mistoline_fp16", "mistoline_rank", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.line_art): ["control_v11p_sd15_lineart", "control_lora_rank128_v11p_sd15_lineart"],
-    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.line_art): ["xinsirscribble", "mistoline", "scribble-sdxl", "control-lora-sketch-rank", "sai_xl_sketch_"],
+    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.line_art): ["xinsirscribble", "mistoline_fp16", "mistoline_rank", "scribble-sdxl", "control-lora-sketch-rank", "sai_xl_sketch_"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.line_art): ["mistoline_flux"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.soft_edge): ["control_v11p_sd15_softedge", "control_lora_rank128_v11p_sd15_softedge"],
-    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.soft_edge): ["mistoline_rank", "xinsirscribble", "scribble-sdxl"],
+    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.soft_edge): ["mistoline_fp16", "mistoline_rank", "xinsirscribble", "scribble-sdxl"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.soft_edge): ["mistoline_flux"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.canny_edge): ["control_v11p_sd15_canny", "control_lora_rank128_v11p_sd15_canny"],
-    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.canny_edge): ["xinsircanny", "canny-sdxl" "control-lora-canny-rank", "sai_xl_canny_", "mistoline"],
+    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.canny_edge): ["xinsircanny", "canny-sdxl" "control-lora-canny-rank", "sai_xl_canny_"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.canny_edge): ["flux-canny", "mistoline_flux"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.depth): ["control_sd15_depth_anything", "control_v11f1p_sd15_depth", "control_lora_rank128_v11f1p_sd15_depth"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.depth): ["xinsirdepth", "depth-sdxl", "control-lora-depth-rank", "sai_xl_depth_"],
@@ -867,6 +867,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.segmentation): ["sdxl_segmentation_ade20k_controlnet"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.blur): ["control_v11f1e_sd15_tile", "control_lora_rank128_v11f1e_sd15_tile"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.blur): ["xinsirtile", "tile-sdxl", "ttplanetsdxlcontrolnet", "ttplanet_sdxl_controlnet_tile_realistic", "ttplanet_controlnet_tile_realistic"],
+    resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.blur): ["flux.1-dev-controlnet-upscale"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.stencil): ["control_v1p_sd15_qrcode_monster"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.stencil): ["sdxl_qrcode_monster"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.hands): ["control_sd15_inpaint_depth_hand"],

@@ -3,14 +3,16 @@ from collections import deque
 from dataclasses import dataclass, fields, field
 from datetime import datetime
 from enum import Enum, Flag
-from typing import Any, Deque, NamedTuple
+from typing import Any, Deque, NamedTuple, TYPE_CHECKING
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .image import Bounds, ImageCollection
 from .settings import settings
 from .style import Style
 from .util import ensure
-from . import control
+
+if TYPE_CHECKING:
+    from . import control
 
 
 class JobState(Flag):
@@ -45,14 +47,10 @@ class JobRegion:
 @dataclass
 class JobParams:
     bounds: Bounds
-    prompt: str
-    negative_prompt: str = ""
+    name: str  # used eg. as name for new layers created from this job
     regions: list[JobRegion] = field(default_factory=list)
-    strength: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
     seed: int = 0
-    style: str = ""
-    checkpoint: str = ""
-    sampler: str = ""
     has_mask: bool = False
     frame: tuple[int, int, int] = (0, 0, 0)
     animation_id: str = ""
@@ -61,6 +59,15 @@ class JobParams:
     def from_dict(data: dict[str, Any]):
         data["bounds"] = Bounds(*data["bounds"])
         data["regions"] = [JobRegion.from_dict(r) for r in data.get("regions", [])]
+        if "metadata" not in data:  # older documents before version 1.26.0
+            data["name"] = data.get("prompt", "")
+            data["metadata"] = {}
+            _move_field(data, "prompt", data["metadata"])
+            _move_field(data, "negative_prompt", data["metadata"])
+            _move_field(data, "strength", data["metadata"])
+            _move_field(data, "style", data["metadata"])
+            _move_field(data, "sampler", data["metadata"])
+            _move_field(data, "checkpoint", data["metadata"])
         return JobParams(**data)
 
     @classmethod
@@ -71,9 +78,22 @@ class JobParams:
         return all(getattr(a, name) == getattr(b, name) for name in field_names)
 
     def set_style(self, style: Style):
-        self.style = style.filename
-        self.checkpoint = style.sd_checkpoint
-        self.sampler = f"{style.sampler} ({style.sampler_steps} / {style.cfg_scale})"
+        self.metadata["style"] = style.filename
+        self.metadata["checkpoint"] = style.sd_checkpoint
+        self.metadata["loras"] = style.loras
+        self.metadata["sampler"] = f"{style.sampler} ({style.sampler_steps} / {style.cfg_scale})"
+
+    @property
+    def prompt(self):
+        return self.metadata.get("prompt", "")
+
+    @property
+    def style(self):
+        return self.metadata.get("style", "")
+
+    @property
+    def strength(self):
+        return self.metadata.get("strength", 1.0)
 
 
 class Job:
@@ -246,3 +266,9 @@ class JobQueue(QObject):
                 break
             if j.state in [JobState.queued, JobState.executing]:
                 j.state = JobState.cancelled
+
+
+def _move_field(src: dict[str, Any], field: str, dest: dict[str, Any]):
+    if field in src:
+        dest[field] = src[field]
+        del src[field]

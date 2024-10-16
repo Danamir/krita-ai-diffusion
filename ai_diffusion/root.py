@@ -4,11 +4,13 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 from .connection import Connection, ConnectionState
 from .client import ClientMessage
+from .custom_workflow import WorkflowCollection
 from .server import Server, ServerState
 from .document import Document, KritaDocument
 from .model import Model
-from .files import FileLibrary, File, FileSource
+from .files import FileFormat, FileLibrary, File, FileSource
 from .persistence import ModelSync, RecentlyUsedSync, import_prompt_from_file
+from .updates import AutoUpdate
 from .ui.theme import checkpoint_icon
 from .settings import ServerMode, settings
 from .util import client_logger as log
@@ -36,8 +38,13 @@ class Root(QObject):
         self._server = Server(settings.server_path)
         self._connection = Connection()
         self._files = FileLibrary.load()
+        self._workflows = WorkflowCollection(self._connection)
         self._models = []
+        self._null_model = Model(Document(), self._connection, self._workflows)
         self._recent = RecentlyUsedSync.from_settings()
+        self._auto_update = AutoUpdate()
+        if settings.auto_update:
+            self._auto_update.check()
         self._connection.message_received.connect(self._handle_message)
         self._connection.models_changed.connect(self._update_files)
 
@@ -46,7 +53,7 @@ class Root(QObject):
         self._models = [m for m in self._models if m.model.document.is_valid]
 
     def create_model(self, doc: KritaDocument):
-        model = Model(doc, self._connection)
+        model = Model(doc, self._connection, self._workflows)
         self._recent.track(model)
         persistence_sync = ModelSync(model)
         import_prompt_from_file(model)
@@ -79,10 +86,18 @@ class Root(QObject):
         return self._files
 
     @property
+    def workflows(self) -> WorkflowCollection:
+        return self._workflows
+
+    @property
+    def auto_update(self) -> AutoUpdate:
+        return self._auto_update
+
+    @property
     def active_model(self):
         if model := self.model_for_active_document():
             return model
-        return Model(Document(), self._connection)
+        return self._null_model
 
     async def autostart(self, signal_server_change: Callable):
         connection = self._connection
@@ -140,7 +155,7 @@ class Root(QObject):
             ]
             self._files.checkpoints.update(checkpoints, FileSource.remote)
 
-            loras = [File.remote(lora) for lora in client.models.loras]
+            loras = [File.remote(lora, FileFormat.lora) for lora in client.models.loras]
             self._files.loras.update(loras, FileSource.remote)
 
 
