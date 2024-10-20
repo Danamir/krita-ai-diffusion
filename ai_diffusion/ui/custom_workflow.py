@@ -17,7 +17,7 @@ from ..style import Styles
 from ..root import root
 from ..settings import settings
 from ..localization import translate as _
-from ..util import ensure, clamp
+from ..util import ensure, clamp, base_type_match
 from .generation import GenerateButton, ProgressBar, QueueButton, HistoryWidget, create_error_label
 from .live import LivePreviewArea
 from .switch import SwitchWidget
@@ -51,8 +51,11 @@ class LayerSelect(QComboBox):
             assert False, f"Unknown filter: {self.filter}"
 
         for l in layers:
-            if self.findData(l.id) == -1:
+            index = self.findData(l.id)
+            if index == -1:
                 self.addItem(l.name, l.id)
+            elif self.itemText(index) != l.name:
+                self.setItemText(index, l.name)
         i = 0
         while i < self.count():
             if self.itemData(i) not in (l.id for l in layers):
@@ -116,8 +119,8 @@ class IntParamWidget(QWidget):
         return self._widget.value()
 
     @value.setter
-    def value(self, value: int):
-        self._widget.setValue(value)
+    def value(self, value: int | float):
+        self._widget.setValue(int(value))
 
 
 class FloatParamWidget(QWidget):
@@ -132,7 +135,7 @@ class FloatParamWidget(QWidget):
         self.setLayout(layout)
 
         assert param.min is not None and param.max is not None and param.default is not None
-        if param.max - param.min <= 20:
+        if param.max - param.min <= 100:
             self._widget = QSlider(Qt.Orientation.Horizontal, parent)
             self._widget.setRange(round(param.min * 100), round(param.max * 100))
             self._widget.setMinimumHeight(self._widget.minimumSizeHint().height() + 4)
@@ -164,11 +167,11 @@ class FloatParamWidget(QWidget):
             return self._widget.value()
 
     @value.setter
-    def value(self, value: float):
+    def value(self, value: float | int):
         if isinstance(self._widget, QSlider):
             self._widget.setValue(round(value * 100))
         else:
-            self._widget.setValue(value)
+            self._widget.setValue(float(value))
 
 
 class BoolParamWidget(QWidget):
@@ -321,25 +324,27 @@ CustomParamWidget = (
 
 
 def _create_param_widget(param: CustomParam, parent: QWidget) -> CustomParamWidget:
-    if param.kind is ParamKind.image_layer:
-        return LayerSelect("image", parent)
-    if param.kind is ParamKind.mask_layer:
-        return LayerSelect("mask", parent)
-    if param.kind is ParamKind.number_int:
-        return IntParamWidget(param, parent)
-    if param.kind is ParamKind.number_float:
-        return FloatParamWidget(param, parent)
-    if param.kind is ParamKind.toggle:
-        return BoolParamWidget(param, parent)
-    if param.kind is ParamKind.text:
-        return TextParamWidget(param, parent)
-    if param.kind in [ParamKind.prompt_positive, ParamKind.prompt_negative]:
-        return PromptParamWidget(param, parent)
-    if param.kind is ParamKind.choice:
-        return ChoiceParamWidget(param, parent)
-    if param.kind is ParamKind.style:
-        return StyleParamWidget(parent)
-    assert False, f"Unknown param kind: {param.kind}"
+    match param.kind:
+        case ParamKind.image_layer:
+            return LayerSelect("image", parent)
+        case ParamKind.mask_layer:
+            return LayerSelect("mask", parent)
+        case ParamKind.number_int:
+            return IntParamWidget(param, parent)
+        case ParamKind.number_float:
+            return FloatParamWidget(param, parent)
+        case ParamKind.toggle:
+            return BoolParamWidget(param, parent)
+        case ParamKind.text:
+            return TextParamWidget(param, parent)
+        case ParamKind.prompt_positive | ParamKind.prompt_negative:
+            return PromptParamWidget(param, parent)
+        case ParamKind.choice:
+            return ChoiceParamWidget(param, parent)
+        case ParamKind.style:
+            return StyleParamWidget(parent)
+        case _:
+            assert False, f"Unknown param kind: {param.kind}"
 
 
 class WorkflowParamsWidget(QWidget):
@@ -352,6 +357,7 @@ class WorkflowParamsWidget(QWidget):
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setColumnMinimumWidth(1, 10)
+        layout.setColumnStretch(2, 1)
         self.setLayout(layout)
 
         for p in params:
@@ -374,7 +380,7 @@ class WorkflowParamsWidget(QWidget):
     def value(self, values: dict[str, Any]):
         for name, value in values.items():
             if widget := self._widgets.get(name):
-                if type(widget.value) == type(value):
+                if base_type_match(widget.value, value):
                     widget.value = value
 
 

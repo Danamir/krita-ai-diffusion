@@ -9,6 +9,7 @@ import json
 from .client import ModelDict
 from .image import Bounds, Extent, Image
 from .resources import Arch, ControlMode
+from .util import base_type_match
 
 
 class ComfyRunMode(Enum):
@@ -41,19 +42,11 @@ class ComfyNode(NamedTuple):
 
     def input(self, key: str, default: T | None = None) -> T | Input | None:
         result = self.inputs.get(key, default)
-        assert (
-            default is None
-            or type(result) == type(default)
-            or (isnumber(result) and isnumber(default))
-        )
+        assert default is None or base_type_match(result, default)
         return result
 
     def output(self, index=0) -> Output:
         return Output(int(self.id), index)
-
-
-def isnumber(x):
-    return isinstance(x, (int, float))
 
 
 class ComfyWorkflow:
@@ -1062,8 +1055,12 @@ def _convert_ui_workflow(w: dict, node_inputs: dict):
         for field_name, field in fields.items():
             field_type = field[0]
             if field_type in ["INT", "FLOAT", "BOOL", "STRING"] or isinstance(field_type, list):
-                inputs[field_name] = node["widgets_values"][widget_count]
+                values = node["widgets_values"]
+                inputs[field_name] = values[widget_count]
                 widget_count += 1
+                if len(values) > widget_count and values[widget_count] in _control_after_generate:
+                    widget_count += 1
+
             for connection in node["inputs"]:
                 if connection["name"] == field_name and connection["link"] is not None:
                     link = next(l for l in links if l[0] == connection["link"])
@@ -1076,3 +1073,6 @@ def _convert_ui_workflow(w: dict, node_inputs: dict):
         r[id] = {"class_type": type, "inputs": inputs}
 
     return r
+
+
+_control_after_generate = ["fixed", "increment", "decrement", "randomize"]
