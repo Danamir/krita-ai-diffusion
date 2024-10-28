@@ -11,7 +11,7 @@ from typing import NamedTuple, Optional, Sequence
 
 from .api import WorkflowInput
 from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
-from .client import SharedWorkflow, TranslationPackage, ClientFeatures
+from .client import SharedWorkflow, TranslationPackage, ClientFeatures, TextOutput
 from .client import filter_supported_styles, loras_to_upload
 from .files import FileFormat
 from .image import Image, ImageCollection
@@ -308,10 +308,13 @@ class ComfyClient(Client):
                         log.error(f"Received message {msg} but there is no active job")
 
                 if msg["type"] == "executed":
-                    job = self._get_active_job(msg["data"]["prompt_id"])
-                    pose_json = _extract_pose_json(msg)
-                    if job and pose_json:
-                        result = pose_json
+                    if job := self._get_active_job(msg["data"]["prompt_id"]):
+                        text_output = _extract_text_output(job.local_id, msg)
+                        if text_output is not None:
+                            await self._messages.put(text_output)
+                        pose_json = _extract_pose_json(msg)
+                        if pose_json is not None:
+                            result = pose_json
 
                 if msg["type"] == "execution_error":
                     job = self._get_active_job(msg["data"]["prompt_id"])
@@ -717,8 +720,10 @@ def _extract_message_png_image(data: memoryview):
     s = struct.calcsize(">II")
     if len(data) > s:
         event, format = struct.unpack_from(">II", data)
-        # ComfyUI server.py: BinaryEventTypes.PREVIEW_IMAGE=1, PNG=2
-        if event == 1 and format == 2:
+        # ComfyUI server.py: BinaryEventTypes.PREVIEW_IMAGE=1
+        if event == 1:
+            if not (format == 1 or format == 2):  # JPEG=1, PNG=2
+                log.warning(f"Websocket binary data has unknwon image format '{format}'")
             return Image.from_bytes(data[s:])
     return None
 
@@ -726,8 +731,32 @@ def _extract_message_png_image(data: memoryview):
 def _extract_pose_json(msg: dict):
     try:
         output = msg["data"]["output"]
-        if "openpose_json" in output:
+        if output is not None and "openpose_json" in output:
             return json.loads(output["openpose_json"][0])
+    except Exception as e:
+        log.warning(f"Error processing message, error={str(e)}, msg={msg}")
+    return None
+
+
+def _extract_text_output(job_id: str, msg: dict):
+    try:
+        output = msg["data"]["output"]
+        if output is not None and "text" in output:
+            key = msg["data"].get("node")
+            payload = output["text"]
+            name, text, mime = (None, None, "text/plain")
+            if isinstance(payload, list) and len(payload) >= 1:
+                payload = payload[0]
+            if isinstance(payload, dict):
+                text = payload.get("text")
+                name = payload.get("name")
+                mime = payload.get("content-type", mime)
+            elif isinstance(payload, str):
+                text = payload
+                name = f"Node {key}"
+            if text is not None and name is not None:
+                result = TextOutput(key, name, text, mime)
+                return ClientMessage(ClientEvent.output, job_id, result=result)
     except Exception as e:
         log.warning(f"Error processing message, error={str(e)}, msg={msg}")
     return None
