@@ -1,8 +1,14 @@
 {
     "name": "Cinematic Photo (XL)",
-    "version": 1,
-    "sd_version": "auto",
-    "sd_checkpoint": "juggernautXL_version6Rundiffusion.safetensors",
+    "version": 2,
+    "architecture": "auto",
+    "checkpoints": [
+        "RealVisXL_V5.0_fp16.safetensors",
+        "juggernautXL_juggXIByRundiffusion.safetensors",
+        "Juggernaut_X_RunDiffusion.safetensors",
+        "juggernautXL_v9Rundiffusionphoto2.safetensors",
+        "juggernautXL_version6Rundiffusion.safetensors"
+    ],
     "loras": [],
     "style_prompt": "cinematic film still {prompt}",
     "negative_prompt": "anime, cartoon, graphic, text, painting, crayon, graphite, abstract",

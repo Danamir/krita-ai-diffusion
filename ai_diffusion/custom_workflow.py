@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 from enum import Enum
 from copy import copy
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, NamedTuple, Literal, TYPE_CHECKING
 from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, QUuid, QAbstractListModel, QSortFilterProxyModel, QModelIndex
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QMetaObject, QTimer, pyqtSignal
 
 from .api import WorkflowInput
 from .client import TextOutput, ClientOutput
@@ -242,11 +243,46 @@ class ParamKind(Enum):
 
 class CustomParam(NamedTuple):
     kind: ParamKind
-    name: str
+    full_name: str
     default: Any | None = None
     min: int | float | None = None
     max: int | float | None = None
     choices: list[str] | None = None
+
+    @property
+    def name(self):
+        _, name = self._split_order(self._split_name()[-1])
+        return name
+
+    @property
+    def group(self):
+        _, group_name = self._split_order(self._split_name()[0])
+        return group_name
+
+    def _split_name(self):
+        if "/" in self.full_name:
+            return self.full_name.rsplit("/", 1)
+        return "", self.full_name
+
+    @staticmethod
+    def _split_order(s: str):
+        if num := re.match(r"(\d+)\. ", s):
+            return int(num.group(1)), s[num.end() :].lstrip()
+        return 0, s
+
+    def __lt__(self, other):
+        def compare(a: str, b: str):
+            order_a, _ = self._split_order(a)
+            order_b, _ = self._split_order(b)
+            if order_a != 0 or order_b != 0:
+                return order_a < order_b
+            return a < b
+
+        self_group, self_name = self._split_name()
+        other_group, other_name = other._split_name()
+        if self_group != other_group:
+            return compare(self_group, other_group)
+        return compare(self_name, other_name)
 
 
 def workflow_parameters(w: ComfyWorkflow):
@@ -349,6 +385,8 @@ class CustomWorkspace(QObject, ObservableProperties):
         self._last_result: Image | None = None
         self._last_job: JobParams | None = None
         self._new_outputs: list[str] = []
+        self._switch_workflow_bind: QMetaObject.Connection | None = None
+        self._switch_workflow_timer: QTimer | None = None
 
         jobs.job_finished.connect(self._handle_job_finished)
         workflows.dataChanged.connect(self._update_workflow)
@@ -466,6 +504,27 @@ class CustomWorkspace(QObject, ObservableProperties):
                 raise ValueError(f"Parameter {md.name} not found")
 
         return params
+
+    def switch_to_web_workflow(self):
+        self._switch_workflow_bind = self._workflows.rowsInserted.connect(self._set_workflow_index)
+        self._switch_workflow_timer = QTimer()
+        self._switch_workflow_timer.timeout.connect(self._clear_switch_workflow)
+        self._switch_workflow_timer.start(5 * 60 * 1000)
+
+    def _set_workflow_index(self, parent: QModelIndex, first: int, last: int):
+        for i in range(first, last + 1):
+            if self._workflows[i].source is WorkflowSource.remote:
+                self._clear_switch_workflow()
+                self.workflow_id = self._workflows[i].id
+                return
+
+    def _clear_switch_workflow(self):
+        if self._switch_workflow_timer is not None:
+            self._switch_workflow_timer.stop()
+            self._switch_workflow_timer = None
+        if self._switch_workflow_bind is not None:
+            self._workflows.rowsInserted.disconnect(self._switch_workflow_bind)
+            self._switch_workflow_bind = None
 
     def show_output(self, output: ClientOutput | None):
         if isinstance(output, TextOutput):

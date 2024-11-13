@@ -1108,7 +1108,7 @@ def expand_custom(
             case "ETN_KritaStyle":
                 style: Style = get_param(node, Style)
                 is_live = node.input("sampler_preset", "auto") == "live"
-                checkpoint_input = style.get_models()
+                checkpoint_input = style.get_models(models.checkpoints.keys())
                 sampling = _sampling_from_style(style, 1.0, is_live)
                 model, clip, vae = load_checkpoint_with_lora(w, checkpoint_input, models)
                 outputs[node.output(0)] = model
@@ -1163,10 +1163,10 @@ def prepare(
         extra_loras += region_loras
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
-    i.models = style.get_models()
+    i.models = style.get_models(models.checkpoints.keys())
     i.conditioning.positive += _collect_lora_triggers(i.models.loras, files)
     i.models.loras = unique(i.models.loras + extra_loras, key=lambda l: l.name)
-    arch = i.models.version = models.arch_of(style.sd_checkpoint)
+    arch = i.models.version = models.arch_of(i.models.checkpoint)
 
     _check_server_has_models(i.models, models, files, style.name)
     _check_inpaint_model(inpaint, arch, models)
@@ -1193,7 +1193,7 @@ def prepare(
         upscale_extent, _ = resolution.prepare_extent(
             mask.bounds.extent, arch, style, perf, downscale=False
         )
-        i.inpaint = inpaint
+        i.inpaint = InpaintParams.clamped(inpaint)
         i.inpaint.use_reference = inpaint.use_reference and has_ip_adapter
         i.crop_upscale_extent = upscale_extent.extent.desired
         largest_extent = Extent.largest(i.images.extent.initial, upscale_extent.extent.desired)
@@ -1218,7 +1218,7 @@ def prepare(
             canvas, arch, style, perf, downscale=allow_2pass
         )
         i.images.hires_mask = mask.to_image(canvas.extent)
-        i.inpaint = inpaint
+        i.inpaint = InpaintParams.clamped(inpaint)
         downscale_all_control_images(i.conditioning, canvas.extent, i.images.extent.desired)
 
     elif kind is WorkflowKind.upscale_tiled:

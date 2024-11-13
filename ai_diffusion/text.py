@@ -162,7 +162,7 @@ def parse_expr(expression: str) -> List[ExprNode]:
     """
 
     def parse_segment(segment):
-        match = re.match(r"^[([{<](.*?):(-?[\d.]+)[\]})>]$", segment)
+        match = re.match(r"^[([{<](.*?):(-?[\d.]+)[\]})>]$", segment, flags=re.DOTALL)
         if match:
             inner_expr = match.group(1)
             number = float(match.group(2))
@@ -207,6 +207,7 @@ def edit_attention(text: str, positive: bool) -> str:
         return text
 
     segments = parse_expr(text)
+    print(segments)
     if len(segments) == 1 and segments[0].type == "expr":
         attention_string = text[1 : text.rfind(":")]
         weight = segments[0].weight
