@@ -484,6 +484,17 @@ class ComfyWorkflow:
     def model_sampling_discrete(self, model: Output, sampling: str, zsnr=False):
         return self.add("ModelSamplingDiscrete", 1, model=model, sampling=sampling, zsnr=zsnr)
 
+    def skip_layer_guidance_sd3(self, model: Output, layers: "7,8,9", scale: 1.0, start_percent: 0.01, end_percent: 0.15):
+        return self.add(
+            "SkipLayerGuidanceSD3",
+            1,
+            model=model,
+            layers=layers,
+            scale=scale,
+            start_percent=start_percent,
+            end_percent=end_percent
+        )
+
     def model_sampling_sd3(self, model: Output, shift=3.0):
         return self.add("ModelSamplingSD3", 1, model=model, shift=shift)
 

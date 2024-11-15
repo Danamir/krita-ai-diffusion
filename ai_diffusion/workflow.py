@@ -133,6 +133,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
 
     if arch is Arch.sd3:
+        model = w.skip_layer_guidance_sd3(model)
         model = w.model_sampling_sd3(model)
 
     if checkpoint.v_prediction_zsnr:
