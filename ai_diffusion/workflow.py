@@ -526,7 +526,7 @@ def scale_refine_and_decode(
 
     mode = extent.refinement_scaling
     if mode in [ScaleMode.none, ScaleMode.resize, ScaleMode.upscale_fast]:
-        decoded = w.vae_decode(vae, latent)
+        decoded = w.vae_decode(vae, latent, tiled=extent.desired.width * extent.desired.height > 3e6)
         return scale(extent.initial, extent.desired, mode, w, decoded, models)
 
     model = apply_attention_mask(w, model, cond, clip, extent.desired, models)
@@ -539,7 +539,7 @@ def scale_refine_and_decode(
         upscaler = models.upscale[UpscalerName.default]
 
     upscale_model = w.load_upscale_model(upscaler)
-    decoded = w.vae_decode(vae, latent)
+    decoded = w.vae_decode(vae, latent, tiled=extent.desired.width * extent.desired.height > 3e6)
     upscale = w.upscale_image(upscale_model, decoded)
     upscale = w.scale_image(upscale, extent.desired)
     latent = w.vae_encode(vae, upscale)
@@ -549,7 +549,7 @@ def scale_refine_and_decode(
         w, prompt_pos, prompt_neg, cond.all_control, extent.desired, vae, models
     )
     result = w.sampler_custom_advanced(model, positive, negative, latent, models.arch, **params, two_pass=False)
-    image = w.vae_decode(vae, result)
+    image = w.vae_decode(vae, result, tiled=extent.desired.width * extent.desired.height > 3e6)
     return image
 
 
@@ -799,7 +799,7 @@ def inpaint(
         cropped_extent = ScaledExtent(
             desired_extent, desired_extent, desired_extent, target_bounds.extent
         )
-        out_image = w.vae_decode(vae, out_latent)
+        out_image = w.vae_decode(vae, out_latent, tiled=desired_extent.width * desired_extent.height > 3e6)
         out_image = scale(
             extent.initial, extent.desired, extent.refinement_scaling, w, out_image, models
         )
@@ -847,7 +847,7 @@ def refine(
         first_pass_sampler=settings.first_pass_sampler,
         **_sampler_params(sampling)
     )
-    out_image = w.vae_decode(vae, sampler)
+    out_image = w.vae_decode(vae, sampler, tiled=extent.desired.width * extent.desired.height > 3e6)
     out_image = w.nsfw_filter(out_image, sensitivity=misc.nsfw_filter)
     out_image = scale_to_target(extent, w, out_image, models)
     w.send_image(out_image)
