@@ -843,6 +843,23 @@ class ComfyWorkflow:
             negative=negative,
         )
 
+    def override_clip_device(self, clip: Output, device="cpu"):
+        return self.add("OverrideCLIPDevice", 1, clip=clip, device=device)
+
+    def inpaint_model_conditioning(
+        self, positive: Output, negative: Output, vae: Output, image: Output, mask: Output
+    ):
+        return self.add(
+            "InpaintModelConditioning",
+            3,
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            pixels=image,
+            mask=mask,
+            noise_mask=True,
+        )
+
     def vae_encode(self, vae: Output, image: Output):
         return self.add("VAEEncode", 1, vae=vae, pixels=image)
 
