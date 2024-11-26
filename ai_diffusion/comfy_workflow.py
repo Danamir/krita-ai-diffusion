@@ -860,14 +860,20 @@ class ComfyWorkflow:
             noise_mask=True,
         )
 
-    def vae_encode(self, vae: Output, image: Output):
-        return self.add("VAEEncode", 1, vae=vae, pixels=image)
+    def vae_encode(self, vae: Output, image: Output, tiled=False, tile_size=1536, fast=False):
+        if tiled:
+            return self.add("VAEEncodeTiled_TiledDiffusion", 1, samples=image, vae=vae, tile_size=tile_size, fast=fast)
+        else:
+            return self.add("VAEEncode", 1, vae=vae, pixels=image)
 
     def vae_encode_inpaint(self, vae: Output, image: Output, mask: Output):
         return self.add("VAEEncodeForInpaint", 1, vae=vae, pixels=image, mask=mask, grow_mask_by=0)
 
-    def vae_decode(self, vae: Output, latent_image: Output):
-        return self.add("VAEDecode", 1, vae=vae, samples=latent_image)
+    def vae_decode(self, vae: Output, latent_image: Output, tiled=False, tile_size=1536, fast=False):
+        if tiled:
+            return self.add("VAEDecodeTiled_TiledDiffusion", 1, samples=latent_image, vae=vae, tile_size=tile_size, fast=fast)
+        else:
+            return self.add("VAEDecode", 1, vae=vae, samples=latent_image)
 
     def set_latent_noise_mask(self, latent: Output, mask: Output):
         return self.add("SetLatentNoiseMask", 1, samples=latent, mask=mask)
