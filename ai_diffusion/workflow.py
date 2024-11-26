@@ -577,6 +577,8 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
+    if models.arch is Arch.flux:
+        clip = w.override_clip_device(clip, "cpu")
     model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, models.arch, misc.batch_count)
@@ -695,6 +697,9 @@ def inpaint(
     )
     initial_bounds = extent.convert(target_bounds, "target", "initial")
 
+    if models.arch is Arch.flux:
+        clip = w.override_clip_device(clip, "cpu")
+
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.hires_mask))
@@ -718,7 +723,7 @@ def inpaint(
             Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
         )
     inpaint_mask = ImageOutput(initial_mask, is_mask=True)
-    if params.use_inpaint_model and models.arch.has_controlnet_inpaint:
+    if params.use_inpaint_model and models.arch.has_controlnet_inpaint and not (models.arch is Arch.flux and "fill" in checkpoint.checkpoint):
         cond_base.control.append(inpaint_control(in_image, inpaint_mask, models.arch))
     if params.use_condition_mask and len(cond_base.regions) == 0:
         base_prompt = TextPrompt(merge_prompt("", cond_base.style_prompt), cond.language)
@@ -740,6 +745,9 @@ def inpaint(
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
+    elif params.use_inpaint_model and models.arch is Arch.flux and "fill" in checkpoint.checkpoint:
+        positive, negative, latent = w.inpaint_model_conditioning(positive, negative, vae, in_image, initial_mask)
+        inpaint_model = model
     else:
         latent = w.vae_encode(vae, in_image)
         latent = w.set_latent_noise_mask(latent, initial_mask)
@@ -819,6 +827,8 @@ def refine(
     model = apply_ip_adapter(w, model, cond.control, models)
     model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
+    if models.arch is Arch.flux:
+        clip = w.override_clip_device(clip, "cpu")
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = w.vae_encode(vae, in_image)
@@ -860,6 +870,8 @@ def refine_region(
     model = w.differential_diffusion(model)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
+    if models.arch is Arch.flux:
+        clip = w.override_clip_device(clip, "cpu")
     model = apply_attention_mask(w, model, cond, clip, extent.initial, models)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
     prompt_pos, prompt_neg = encode_text_prompt(w, cond, clip, models)
@@ -870,7 +882,7 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    if inpaint.use_inpaint_model and models.arch.has_controlnet_inpaint:
+    if inpaint.use_inpaint_model and models.arch.has_controlnet_inpaint and not (models.arch is Arch.flux and "fill" in checkpoint.checkpoint):
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
     positive, negative = apply_control(
         w, prompt_pos, prompt_neg, cond.all_control, extent.initial, vae, models
@@ -881,6 +893,9 @@ def refine_region(
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
+    elif inpaint.use_inpaint_model and models.arch is Arch.flux and "fill" in checkpoint.checkpoint:
+        positive, negative, latent = w.inpaint_model_conditioning(positive, negative, vae, in_image, initial_mask)
+        inpaint_model = model
     else:
         latent = w.vae_encode(vae, in_image)
         latent = w.set_latent_noise_mask(latent, initial_mask)
