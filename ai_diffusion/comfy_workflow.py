@@ -891,20 +891,6 @@ class ComfyWorkflow:
     def override_clip_device(self, clip: Output, device="cpu"):
         return self.add("OverrideCLIPDevice", 1, clip=clip, device=device)
 
-    def inpaint_model_conditioning(
-        self, positive: Output, negative: Output, vae: Output, image: Output, mask: Output
-    ):
-        return self.add(
-            "InpaintModelConditioning",
-            3,
-            positive=positive,
-            negative=negative,
-            vae=vae,
-            pixels=image,
-            mask=mask,
-            noise_mask=True,
-        )
-
     def vae_encode(self, vae: Output, image: Output, tiled=False, tile_size=1536, fast=False):
         if tiled:
             return self.add("VAEEncodeTiled_TiledDiffusion", 1, samples=image, vae=vae, tile_size=tile_size, fast=fast)
