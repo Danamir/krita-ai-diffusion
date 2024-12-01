@@ -6,10 +6,10 @@ from typing import NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.28.0"
+version = "1.29.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "2d28b0b4790e3f6c2287be49d9872419eadfe5bb"
+comfy_version = "bf2650a80e5a7a888da206eab45c53dbb22940f7"
 
 
 class CustomNode(NamedTuple):
@@ -39,14 +39,14 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "517790d1d6c044f2aab1bc1a9c570caf1138dc6b",
+        "d7d421baaa7d3140fd7fc500d928244045211217",
         ["ETN_LoadImageBase64", "ETN_LoadMaskBase64", "ETN_SendImageWebSocket", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "422eccd86685e084b551fb7e14bc025d77a64cc2",
+        "20092c37b9dfc481ca44e8577a9d4a9d426c0e56",
         ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint", "INPAINT_ExpandMask"],
     ),
 ]
@@ -56,7 +56,7 @@ optional_custom_nodes = [
         "GGUF",
         "ComfyUI-GGUF",
         "https://github.com/city96/ComfyUI-GGUF",
-        "8e898fad4caab59bf4144e0cf11978b893de7e54",
+        "4a8432884167f2526d60ef36e985bdabebb9e1e0",
         ["UnetLoaderGGUF", "DualCLIPLoaderGGUF"],
     )
 ]
@@ -662,8 +662,8 @@ optional_models = [
         ResourceId(ResourceKind.controlnet, Arch.flux, ControlMode.inpaint),
         {
             Path(
-                "models/controlnet/FLUX.1-dev-Controlnet-Inpainting-Alpha.safetensors"
-            ): "https://huggingface.co/alimama-creative/FLUX.1-dev-Controlnet-Inpainting-Alpha/resolve/main/diffusion_pytorch_model.safetensors"
+                "models/controlnet/FLUX.1-dev-Controlnet-Inpainting-Beta.safetensors"
+            ): "https://huggingface.co/alimama-creative/FLUX.1-dev-Controlnet-Inpainting-Beta/resolve/main/diffusion_pytorch_model.safetensors"
         },
     ),
     ModelResource(
@@ -691,6 +691,18 @@ optional_models = [
             Path(
                 "models/controlnet/flux-depth-controlnet-v3.safetensors"
             ): "https://huggingface.co/XLabs-AI/flux-controlnet-collections/resolve/main/flux-depth-controlnet-v3.safetensors"
+        },
+    ),
+    ModelResource(
+        "Reference (Flux)",
+        ResourceId(ResourceKind.ip_adapter, Arch.flux, ControlMode.reference),
+        {
+            Path(
+                "models/clip_vision/sigclip_vision_patch14_384.safetensors"
+            ): "https://huggingface.co/Comfy-Org/sigclip_vision_384/resolve/main/sigclip_vision_patch14_384.safetensors",
+            Path(
+                "models/style_models/flux1-redux-dev.safetensors"
+            ): "https://files.interstice.cloud/models/flux1-redux-dev.safetensors",
         },
     ),
 ]
@@ -901,9 +913,11 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.hands): ["control-lora-depth-rank", "sai_xl_depth_"],
     resource_id(ResourceKind.ip_adapter, Arch.sd15, ControlMode.reference): ["ip-adapter_sd15"],
     resource_id(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.reference): ["ip-adapter_sdxl_vit-h"],
+    resource_id(ResourceKind.ip_adapter, Arch.flux, ControlMode.reference): ["flux1-redux-dev"],
     resource_id(ResourceKind.ip_adapter, Arch.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15", "ip-adapter-faceid-plus_sd15"],
     resource_id(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl", "ip-adapter-faceid_sdxl"],
     resource_id(ResourceKind.clip_vision, Arch.all, "ip_adapter"): ["sd1.5/pytorch_model.bin", "sd1.5/model.safetensors", "clip-vision_vit-h.safetensors", "clip-vit-h-14-laion2b-s32b-b79k"],
+    resource_id(ResourceKind.clip_vision, Arch.flux, "redux"): ["sigclip_vision_patch14_384"],
     resource_id(ResourceKind.lora, Arch.sd15, "lcm"): ["lcm-lora-sdv1-5.safetensors", "lcm/sd1.5/pytorch_lora_weights.safetensors"],
     resource_id(ResourceKind.lora, Arch.sdxl, "lcm"): ["lcm-lora-sdxl.safetensors", "lcm/sdxl/pytorch_lora_weights.safetensors"],
     resource_id(ResourceKind.lora, Arch.sdxl, "lightning"): ["sdxl_lightning_8step_lora"],
@@ -911,6 +925,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.sdxl, "hyper"): ["Hyper-SDXL-8steps-CFG-lora"],
     resource_id(ResourceKind.lora, Arch.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15_lora", "ip-adapter-faceid-plus_sd15_lora"],
     resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
+    resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
+    resource_id(ResourceKind.lora, Arch.flux, ControlMode.canny_edge): ["flux1-canny"],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.default): [UpscalerName.default.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_2x): [UpscalerName.fast_2x.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_3x): [UpscalerName.fast_3x.value],
@@ -923,6 +939,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
+    resource_id(ResourceKind.vae, Arch.sd3, "default"): ["sd3"],
     resource_id(ResourceKind.vae, Arch.flux, "default"): ["ae.s"],
 }
 # fmt: on

@@ -587,6 +587,9 @@ class ComfyWorkflow:
     def load_upscale_model(self, model_name: str):
         return self.add_cached("UpscaleModelLoader", 1, model_name=model_name)
 
+    def load_style_model(self, model_name: str):
+        return self.add_cached("StyleModelLoader", 1, style_model_name=model_name)
+
     def load_lora_model(self, model: Output, lora_name: str, strength: float):
         return self.add(
             "LoraLoaderModelOnly", 1, model=model, lora_name=lora_name, strength_model=strength
@@ -673,6 +676,36 @@ class ComfyWorkflow:
     def conditioning_combine(self, a: Output, b: Output):
         return self.add("ConditioningCombine", 1, conditioning_1=a, conditioning_2=b)
 
+    def conditioning_average(self, a: Output, b: Output, strength_a: float):
+        return self.add(
+            "ConditioningAverage",
+            1,
+            conditioning_to=a,
+            conditioning_from=b,
+            conditioning_to_strength=strength_a,
+        )
+
+    def conditioning_step_range(self, conditioning: Output, range: tuple[float, float]):
+        return self.add(
+            "ConditioningSetTimestepRange",
+            1,
+            conditioning=conditioning,
+            start=range[0],
+            end=range[1],
+        )
+
+    def instruct_pix_to_pix_conditioning(
+        self, positive: Output, negative: Output, vae: Output, pixels: Output
+    ):
+        return self.add(
+            "InstructPixToPixConditioning",
+            3,
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            pixels=pixels,
+        )
+
     def background_region(self, conditioning: Output):
         return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
 
@@ -751,6 +784,18 @@ class ComfyWorkflow:
             case _:
                 type = "auto"
         return self.add("SetUnionControlNetType", 1, control_net=controlnet, type=type)
+
+    def encode_clip_vision(self, clip_vision: Output, image: Output):
+        return self.add("CLIPVisionEncode", 1, clip_vision=clip_vision, image=image)
+
+    def apply_style_model(self, conditioning: Output, style_model: Output, embeddings: Output):
+        return self.add(
+            "StyleModelApply",
+            1,
+            conditioning=conditioning,
+            style_model=style_model,
+            clip_vision_output=embeddings,
+        )
 
     def encode_ip_adapter(
         self, image: Output, weight: float, ip_adapter: Output, clip_vision: Output
@@ -1049,6 +1094,31 @@ class ComfyWorkflow:
 
     def generate_tile_mask(self, layout: Output, index: int):
         return self.add("ETN_GenerateTileMask", 1, layout=layout, index=index)
+
+    def define_reference_image(
+        self, references: Output | None, image: Output, weight: float, range: tuple[float, float]
+    ):
+        return self.add(
+            "ETN_ReferenceImage",
+            1,
+            image=image,
+            weight=weight,
+            range_start=range[0],
+            range_end=range[1],
+            reference_images=references,
+        )
+
+    def apply_reference_images(
+        self, conditioning: Output, clip_vision: Output, style_model: Output, references: Output
+    ):
+        return self.add(
+            "ETN_ApplyReferenceImages",
+            1,
+            conditioning=conditioning,
+            clip_vision=clip_vision,
+            style_model=style_model,
+            references=references,
+        )
 
     def estimate_pose(self, image: Output, resolution: int):
         feat = dict(detect_hand="enable", detect_body="enable", detect_face="enable")

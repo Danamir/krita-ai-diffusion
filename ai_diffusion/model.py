@@ -1,12 +1,14 @@
 from __future__ import annotations
 import asyncio
 from copy import copy
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from enum import Enum
+import time
 from typing import Any, NamedTuple
 from PyQt5.QtCore import QObject, QUuid, pyqtSignal, Qt
-from PyQt5.QtGui import QImage, QPainter, QColor, QBrush
+from PyQt5.QtGui import QPainter, QColor, QBrush
 import uuid
 
 from . import eventloop, workflow, util
@@ -28,7 +30,7 @@ from .files import FileLibrary
 from .connection import Connection
 from .properties import Property, ObservableProperties
 from .jobs import Job, JobKind, JobParams, JobQueue, JobState, JobRegion
-from .control import ControlLayer, ControlLayerList
+from .control import ControlLayer
 from .region import Region, RegionLink, RootRegion, process_regions, get_region_inpaint_mask
 from .resources import ControlMode
 from .resolution import compute_bounds, compute_relative_bounds
@@ -45,6 +47,25 @@ class Workspace(Enum):
 class ProgressKind(Enum):
     generation = 0
     upload = 1
+
+
+class ErrorKind(Enum):
+    none = 0
+    plugin_error = 1
+    server_error = 2
+    insufficient_funds = 3
+
+
+class Error(NamedTuple):
+    kind: ErrorKind
+    message: str
+    data: dict[str, Any] | None = None
+
+    def __bool__(self):
+        return self.kind is not ErrorKind.none
+
+
+no_error = Error(ErrorKind.none, "")
 
 
 class Model(QObject, ObservableProperties):
@@ -65,7 +86,7 @@ class Model(QObject, ObservableProperties):
     translation_enabled = Property(True, persist=True)
     progress_kind = Property(ProgressKind.generation)
     progress = Property(0.0)
-    error = Property("")
+    error = Property(no_error)
 
     workspace_changed = pyqtSignal(Workspace)
     style_changed = pyqtSignal(Style)
@@ -78,8 +99,7 @@ class Model(QObject, ObservableProperties):
     translation_enabled_changed = pyqtSignal(bool)
     progress_kind_changed = pyqtSignal(ProgressKind)
     progress_changed = pyqtSignal(float)
-    error_changed = pyqtSignal(str)
-    has_error_changed = pyqtSignal(bool)
+    error_changed = pyqtSignal(Error)
     modified = pyqtSignal(QObject, str)
 
     def __init__(self, document: Document, connection: Connection, workflows: WorkflowCollection):
@@ -97,7 +117,6 @@ class Model(QObject, ObservableProperties):
         self.custom = CustomWorkspace(workflows, self._generate_custom, self.jobs)
 
         self.jobs.selection_changed.connect(self.update_preview)
-        self.error_changed.connect(lambda: self.has_error_changed.emit(self.has_error))
         connection.state_changed.connect(self._init_on_connect)
         connection.error_changed.connect(self._forward_error)
         Styles.list().changed.connect(self._init_on_connect)
@@ -112,7 +131,7 @@ class Model(QObject, ObservableProperties):
                 self.upscale.upscaler = client.models.default_upscaler
 
     def _forward_error(self, error: str):
-        self.error = error
+        self.error = Error(ErrorKind.server_error, error)
 
     def generate(self):
         """Enqueue image generation for the current setup."""
@@ -294,9 +313,10 @@ class Model(QObject, ObservableProperties):
             return 0
 
     def generate_live(self):
-        eventloop.run(_report_errors(self, self._generate_live()))
+        input, job_params = self._prepare_live_workflow()
+        eventloop.run(_report_errors(self, self._generate_live(input, job_params)))
 
-    async def _generate_live(self, last_input: WorkflowInput | None = None):
+    def _prepare_live_workflow(self):
         strength = self.live.strength
         workflow_kind = WorkflowKind.generate if strength == 1.0 else WorkflowKind.refine
         client = self._connection.client
@@ -344,13 +364,12 @@ class Model(QObject, ObservableProperties):
             inpaint=inpaint if mask else None,
             is_live=True,
         )
-        if input != last_input:
-            self.clear_error()
-            params = JobParams(bounds, conditioning.positive, regions=job_regions)
-            await self.enqueue_jobs(input, JobKind.live_preview, params)
-            return input
+        params = JobParams(bounds, conditioning.positive, regions=job_regions)
+        return input, params
 
-        return None
+    async def _generate_live(self, input: WorkflowInput, job_params: JobParams):
+        self.clear_error()
+        await self.enqueue_jobs(input, JobKind.live_preview, job_params)
 
     async def _generate_custom(self, previous_input: WorkflowInput | None):
         if self.workspace is not Workspace.custom or not self.document.is_active:
@@ -433,14 +452,16 @@ class Model(QObject, ObservableProperties):
         if active and self.jobs.any_executing():
             self._connection.interrupt()
 
-    def report_error(self, message: str):
-        self.error = message
+    def report_error(self, error: Error | str):
+        if isinstance(error, str):
+            error = Error(ErrorKind.server_error, error)
+        self.error = error
         self.live.is_active = False
         self.custom.is_live = False
 
     def clear_error(self):
-        if self.error != "":
-            self.error = ""
+        if self.error:
+            self.error = no_error
 
     def handle_message(self, message: ClientMessage):
         job = self.jobs.find(message.job_id)
@@ -479,6 +500,10 @@ class Model(QObject, ObservableProperties):
         elif message.event is ClientEvent.error:
             self._finish_job(job, message.event)
             self.report_error(_("Server execution error") + f": {message.error}")
+        elif message.event is ClientEvent.payment_required:
+            self._finish_job(job, ClientEvent.error)
+            assert isinstance(message.error, str) and isinstance(message.result, dict)
+            self.report_error(Error(ErrorKind.insufficient_funds, message.error, message.result))
 
     def _finish_job(self, job: Job, event: ClientEvent):
         if job.kind is JobKind.upscaling:
@@ -674,10 +699,6 @@ class Model(QObject, ObservableProperties):
         return (job for job in self.jobs if job.state is JobState.finished)
 
     @property
-    def has_error(self):
-        return self.error != ""
-
-    @property
     def has_document(self):
         return isinstance(self._doc, KritaDocument)
 
@@ -821,6 +842,54 @@ class UpscaleWorkspace(QObject, ObservableProperties):
     _unblur_strength_map = {0: 0.0, 1: 0.5, 2: 1.0}
 
 
+class LiveScheduler:
+    poll_rate = 0.1
+    default_grace_period = 0.25  # seconds to delay after most recent document edit
+    max_wait_time = 3.0  # maximum seconds to delay over total editing time
+    delay_threshold = 1.5  # use delay only if average generation time exceeds this value
+
+    def __init__(self):
+        self._last_input: WorkflowInput | None = None
+        self._last_change = 0.0
+        self._oldest_change = 0.0
+        self._has_changes = True
+        self._generation_start_time = 0.0
+        self._generation_times: deque[float] = deque(maxlen=10)
+
+    def should_generate(self, input: WorkflowInput):
+        now = time.monotonic()
+        if self._last_input != input:
+            self._last_input = input
+            self._last_change = now
+            if not self._has_changes:
+                self._oldest_change = now
+            self._has_changes = True
+
+        time_since_last_change = now - self._last_change
+        time_since_oldest_change = now - self._oldest_change
+        return self._has_changes and (
+            time_since_last_change >= self.grace_period
+            or time_since_oldest_change >= self.max_wait_time
+        )
+
+    def notify_generation_started(self):
+        self._generation_start_time = time.monotonic()
+        self._has_changes = False
+
+    def notify_generation_finished(self):
+        self._generation_times.append(time.monotonic() - self._generation_start_time)
+
+    @property
+    def average_generation_time(self):
+        return sum(self._generation_times) / max(1, len(self._generation_times))
+
+    @property
+    def grace_period(self):
+        if self.average_generation_time > self.delay_threshold:
+            return self.default_grace_period
+        return 0.0
+
+
 class LiveWorkspace(QObject, ObservableProperties):
     is_active = Property(False, setter="toggle")
     is_recording = Property(False, setter="toggle_record")
@@ -835,22 +904,17 @@ class LiveWorkspace(QObject, ObservableProperties):
     result_available = pyqtSignal(Image)
     modified = pyqtSignal(QObject, str)
 
-    _model: Model
-    _last_input: WorkflowInput | None = None
-    _result: Image | None = None
-    _result_composition: Image | None = None
-    _result_params: JobParams | None = None
-    _keyframes_folder: Path | None = None
-    _keyframe_start = 0
-    _keyframe_index = 0
-    _keyframes: list[Path]
-
-    _poll_rate = 0.1
-
     def __init__(self, model: Model):
         super().__init__()
         self._model = model
-        self._keyframes = []
+        self._scheduler = LiveScheduler()
+        self._result: Image | None = None
+        self._result_composition: Image | None = None
+        self._result_params: JobParams | None = None
+        self._keyframes_folder: Path | None = None
+        self._keyframe_start = 0
+        self._keyframe_index = 0
+        self._keyframes: list[Path] = []
         model.jobs.job_finished.connect(self.handle_job_finished)
 
     def toggle(self, active: bool):
@@ -880,16 +944,18 @@ class LiveWorkspace(QObject, ObservableProperties):
             if len(job.results) > 0:
                 self.set_result(job.results[0], job.params)
             self.is_active = self._is_active and self._model.document.is_active
+            self._scheduler.notify_generation_finished()
             eventloop.run(_report_errors(self._model, self._continue_generating()))
 
     async def _continue_generating(self):
-        while self.is_active and self._model.document.is_active:
-            new_input = await self._model._generate_live(self._last_input)
-            if new_input is not None:  # frame was scheduled
-                self._last_input = new_input
-                return
-            # no changes in input data
-            await asyncio.sleep(self._poll_rate)
+        while self.is_active:
+            if self._model.document.is_active:
+                new_input, job_params = self._model._prepare_live_workflow()
+                if self._scheduler.should_generate(new_input):
+                    await self._model._generate_live(new_input, job_params)
+                    self._scheduler.notify_generation_started()
+                    return
+            await asyncio.sleep(self._scheduler.poll_rate)
 
     def apply_result(self, layer_only=False):
         assert self.result is not None and self._result_params is not None
