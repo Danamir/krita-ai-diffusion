@@ -938,6 +938,11 @@ def refine_region(
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
+    elif inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is None:
+        positive, negative, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
+            vae, in_image, initial_mask, positive, negative
+        )
+        inpaint_model = model
     else:
         latent = w.vae_encode(vae, in_image)
         latent = w.set_latent_noise_mask(latent, initial_mask)
