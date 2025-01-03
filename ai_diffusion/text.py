@@ -33,6 +33,8 @@ def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
 
         prompt_g, prompt_l = prompt.split(" . ")
         style_prompt_g, style_prompt_l = style_prompt.split(" . ")
+        if "{prompt}" in style_prompt_l and prompt_l.strip() == "":
+            prompt_l = prompt_g
 
         return f"{merge_prompt(prompt_g, style_prompt_g)} . {merge_prompt(prompt_l, style_prompt_l)}"
 
