@@ -313,6 +313,22 @@ def import_prompt_from_file(model: Model):
                         if inputs.get("negative", None) is not None:
                             model.regions.negative = _find_text_prompt_custom(prompt, inputs["negative"][0])
 
+                if not model.regions.positive:
+                    # try detection from clip text encode, ie. for regional workflows
+                    for node in prompt.values():
+                        if node["class_type"] == "CLIPTextEncode":
+                            inputs = node["inputs"]
+                            model.regions.positive += _find_text_prompt_custom(prompt, inputs["text"][0], extended=True)
+                        elif node["class_type"] == "CLIPTextEncodeSDXL":
+                            inputs = node["inputs"]
+                            model.regions.positive += _find_text_prompt_custom(prompt, inputs["text_g"][0], extended=True)
+
+                    if "\n" in model.regions.positive:
+                        positives = model.regions.positive.split("\n")
+                        positives = dict.fromkeys(positives).keys()
+                        model.regions.positive = "\n".join(positives)
+                        model.regions.positive = model.regions.positive.strip("\n")
+
         except Exception as e:
             log.warning(f"Failed to read PNG metadata from {filename}: {e}")
 
@@ -331,22 +347,62 @@ def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     return ""
 
 
-def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str):
+def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=False):
     if node := workflow.get(node_key):
-        if node["class_type"] == "CLIPTextEncode":
-            input = node.get("inputs", {}).get("text", "")
-            if isinstance(input, list):
-                return _find_text_prompt_custom(workflow, input[0])
-            else:
-                return input
+        if "CLIPTextEncode" in node["class_type"]:
+            input = node.get("inputs", {}).get("text", "") or node.get("inputs", {}).get("text_g", "")
+            if input:
+                if isinstance(input, list):
+                    return _find_text_prompt_custom(workflow, input[0], extended)
+                else:
+                    return input
         elif node["class_type"] == "ImpactWildcardProcessor":
             input = node.get("inputs", {}).get("populated_text", "")
+            if input:
+                if isinstance(input, list):
+                    return _find_text_prompt_custom(workflow, input[0], extended)
+                else:
+                    return input
+        elif node["class_type"] == "Concat Text _O":
+            input = node.get("inputs", [])
             if isinstance(input, list):
-                return _find_text_prompt_custom(workflow, input[0])
+                prompt = ""
+                for i in input:
+                    prompt += _find_text_prompt_custom(workflow, i["link"], extended) + "\n"
+
+                return prompt
+            elif isinstance(input, dict):
+                prompt = ""
+                for i in input.values():
+                    if i:
+                        prompt += _find_text_prompt_custom(workflow, i[0], extended) + "\n"
+
+                return prompt
+
+        elif node["class_type"] == "SeargePromptCombiner" and extended:
+            input = node.get("inputs", [])
+            if isinstance(input, list):
+                prompt = ""
+                for i in input:
+                    prompt += _find_text_prompt_custom(workflow, i["link"], extended) + "\n"
+
+                return prompt
+            elif isinstance(input, dict):
+                prompt = ""
+                for i in input.values():
+                    if i:
+                        prompt += _find_text_prompt_custom(workflow, i[0], extended) + "\n"
+
+                return prompt
+
+        elif node["class_type"] == "Text _O":
+            input = node.get("inputs", {}).get("text", "")
+            if isinstance(input, list):
+                return _find_text_prompt_custom(workflow, input[0], extended)
             else:
                 return input
 
         for input in node.get("inputs", {}).values():
             if isinstance(input, list):
-                return _find_text_prompt_custom(workflow, input[0])
+                return _find_text_prompt_custom(workflow, input[0], extended)
     return ""
