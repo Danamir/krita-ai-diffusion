@@ -1,0 +1,35 @@
+---
+title: Krita Diffusion Plugin
+description: Guides and tips for working with the Krita AI Diffusion plugin
+template: splash
+hero:
+  tagline: Guides and tips for working with the Krita AI Diffusion plugin
+---
+
+import { Card, CardGrid, Icon } from '@astrojs/starlight/components';
+import ExternalLink from '../../components/ExternalLink.astro';
+
+<div class="front-cards">
+	<div>
+		<Card title="Guides">
+			Learn about key concepts:
+			- [Selection Fill](/selections): generative fill, expand, remove content
+			- [Control Layers](/control-layers): guide generation with sketches, 3D scenes, and more
+			- [Regions](/regions): assign prompts to specific layers and areas
+			- [Text Prompts](/prompts): magical things you can do inside the text box
+		</Card>
+		<Card title="Community & Links">
+			- [<Icon name="discord" class="inline-icon" /> Discord](https://discord.gg/pWyzHfHHhU)
+			- <ExternalLink href="https://github.com/Acly/krita-ai-diffusion/discussions"><Icon name="comment" class="inline-icon" /> Discussions</ExternalLink>
+			- <ExternalLink href="https://github.com/Acly/krita-ai-diffusion/issues"><Icon name="warning" class="inline-icon" /> Issues</ExternalLink>
+			- <ExternalLink href="https://github.com/Acly/krita-ai-diffusion/releases"><Icon name="seti:csv" class="inline-icon" /> Release change log</ExternalLink>
+		</Card>
+	</div>
+	<Card title="Resources">
+		Tutorials and videos made by users.
+		- _en_ [<Icon name="youtube" class="inline-icon" /> Live & Regions](https://www.youtube.com/watch?v=czqCABRlbSA) by [@IntelligentImage](https://www.youtube.com/@IntelligentImage)
+		- _en_ [<Icon name="youtube" class="inline-icon" /> Refine & ControlNet](https://www.youtube.com/watch?v=0vkZ9wvcZag) by [@nodonmai](https://www.youtube.com/@nodonmai)
+		- _en_ [<Icon name="youtube" class="inline-icon" /> Krita AI Playlist](https://www.youtube.com/playlist?list=PLOea84sp_XoHZCSErUjCoqE0Gc6pjJksf) by [@streamtabulous](https://www.youtube.com/@streamtabulous)
+		- _es_ [<Icon name="youtube" class="inline-icon" /> Introduction](https://www.youtube.com/watch?v=vxboB47oyqA&t=31s) by [@elussicreativo](https://www.youtube.com/@elussicreativo)
+	</Card>
+</div>

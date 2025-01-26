@@ -25,7 +25,6 @@ from .widget import QueueButton, ErrorBox, create_wide_tool_button
 
 
 class AnimationWidget(QWidget):
-
     _model: Model
     _model_bindings: list[QMetaObject.Connection | Binding]
 
@@ -101,6 +100,10 @@ class AnimationWidget(QWidget):
         layout.addWidget(self.error_box)
 
         self.target_layer = QComboBox(self)
+        self.target_layer.setMinimumContentsLength(20)
+        self.target_layer.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
+        )
         layout.addWidget(self.target_layer)
 
         self.preview_area = QLabel(self)

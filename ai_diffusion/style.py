@@ -18,7 +18,12 @@ class StyleSettings:
     name = Setting(_("Name"), _("Default Style"))
     version = Setting("Version", 2)
 
-    architecture = Setting(_("Diffusion Model Architecture"), Arch.auto)
+    architecture = Setting(
+        _("Diffusion Architecture"),
+        Arch.auto,
+        _("The base model ecosystem which the selected checkpoint belongs to."),
+        items=[Arch.auto] + Arch.list(),
+    )
 
     checkpoints = Setting(
         _("Model Checkpoint"),
@@ -71,6 +76,8 @@ class StyleSettings:
         ),
     )
 
+    rescale_cfg = Setting("Rescale CFG", 0.7)
+
     self_attention_guidance = Setting(
         _("Enable SAG / Self-Attention Guidance"),
         False,
@@ -112,6 +119,7 @@ class Style:
     vae: str = StyleSettings.vae.default
     clip_skip: int = StyleSettings.clip_skip.default
     v_prediction_zsnr: bool = StyleSettings.v_prediction_zsnr.default
+    rescale_cfg: float = StyleSettings.rescale_cfg.default
     self_attention_guidance: bool = StyleSettings.self_attention_guidance.default
     preferred_resolution: int = StyleSettings.preferred_resolution.default
     sampler: str = StyleSettings.sampler.default
@@ -188,6 +196,7 @@ class Style:
             vae=self.vae,
             clip_skip=self.clip_skip,
             v_prediction_zsnr=self.v_prediction_zsnr,
+            rescale_cfg=self.rescale_cfg,
             loras=[LoraInput.from_dict(l) for l in self.loras],
             self_attention_guidance=self.self_attention_guidance,
         )
@@ -438,7 +447,7 @@ _scheduler_map = {
     "Euler a": "normal",
 }
 _sampler_presets_stub = """// Custom sampler presets - add your own sampler presets here!
-// https://github.com/Acly/krita-ai-diffusion/wiki/Samplers
+// https://docs.interstice.cloud/samplers
 //
 // *** You have to restart Krita for the changes to take effect! ***
 {

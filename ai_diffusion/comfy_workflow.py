@@ -137,8 +137,10 @@ class ComfyWorkflow:
     def add(self, class_type: str, output_count: Literal[4], **inputs) -> Output4: ...
 
     def add(self, class_type: str, output_count: int, **inputs):
+        def normalize(x):
+            return [str(x.node), x.output] if isinstance(x, Output) else x
+
         inputs = self.add_default_values(class_type, inputs)
-        normalize = lambda x: [str(x.node), x.output] if isinstance(x, Output) else x
         self.node_count += 1
         self.root[str(self.node_count)] = {
             "class_type": class_type,
@@ -390,9 +392,9 @@ class ComfyWorkflow:
         self, model: Output, scheduler="normal", steps=20, model_version=Arch.sdxl
     ):
         if scheduler in ("align_your_steps", "ays"):
-            assert model_version in (Arch.sd15, Arch.sdxl)
+            assert model_version is Arch.sd15 or model_version.is_sdxl_like
 
-            if model_version == Arch.sd15:
+            if model_version is Arch.sd15:
                 model_type = "SD1"
             else:
                 model_type = "SDXL"
@@ -607,7 +609,9 @@ class ComfyWorkflow:
         )
 
     def load_insight_face(self):
-        return self.add_cached("IPAdapterInsightFaceLoader", 1, provider="CPU")
+        return self.add_cached(
+            "IPAdapterInsightFaceLoader", 1, provider="CPU", model_name="buffalo_l"
+        )
 
     def load_inpaint_model(self, model_name: str):
         return self.add_cached("INPAINT_LoadInpaintModel", 1, model_name=model_name)
@@ -714,6 +718,9 @@ class ComfyWorkflow:
             "ETN_DefineRegion", 1, regions=regions, mask=mask, conditioning=conditioning
         )
 
+    def list_region_masks(self, regions: Output):
+        return self.add("ETN_ListRegionMasks", 1, regions=regions)
+
     def attention_mask(self, model: Output, regions: Output):
         return self.add("ETN_AttentionMask", 1, model=model, regions=regions)
 
@@ -810,7 +817,7 @@ class ComfyWorkflow:
         )
 
     def combine_ip_adapter_embeds(self, embeds: list[Output]):
-        e = {f"embed{i+1}": embed for i, embed in enumerate(embeds)}
+        e = {f"embed{i + 1}": embed for i, embed in enumerate(embeds)}
         return self.add("IPAdapterCombineEmbeds", 1, method="concat", **e)
 
     def apply_ip_adapter(
@@ -861,9 +868,11 @@ class ComfyWorkflow:
             weight=weight,
             weight_faceidv2=weight * 2,
             weight_type="linear",
+            combine_embeds="concat",
             start_at=range[0],
             end_at=range[1],
             attn_mask=mask,
+            embeds_scaling="V only",
         )
 
     def apply_self_attention_guidance(self, model: Output):
@@ -972,6 +981,9 @@ class ComfyWorkflow:
     def batch_image(self, batch: Output, image: Output):
         return self.add("ImageBatch", 1, image1=batch, image2=image)
 
+    def image_batch_element(self, batch: Output, index: int):
+        return self.add("ImageFromBatch", 1, image=batch, batch_index=index, length=1)
+
     def inpaint_image(self, model: Output, image: Output, mask: Output):
         return self.add(
             "INPAINT_InpaintWithModel", 1, inpaint_model=model, image=image, mask=mask, seed=834729
@@ -1012,6 +1024,11 @@ class ComfyWorkflow:
 
     def mask_to_image(self, mask: Output):
         return self.add("MaskToImage", 1, mask=mask)
+
+    def mask_batch_element(self, mask_batch: Output, index: int):
+        image_batch = self.mask_to_image(mask_batch)
+        image = self.image_batch_element(image_batch, index)
+        return self.image_to_mask(image)
 
     def solid_mask(self, extent: Extent, value=1.0):
         return self.add("SolidMask", 1, width=extent.width, height=extent.height, value=value)
@@ -1114,6 +1131,70 @@ class ComfyWorkflow:
             mdls["bbox_detector"] = "yolo_nas_l_fp16.onnx"
         return self.add("DWPreprocessor", 1, image=image, resolution=resolution, **feat, **mdls)
 
+    def create_hook_lora(self, loras: list[tuple[str, float]]):
+        key = "CreateHookLora" + str(loras)
+        hooks = self._cache.get(key, None)
+        if hooks is None:
+            for lora, strength in loras:
+                hooks = self.add(
+                    "CreateHookLora",
+                    1,
+                    lora_name=lora,
+                    strength_model=strength,
+                    strength_clip=strength,
+                    prev_hooks=hooks,
+                )
+            assert hooks is not None
+            self._cache[key] = hooks
+
+        assert isinstance(hooks, Output)
+        return hooks
+
+    def set_clip_hooks(self, clip: Output, hooks: Output):
+        return self.add(
+            "SetClipHooks", 1, clip=clip, hooks=hooks, apply_to_conds=True, schedule_clip=False
+        )
+
+    def combine_masked_conditioning(
+        self,
+        positive: Output,
+        negative: Output,
+        positive_conds: Output | None = None,
+        negative_conds: Output | None = None,
+        mask: Output | None = None,
+    ):
+        assert (positive_conds and negative_conds) or mask
+        if mask is None:
+            return self.add(
+                "PairConditioningSetDefaultCombine",
+                2,
+                positive=positive_conds,
+                negative=negative_conds,
+                positive_DEFAULT=positive,
+                negative_DEFAULT=negative,
+            )
+        if positive_conds is None and negative_conds is None:
+            return self.add(
+                "PairConditioningSetProperties",
+                2,
+                positive_NEW=positive,
+                negative_NEW=negative,
+                mask=mask,
+                strength=1.0,
+                set_cond_area="default",
+            )
+        return self.add(
+            "PairConditioningSetPropertiesAndCombine",
+            2,
+            positive=positive_conds,
+            negative=negative_conds,
+            positive_NEW=positive,
+            negative_NEW=negative,
+            mask=mask,
+            strength=1.0,
+            set_cond_area="default",
+        )
+
 
 def _inputs_for_node(node_inputs: dict[str, dict[str, Any]], node_name: str, filter=""):
     inputs = node_inputs.get(node_name)
@@ -1166,7 +1247,7 @@ def _convert_ui_workflow(w: dict, node_inputs: dict):
 
             for connection in node["inputs"]:
                 if connection["name"] == field_name and connection["link"] is not None:
-                    link = next(l for l in links if l[0] == connection["link"])
+                    link = next(x for x in links if x[0] == connection["link"])
                     prim = primitives.get(link[1])
                     if prim is not None:
                         inputs[field_name] = prim

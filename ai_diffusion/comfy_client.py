@@ -7,19 +7,18 @@ from dataclasses import dataclass
 from enum import Enum
 from collections import deque
 from itertools import chain, product
-from typing import Any, NamedTuple, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from .api import WorkflowInput
 from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
 from .client import SharedWorkflow, TranslationPackage, ClientFeatures, TextOutput
-from .client import filter_supported_styles, loras_to_upload
+from .client import MissingResources, filter_supported_styles, loras_to_upload
 from .files import FileFormat
 from .image import Image, ImageCollection
 from .network import RequestManager, NetworkError
-from .websockets.src.websockets import client as websockets_client
-from .websockets.src.websockets import exceptions as websockets_exceptions
+from .websockets.src import websockets
 from .style import Styles
-from .resources import ControlMode, MissingResource, ResourceId, ResourceKind, Arch
+from .resources import ControlMode, ResourceId, ResourceKind, Arch
 from .resources import CustomNode, UpscalerName, resource_id
 from .settings import PerformanceSettings, settings
 from .localization import translate as _
@@ -94,11 +93,11 @@ class ComfyClient(Client):
         self._requests = RequestManager()
         self._id = str(uuid.uuid4())
         self._active: Optional[JobInfo] = None
-        self._supported_archs: list[Arch] = []
+        self._supported_archs: dict[Arch, list[ResourceId]] = {}
         self._supported_languages: list[TranslationPackage] = []
         self._messages = asyncio.Queue()
         self._queue = asyncio.Queue()
-        self._jobs = deque()
+        self._jobs: deque[JobInfo] = deque()
         self._is_connected = False
 
     @staticmethod
@@ -113,7 +112,7 @@ class ComfyClient(Client):
         # Try to establish websockets connection
         wsurl = websocket_url(client.url)
         try:
-            async with websockets_client.connect(f"{wsurl}/ws?clientId={client._id}"):
+            async with websockets.connect(f"{wsurl}/ws?clientId={client._id}"):
                 pass
         except Exception as e:
             msg = _("Could not establish websocket connection at") + f" {wsurl}: {str(e)}"
@@ -123,7 +122,7 @@ class ComfyClient(Client):
         nodes = await client._get("object_info")
         missing = _check_for_missing_nodes(nodes)
         if len(missing) > 0:
-            raise MissingResource(ResourceKind.node, missing)
+            raise MissingResources(missing)
 
         # Check for required and optional model resources
         models = client.models
@@ -166,11 +165,14 @@ class ComfyClient(Client):
         diffusion_models.update(await client.try_inspect("unet_gguf"))
         client._refresh_models(nodes, checkpoints, diffusion_models)
 
-        # Check supported SD versions and make sure there is at least one
-        missing = {ver: client._check_workload(ver) for ver in Arch.list()}
-        client._supported_archs = [ver for ver, miss in missing.items() if len(miss) == 0]
-        if len(client._supported_archs) == 0:
-            raise missing[Arch.sd15][0]
+        # Check supported base models and make sure there is at least one
+        client._supported_archs = {ver: client._check_workload(ver) for ver in Arch.list()}
+        supported_workloads = [
+            arch for arch, miss in client._supported_archs.items() if len(miss) == 0
+        ]
+        log.info("Supported workloads: " + ", ".join(arch.value for arch in supported_workloads))
+        if len(supported_workloads) == 0:
+            raise MissingResources(client._supported_archs)
 
         # Workarounds for DirectML
         if client.device_info.type == "privateuseone":
@@ -231,13 +233,13 @@ class ComfyClient(Client):
 
     async def _listen(self):
         url = websocket_url(self.url)
-        async for websocket in websockets_client.connect(
-            f"{url}/ws?clientId={self._id}", max_size=2**30, read_limit=2**30, ping_timeout=60
+        async for websocket in websockets.connect(
+            f"{url}/ws?clientId={self._id}", max_size=2**30, ping_timeout=60
         ):
             try:
                 await self._subscribe_workflows()
                 await self._listen_websocket(websocket)
-            except websockets_exceptions.ConnectionClosedError as e:
+            except websockets.exceptions.ConnectionClosedError as e:
                 log.warning(f"Websocket connection closed: {str(e)}")
             except OSError as e:
                 msg = _("Could not connect to websocket server at") + f"{url}: {str(e)}"
@@ -253,7 +255,7 @@ class ComfyClient(Client):
             finally:
                 await self._report(ClientEvent.disconnected, "")
 
-    async def _listen_websocket(self, websocket: websockets_client.WebSocketClientProtocol):
+    async def _listen_websocket(self, websocket: websockets.ClientConnection):
         progress: Progress | None = None
         images = ImageCollection()
         last_images = ImageCollection()
@@ -401,7 +403,7 @@ class ComfyClient(Client):
             parsed = (
                 (
                     filename,
-                    Arch.from_string(info["base_model"]),
+                    Arch.from_string(info["base_model"], info.get("type", "eps")),
                     info.get("is_inpaint", False),
                     info.get("is_refiner", False),
                 )
@@ -431,7 +433,7 @@ class ComfyClient(Client):
                 if name not in models.checkpoints:
                     models.checkpoints[name] = CheckpointInfo(name, Arch.flux, FileFormat.diffusion)
         else:
-            log.info(f"GGUF support: node is not installed.")
+            log.info("GGUF support: node is not installed.")
 
     async def translate(self, text: str, lang: str):
         try:
@@ -452,8 +454,9 @@ class ComfyClient(Client):
         except Exception as e:
             log.error(f"Couldn't unsubscribe from shared workflows: {str(e)}")
 
-    def supports_arch(self, arch: Arch):
-        return arch in self._supported_archs
+    @property
+    def missing_resources(self):
+        return MissingResources(self._supported_archs)
 
     @property
     def features(self):
@@ -533,20 +536,18 @@ class ComfyClient(Client):
             return result
         return None
 
-    def _check_workload(self, sdver: Arch) -> list[MissingResource]:
+    def _check_workload(self, sdver: Arch) -> list[ResourceId]:
         models = self.models
-        missing: list[MissingResource] = []
+        missing: list[ResourceId] = []
         for id in resources.required_resource_ids:
             if id.arch is not Arch.all and id.arch is not sdver:
                 continue
             if models.find(id) is None:
-                missing.append(MissingResource(id.kind, [id]))
+                missing.append(id)
         has_checkpoint = any(cp.arch is sdver for cp in models.checkpoints.values())
-        if not has_checkpoint:
-            missing.append(MissingResource(ResourceKind.checkpoint, [sdver.value]))
-        if len(missing) == 0:
-            log.info(f"{sdver.value}: supported")
-        else:
+        if not has_checkpoint and sdver not in [Arch.illu, Arch.illu_v]:
+            missing.append(ResourceId(ResourceKind.checkpoint, sdver, "Diffusion model checkpoint"))
+        if len(missing) > 0:
             log.info(f"{sdver.value}: missing {len(missing)} models")
         return missing
 
@@ -587,7 +588,8 @@ def _find_model(
     if search_paths is None:
         return None
 
-    sanitize = lambda p: p.replace("\\", "/").lower()
+    def sanitize(p):
+        return p.replace("\\", "/").lower()
 
     def match(filename: str, pattern: str):
         filename = sanitize(filename)
@@ -596,7 +598,7 @@ def _find_model(
 
     matches = (m for p in search_paths for m in model_list if match(m, p))
     # if there are multiple matches, prefer the one with "krita" in the path
-    prio = sorted(matches, key=lambda m: 0 if "krita" in m else 1)
+    prio = sorted(matches, key=lambda m: 0 if "krita" in m else len(m))
     found = next(iter(prio), None)
     model_id = identifier.name if isinstance(identifier, Enum) else identifier
     model_name = f"{kind.value} {model_id}"
@@ -648,12 +650,12 @@ def _find_ip_adapters(model_list: Sequence[str]):
 def _find_clip_vision_model(model_list: Sequence[str]):
     clip_vision_sd = ResourceId(ResourceKind.clip_vision, Arch.all, "ip_adapter")
     model = find_model(model_list, clip_vision_sd)
-    if model is None:
-        raise MissingResource(ResourceKind.clip_vision, resources.search_path(*clip_vision_sd))
     clip_vision_flux = ResourceId(ResourceKind.clip_vision, Arch.flux, "redux")
+    clip_vision_illu = ResourceId(ResourceKind.clip_vision, Arch.illu, "ip_adapter")
     return {
         clip_vision_sd.string: model,
         clip_vision_flux.string: find_model(model_list, clip_vision_flux),
+        clip_vision_illu.string: find_model(model_list, clip_vision_illu),
     }
 
 
@@ -708,11 +710,17 @@ def _find_inpaint_models(model_list: Sequence[str]):
 def _ensure_supported_style(client: Client):
     styles = filter_supported_styles(Styles.list(), client)
     if len(styles) == 0:
-        checkpoint = next(
+        supported_checkpoints = (
             cp.filename
             for cp in client.models.checkpoints.values()
             if client.supports_arch(cp.arch)
         )
+        checkpoint = next(iter(supported_checkpoints), None)
+        if checkpoint is None:
+            log.warning("No checkpoints found for any of the supported workloads!")
+            if len(client.models.checkpoints) == 0:
+                raise Exception(_("No diffusion model checkpoints found"))
+            return
         log.info(f"No supported styles found, creating default style with checkpoint {checkpoint}")
         default = next((s for s in Styles.list() if s.filename == "default.json"), None)
         if default:

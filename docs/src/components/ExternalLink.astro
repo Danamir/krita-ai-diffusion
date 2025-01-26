@@ -1,0 +1,19 @@
+---
+import { Icon } from "astro-icon/components";
+
+const { href } = Astro.props;
+---
+
+<a href={href} class="external-link">
+  <slot />
+  <Icon name="tabler/external-link" />
+</a>
+
+<style>
+  .external-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: inherit;
+  }
+</style>

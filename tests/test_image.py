@@ -8,9 +8,9 @@ from .config import image_dir, result_dir, reference_dir
 
 
 def test_extent_compare():
-    assert (Extent(4, 3) < Extent(4, 4)) == True
-    assert (Extent(3, 4) < Extent(4, 4)) == True
-    assert (Extent(4, 4) < Extent(4, 4)) == False
+    assert Extent(4, 3) < Extent(4, 4)
+    assert Extent(3, 4) < Extent(4, 4)
+    assert not (Extent(4, 4) < Extent(4, 4))
 
 
 def test_extent_scale_pixel_count():
@@ -117,7 +117,7 @@ def test_image_compress_speed():
         buffer.close()
 
         end = default_timer()
-        print(f"Quality {q} | Time {end - start:.3f}s | Size {len(byte_array)//1024} kB")
+        print(f"Quality {q} | Time {end - start:.3f}s | Size {len(byte_array) // 1024} kB")
 
         file = QFile(f"beach_1536x1024_q{q}.webp")
         file.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -135,7 +135,9 @@ def test_image_compress_speed():
         buffer = BytesIO()
         pil_img.save(buffer, "WEBP", lossless=True, quality=q)
         end = default_timer()
-        print(f"Compression {q} | Time {end - start:.3f}s | Size {len(buffer.getvalue())//1024} kB")
+        print(
+            f"Compression {q} | Time {end - start:.3f}s | Size {len(buffer.getvalue()) // 1024} kB"
+        )
 
 
 def test_image_equal():

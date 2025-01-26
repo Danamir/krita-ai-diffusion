@@ -5,6 +5,7 @@ ComfyUI with all required custom nodes and models.
 import asyncio
 import sys
 import shutil
+import subprocess
 import requests
 from pathlib import Path
 from itertools import chain
@@ -23,6 +24,10 @@ def copy_scripts():
     repo_dir = docker_dir / "krita-ai-diffusion"
     for source_file, target_dir in [
         (root_dir / "ai_diffusion" / "resources.py", repo_dir / "ai_diffusion"),
+        (
+            root_dir / "ai_diffusion" / "presets" / "models.json",
+            repo_dir / "ai_diffusion" / "presets",
+        ),
         (root_dir / "scripts" / "download_models.py", repo_dir / "scripts"),
     ]:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -52,6 +57,24 @@ def download_repositories():
         download_repository(repo.url, custom_nodes_dir / repo.folder, repo.version)
 
 
+def upgrade_python_dependencies():
+    cmd = [
+        "uv",
+        "pip",
+        "compile",
+        "requirements.in",
+        "ComfyUI/requirements.txt",
+        "ComfyUI/custom_nodes/comfyui_controlnet_aux/requirements.txt",
+        "ComfyUI/custom_nodes/comfyui-tooling-nodes/requirements.txt",
+        "ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt",
+        "ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt",
+        "--no-deps",
+        "-o",
+        "requirements.txt",
+    ]
+    subprocess.run(cmd, cwd=docker_dir, check=True)
+
+
 def check_line_endings():
     for file in docker_dir.rglob("*.sh"):
         with open(file, "rb") as f:
@@ -62,9 +85,18 @@ def check_line_endings():
                 f.write(content.replace(b"\r\n", b"\n"))
 
 
-async def main():
+async def main(clean=False, upgrade=False):
+    if clean:
+        print("Deleting existing repositories")
+        shutil.rmtree(comfy_dir, ignore_errors=True)
+        shutil.rmtree(docker_dir / "krita-ai-diffusion", ignore_errors=True)
+
     print("Downloading repositories")
     download_repositories()
+
+    if upgrade:
+        print("Upgrading Python dependencies")
+        upgrade_python_dependencies()
 
     print("Copying scripts")
     copy_scripts()
@@ -75,14 +107,14 @@ async def main():
     print(f"  docker build -t aclysia/sd-comfyui-krita:{version} scripts/docker/")
     print("\nTo test the image:")
     print(f"  docker run --gpus all -p 3001:3000 -p 8888:8888 aclysia/sd-comfyui-krita:{version}")
-    print(f"\nTo test the image with a local file server:")
-    print(f"  python scripts/file_server.py")
+    print("\nTo test the image with a local file server:")
+    print("  python scripts/file_server.py")
     print(
         f"  docker run --gpus all -p 3001:3000 -p 8888:8888 -e AI_DIFFUSION_DOWNLOAD_URL=http://host.docker.internal:51222 aclysia/sd-comfyui-krita:{version}"
     )
-    print(f"\nTo build the base image:")
-    print(f"  docker build -t aclysia/sd-comfyui-krita:base --target base scripts/docker/")
+    print("\nTo build the base image:")
+    print("  docker build -t aclysia/sd-comfyui-krita:base --target base scripts/docker/")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(clean="--clean" in sys.argv, upgrade="--upgrade" in sys.argv))

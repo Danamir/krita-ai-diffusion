@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import csv
 from typing import cast
 
-from PyQt5.QtWidgets import QApplication, QCompleter, QLineEdit, QStyledItemDelegate, QStyle
+from PyQt5.QtWidgets import QApplication, QCompleter, QPlainTextEdit, QStyledItemDelegate, QStyle
 from PyQt5.QtGui import QFont, QPalette, QPen, QColor, QFontMetrics
 from PyQt5.QtCore import Qt, QStringListModel, QSize, QRect, QAbstractProxyModel
 
@@ -133,8 +133,7 @@ _tag_files = None
 
 
 class PromptAutoComplete:
-
-    def __init__(self, widget: QLineEdit):
+    def __init__(self, widget: QPlainTextEdit):
         self._widget = widget
         self._completer = QCompleter()
         self._completer.activated.connect(self._insert_completion)
@@ -175,19 +174,21 @@ class PromptAutoComplete:
 
             with tag_path.open("r", encoding="utf-8") as f:
                 csv_reader = csv.reader(f)
-                # skip header line
-                next(csv_reader)
                 for tag, type_str, count, _aliases in csv_reader:
-                    tag = tag.replace("_", " ")
-                    tag_type = TagType(int(type_str))
-                    count = int(count)
-                    count_str = str(count)
-                    if count > 1_000_000:
-                        count_str = f"{count/1_000_000:.0f}m"
-                    elif count > 1_000:
-                        count_str = f"{count/1_000:.0f}k"
-                    meta = f"{tag_name} {count_str}"
-                    all_tags.append(TagItem(tag, tag_type, count, meta))
+                    if type_str.isdigit():  # skip header rows if they exist
+                        tag = tag.replace("_", " ")
+                        try:
+                            tag_type = TagType(int(type_str))
+                        except Exception:  # default to general category if category unrecognised
+                            tag_type = TagType(0)
+                        count = int(count)
+                        count_str = str(count)
+                        if count > 1_000_000:
+                            count_str = f"{count / 1_000_000:.0f}m"
+                        elif count > 1_000:
+                            count_str = f"{count / 1_000:.0f}k"
+                        meta = f"{tag_name} {count_str}"
+                        all_tags.append(TagItem(tag, tag_type, count, meta))
 
         sorted_tags = sorted(all_tags, key=lambda x: x.count, reverse=True)
         seen = set()
@@ -197,8 +198,8 @@ class PromptAutoComplete:
         _tag_files = tag_files
 
     def _current_text(self, separators=" >\n") -> str:
-        text = self._widget.text()
-        start = pos = self._widget.cursorPosition()
+        text = self._widget.toPlainText()
+        start = pos = self._widget.textCursor().position()
         while pos > 0 and (text[pos - 1] not in separators or pos > 1 and text[pos - 2] == "\\"):
             pos -= 1
         return text[pos:start]
@@ -239,13 +240,15 @@ class PromptAutoComplete:
         else:  # tag completion
             # escape () in tags so they won't be interpreted as prompt weights
             completion = completion.replace("(", "\\(").replace(")", "\\)")
-        text = self._widget.text()
-        pos = self._widget.cursorPosition()
+        text = self._widget.toPlainText()
+        pos = self._widget.textCursor().position()
         start_pos = pos - len(self._completion_prefix)
         fill = completion + self._completion_suffix + triggers
         text = text[:start_pos] + fill + text[pos:]
-        self._widget.setText(text)
-        self._widget.setCursorPosition(start_pos + len(fill))
+        self._widget.setPlainText(text)
+        cursor = self._widget.textCursor()
+        cursor.setPosition(start_pos + len(fill))
+        self._widget.setTextCursor(cursor)
 
     @property
     def is_active(self):

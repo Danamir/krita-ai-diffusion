@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt5.QtGui import QResizeEvent
 from PyQt5.QtWidgets import QWidget, QLabel, QSlider, QToolButton, QCheckBox
 from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QVBoxLayout, QGridLayout, QFrame
-from PyQt5.QtCore import Qt, QMetaObject, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QMetaObject, pyqtSignal
 
 from ..resources import ControlMode
 from ..properties import Binding, bind, bind_combo, bind_toggle
@@ -16,7 +16,6 @@ from . import theme
 
 
 class ControlWidget(QWidget):
-
     def __init__(
         self, control_list: ControlLayerList | None, control: ControlLayer, parent: QWidget
     ):
@@ -55,7 +54,7 @@ class ControlWidget(QWidget):
         self.preset_slider.setToolTip(_("Control strength: how much the layer affects the image"))
 
         self.error_text = QLabel(self)
-        self.error_text.setStyleSheet(f"color: {theme.yellow};")
+        self.error_text.setStyleSheet(f"QLabel {{ color: {theme.yellow}; }}")
         self.error_text.setVisible(not control.is_supported)
         self._set_error(control.error_text)
 
@@ -214,7 +213,7 @@ class ControlWidget(QWidget):
         root.active_model.document.add_pose_character(self._control.layer)
 
     def _update_visibility(self):
-        is_small = self.width() < 450
+        is_small = self.width() < 420
         is_pose = self._control.mode is ControlMode.pose
 
         def controls():
@@ -279,7 +278,7 @@ class ControlWidget(QWidget):
         self.error_text.setText(parts[0])
         if len(parts) > 1:
             self.error_text.setToolTip(
-                _("Missing one of the following models") + f": {parts[1][:-1]}"
+                _("Required model not found, searching for") + f": {parts[1][:-1]}"
             )
 
 

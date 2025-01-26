@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import locale
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -10,11 +9,11 @@ from typing import Callable, NamedTuple, Optional, Union
 from PyQt5.QtNetwork import QNetworkAccessManager
 
 from .settings import settings, ServerBackend
-from . import resources
+from . import eventloop, resources
 from .resources import CustomNode, ModelResource, ModelRequirements, Arch
 from .network import download, DownloadProgress
 from .localization import translate as _
-from .util import ZipFile, is_windows, create_process
+from .util import ZipFile, is_windows, create_process, decode_pipe_bytes, determine_system_encoding
 from .util import client_logger as log, server_logger as server_log
 
 
@@ -80,7 +79,9 @@ class Server:
         python_search_paths = [self.path / "python", self.path / "venv" / "bin"]
         python_path = _find_component(python_pkg, python_search_paths)
         if python_path is None:
-            self._python_cmd = _find_program("python3.11", "python3.10", "python3", "python")
+            self._python_cmd = _find_program(
+                "python3.12", "python3.11", "python3.10", "python3", "python"
+            )
         else:
             self._python_cmd = python_path / f"python{_exe}"
 
@@ -88,6 +89,8 @@ class Server:
             self.state = ServerState.not_installed
             self.missing_resources = resources.all_resources
             return
+
+        eventloop.run(determine_system_encoding(str(self._python_cmd)))
 
         assert self.comfy_dir is not None
         missing_nodes = [
@@ -132,10 +135,8 @@ class Server:
             await install_if_missing(python_dir, self._create_venv, cb)
             self._python_cmd = python_dir / "bin" / "python3"
         assert self._python_cmd is not None
-        python_ver = await get_python_version_string(self._python_cmd)
-        log.info(f"Using Python: {python_ver}, {self._python_cmd}")
-        pip_ver = await get_python_version_string(self._python_cmd, "-m", "pip")
-        log.info(f"Using pip: {pip_ver}")
+        await self._log_python_version()
+        await determine_system_encoding(str(self._python_cmd))
 
         comfy_dir = self.comfy_dir or self.path / "ComfyUI"
         if not self.has_comfy:
@@ -149,6 +150,13 @@ class Server:
         self.state = ServerState.stopped
         cb("Finished", f"Installation finished in {self.path}")
         self.check_install()
+
+    async def _log_python_version(self):
+        if self._python_cmd is not None:
+            python_ver = await get_python_version_string(self._python_cmd)
+            log.info(f"Using Python: {python_ver}, {self._python_cmd}")
+            pip_ver = await get_python_version_string(self._python_cmd, "-m", "pip")
+            log.info(f"Using pip: {pip_ver}")
 
     def _pip_install(self, *args):
         return [self._python_cmd, "-su", "-m", "pip", "install", *args]
@@ -196,7 +204,7 @@ class Server:
         await _extract_archive("ComfyUI", archive_path, comfy_dir.parent, cb)
         temp_comfy_dir = comfy_dir.parent / f"ComfyUI-{resources.comfy_version}"
 
-        torch_args = ["torch~=2.4.1", "torchvision~=0.19.1", "torchaudio~=2.4.1"]
+        torch_args = ["torch~=2.5.1", "torchvision~=0.20.1", "torchaudio~=2.5.1"]
         if self.backend is ServerBackend.cpu:
             torch_args += ["--index-url", "https://download.pytorch.org/whl/cpu"]
         elif self.backend is ServerBackend.cuda:
@@ -237,7 +245,7 @@ class Server:
         dependencies = ["onnx==1.16.1", "onnxruntime"]  # onnx version pinned due to #1033
         await _execute_process("FaceID", self._pip_install(*dependencies), self.path, cb)
 
-        pyver = await get_python_version(self._python_cmd)
+        pyver = await get_python_version_string(self._python_cmd)
         if is_windows and "3.11" in pyver:
             whl_file = self._cache_dir / "insightface-0.7.3-cp311-cp311-win_amd64.whl"
             whl_url = "https://github.com/bihailantian655/insightface_wheel/raw/main/insightface-0.7.3-cp311-cp311-win_amd64%20(1).whl"
@@ -311,10 +319,10 @@ class Server:
             for resource in to_install:
                 if not resource.exists_in(self.path) and not resource.exists_in(self.comfy_dir):
                     await self._install_requirements(resource.requirements, network, cb)
-                    for filepath, url in resource.files.items():
-                        target_file = self.path / filepath
+                    for file in resource.files:
+                        target_file = self.path / file.path
                         target_file.parent.mkdir(parents=True, exist_ok=True)
-                        await _download_cached(resource.name, network, url, target_file, cb)
+                        await _download_cached(resource.name, network, file.url, target_file, cb)
         except Exception as e:
             log.exception(str(e))
             raise e
@@ -384,11 +392,12 @@ class Server:
     async def start(self, port: int | None = None):
         assert self.state in [ServerState.stopped, ServerState.missing_resources]
         assert self._python_cmd
+        await self._log_python_version()
 
         self.state = ServerState.starting
         last_line = ""
         try:
-            args = ["-su", "-Xutf8", "main.py"]
+            args = ["-su", "main.py"]
             env = {}
             if self.backend is ServerBackend.cpu:
                 args.append("--cpu")
@@ -408,7 +417,7 @@ class Server:
 
             assert self._process.stdout is not None
             async for line in self._process.stdout:
-                text = _decode_utf8_log_error(line).strip()
+                text = decode_pipe_bytes(line).strip()
                 last_line = text
                 server_log.info(text)
                 if text.startswith("To see the GUI go to:"):
@@ -425,8 +434,8 @@ class Server:
             error = "Process exited unexpectedly"
             try:
                 out, err = await asyncio.wait_for(self._process.communicate(), timeout=10)
-                server_log.error(_decode_utf8_log_error(out).strip())
-                error = last_line + _decode_utf8_log_error(err or out)
+                server_log.error(decode_pipe_bytes(out).strip())
+                error = last_line + decode_pipe_bytes(err or out)
             except asyncio.TimeoutError:
                 self._process.kill()
             except Exception as e:
@@ -449,13 +458,13 @@ class Server:
 
         try:
             async for line in self._process.stdout:
-                server_log.info(_decode_utf8_log_error(line).strip())
+                server_log.info(decode_pipe_bytes(line).strip())
 
             code = await asyncio.wait_for(self._process.wait(), timeout=1)
             if code != 0:
                 log.error(f"Server process terminated with code {self._process.returncode}")
             elif code is not None:
-                log.info(f"Server process was shut down sucessfully")
+                log.info("Server process was shut down sucessfully")
 
         except asyncio.CancelledError:
             pass
@@ -555,7 +564,6 @@ async def _extract_archive(name: str, archive: Path, target: Path, cb: InternalC
 
 
 async def _execute_process(name: str, cmd: list, cwd: Path, cb: InternalCB):
-    enc = locale.getpreferredencoding(False)
     errlog = ""
 
     cmd = [str(c) for c in cmd]
@@ -564,12 +572,12 @@ async def _execute_process(name: str, cmd: list, cwd: Path, cb: InternalCB):
 
     async def forward(stream: asyncio.StreamReader):
         async for line in stream:
-            cb(f"Installing {name}", line.decode(enc, errors="replace").strip())
+            cb(f"Installing {name}", decode_pipe_bytes(line).strip())
 
     async def collect(stream: asyncio.StreamReader):
         nonlocal errlog
         async for line in stream:
-            errlog += line.decode(enc, errors="replace")
+            errlog += decode_pipe_bytes(line)
 
     assert process.stdout and process.stderr
     await asyncio.gather(forward(process.stdout), collect(process.stderr))
@@ -605,15 +613,6 @@ def _prepend_file(path: Path, line: str):
         file.truncate()
 
 
-def _decode_utf8_log_error(b: bytes):
-    try:
-        return b.decode("utf-8")
-    except UnicodeDecodeError as e:
-        result = b.decode("utf-8", errors="replace")
-        log.warning(f"Failed to UTF-8 decode: '{result}': {str(e)}")
-        return result
-
-
 def find_missing(folders: list[Path], resources: list[ModelResource], ver: Arch | None = None):
     return [
         res.name
@@ -639,7 +638,7 @@ async def rename_extracted_folder(name: str, path: Path, suffix: str):
             return
         except Exception as e:
             log.warning(f"Rename failed during {name} installation: {str(e)} - retrying...")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1)
     extracted_folder.rename(path)
 
 
@@ -655,12 +654,11 @@ def safe_remove_dir(path: Path, max_size=12 * 1024 * 1024):
 
 
 async def get_python_version_string(python_cmd: Path, *args: str):
-    enc = locale.getpreferredencoding(False)
     proc = await asyncio.create_subprocess_exec(
         python_cmd, *args, "--version", stdout=asyncio.subprocess.PIPE
     )
     out, _ = await proc.communicate()
-    return out.decode(enc, errors="replace").strip()
+    return decode_pipe_bytes(out).strip()
 
 
 async def get_python_version(python_cmd: Path, *args: str):
@@ -679,7 +677,7 @@ def parse_common_errors(output: str, return_code: int | None = None):
         return (
             _("Could not bind on address")
             + f" {message_part}. "
-            + "<a href='https://github.com/Acly/krita-ai-diffusion/wiki/Common-Issues#error-during-server-startup-could-not-bind-on-address-only-one-usage-of-each-socket-address-is-normally-permitted'>More information...</a>"
+            + "<a href='https://docs.interstice.cloud/common-issues#bind-address'>More information...</a>"
         )
 
     nvidia_driver = "Found no NVIDIA driver on your system"

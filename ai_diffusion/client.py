@@ -8,10 +8,10 @@ from .api import WorkflowInput
 from .image import ImageCollection
 from .properties import Property, ObservableProperties
 from .files import FileLibrary, FileFormat
-from .style import Style, Styles
+from .style import Style
 from .settings import PerformanceSettings
 from .resources import ControlMode, ResourceKind, Arch, UpscalerName
-from .resources import ResourceId, resource_id
+from .resources import CustomNode, ResourceId
 from .localization import translate as _
 from .util import client_logger as log
 
@@ -86,6 +86,19 @@ class DeviceInfo(NamedTuple):
             return DeviceInfo("cpu", "unknown", 0)
 
 
+class MissingResources(Exception):
+    def __init__(self, missing: dict[Arch, list[ResourceId]] | list[CustomNode]):
+        self.missing = missing
+
+    def __str__(self):
+        return "Required custom nodes or model files are missing"
+
+    def get(self, arch: Arch):
+        if isinstance(self.missing, list):
+            return self.missing
+        return self.missing.get(arch, [])
+
+
 class CheckpointInfo(NamedTuple):
     filename: str
     arch: Arch
@@ -126,6 +139,11 @@ class ClientModels:
     def find(self, id: ResourceId):
         if result := self.resources.get(id.string):
             return result
+        # Fallback to epsilon model if v-prediction model not found
+        if id.arch is Arch.illu_v:
+            if result := self.resources.get(id._replace(arch=Arch.illu).string):
+                return result
+        # Search for architecture-agnostic model
         return self.resources.get(id._replace(arch=Arch.all).string)
 
     def arch_of(self, checkpoint: str):
@@ -135,9 +153,6 @@ class ClientModels:
 
     def for_arch(self, arch: Arch):
         return ModelDict(self, ResourceKind.upscaler, arch)
-
-    def for_checkpoint(self, checkpoint: str):
-        return self.for_arch(self.arch_of(checkpoint))
 
     @property
     def upscale(self):
@@ -164,10 +179,13 @@ class ModelDict:
         return self._models.resource(self.kind, key, self.arch)
 
     def find(self, key: ControlMode | UpscalerName | str, allow_universal=False) -> str | None:
-        is_sd = self.arch in [Arch.sd15, Arch.sdxl]
+        # Composition/Style modes use same IP-Adapter model as Reference with different weighting
+        is_sd = self.arch is Arch.sd15 or self.arch.is_sdxl_like
         if key in [ControlMode.style, ControlMode.composition] and is_sd:
-            key = ControlMode.reference  # Same model with different weight types
+            key = ControlMode.reference
+
         result = self._models.find(ResourceId(self.kind, self.arch, key))
+        # Fallback to universal model if not found
         if result is None and allow_universal and isinstance(key, ControlMode):
             result = self.find(ControlMode.universal)
         return result
@@ -288,7 +306,13 @@ class Client(ABC):
     def user(self) -> User | None:
         return None
 
+    @property
+    def missing_resources(self) -> MissingResources | None:
+        return None
+
     def supports_arch(self, arch: Arch) -> bool:
+        if self.missing_resources:
+            return len(self.missing_resources.get(arch)) == 0
         return True
 
     @property
@@ -304,12 +328,13 @@ class Client(ABC):
         await self.disconnect()
 
 
-def resolve_arch(style: Style, client: Client | None = None):
+def resolve_arch(style: Style, client: Client | ClientModels | None = None):
     if style.architecture is Arch.auto:
         if client:
-            checkpoint = style.preferred_checkpoint(client.models.checkpoints.keys())
+            models = client.models if isinstance(client, Client) else client
+            checkpoint = style.preferred_checkpoint(models.checkpoints.keys())
             if checkpoint != "not-found":
-                return client.models.arch_of(checkpoint)
+                return models.arch_of(checkpoint)
         if style.checkpoints:
             return style.architecture.resolve(style.checkpoints[0])
     return style.architecture
@@ -327,21 +352,27 @@ def filter_supported_styles(styles: Iterable[Style], client: Client | None = Non
 
 
 def loras_to_upload(workflow: WorkflowInput, client_models: ClientModels):
+    workflow_loras = []
     if models := workflow.models:
-        for lora in models.loras:
-            if lora.name in client_models.loras:
-                continue
-            if not lora.storage_id and lora.name in _lcm_loras:
-                raise ValueError(_lcm_warning)
-            if not lora.storage_id:
-                raise ValueError(f"Lora model is not available: {lora.name}")
-            lora_file = FileLibrary.instance().loras.find_local(lora.name)
-            if lora_file is None or lora_file.path is None:
-                raise ValueError(f"Can't find Lora model: {lora.name}")
-            if not lora_file.path.exists():
-                raise ValueError(_("LoRA model file not found") + f" {lora_file.path}")
-            assert lora.storage_id == lora_file.hash
-            yield lora_file
+        workflow_loras.extend(models.loras)
+    if cond := workflow.conditioning:
+        for region in cond.regions:
+            workflow_loras.extend(region.loras)
+
+    for lora in workflow_loras:
+        if lora.name in client_models.loras:
+            continue
+        if not lora.storage_id and lora.name in _lcm_loras:
+            raise ValueError(_lcm_warning)
+        if not lora.storage_id:
+            raise ValueError(f"Lora model is not available: {lora.name}")
+        lora_file = FileLibrary.instance().loras.find_local(lora.name)
+        if lora_file is None or lora_file.path is None:
+            raise ValueError(f"Can't find Lora model: {lora.name}")
+        if not lora_file.path.exists():
+            raise ValueError(_("LoRA model file not found") + f" {lora_file.path}")
+        assert lora.storage_id == lora_file.hash
+        yield lora_file
 
 
 _lcm_loras = ["lcm-lora-sdv1-5.safetensors", "lcm-lora-sdxl.safetensors"]

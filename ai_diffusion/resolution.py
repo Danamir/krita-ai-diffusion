@@ -4,7 +4,7 @@ from enum import Enum
 from typing import NamedTuple, overload
 
 from .api import ExtentInput, ImageInput
-from .image import Bounds, Extent, Image, Mask, Point, multiple_of
+from .image import Bounds, Extent, Image, Point, multiple_of
 from .resources import Arch
 from .settings import PerformanceSettings
 from .style import Style
@@ -105,7 +105,7 @@ class ScaledExtent(NamedTuple):
     @property
     def initial_scaling(self):
         ratio = Extent.ratio(self.input, self.initial)
-        if ratio < 1:
+        if ratio != 1:
             return ScaleMode.upscale_fast
         else:
             return ScaleMode.none
@@ -142,14 +142,15 @@ class CheckpointResolution(NamedTuple):
     max_scale: float
 
     @staticmethod
-    def compute(extent: Extent, sd_ver: Arch, style: Style | None = None):
+    def compute(extent: Extent, arch: Arch, style: Style | None = None):
+        arch = Arch.sdxl if arch.is_sdxl_like else arch
         if style is None or style.preferred_resolution == 0:
             min_size, max_size, min_pixel_count, max_pixel_count = {
                 Arch.sd15: (512, 768, 512**2, 512 * 768),
-                Arch.sdxl: (512, 1280, 1024**2, 1024**2),
+                Arch.sdxl: (640, 1280, 800**2, 1024**2),
                 Arch.sd3: (512, 1536, 512**2, 1536**2),
                 Arch.flux: (256, 2048, 512**2, 2048**2),
-            }[sd_ver]
+            }[arch]
         else:
             range_offset = multiple_of(round(0.2 * style.preferred_resolution), 8)
             min_size = style.preferred_resolution - range_offset
@@ -209,10 +210,11 @@ def prepare_diffusion_input(
     else:  # Desired resolution is in acceptable range. Do 1 pass at desired resolution.
         input = extent
         initial = desired = desired.multiple_of(mult)
-        # Scale down input images if needed due to resolution_multiplier or max_pixel_count
-        if extent.pixel_count > desired.pixel_count:
-            input = desired
-            image = Image.scale(image, desired) if image else None
+
+    # Scale down input images if needed due to resolution_multiplier or max_pixel_count
+    if extent.pixel_count > desired.pixel_count:
+        input = desired
+        image = Image.scale(image, desired) if image else None
 
     batch = compute_batch_size(Extent.largest(initial, desired), 512, perf.batch_size)
     return ScaledExtent(input, initial, desired, extent), image, batch

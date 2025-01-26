@@ -79,9 +79,9 @@ async def download(
     verbose=False,
     dry_run=False,
 ):
-    for filepath, url in model.files.items():
-        target_file = destination / filepath
-        url = _map_url(url)
+    for file in model.files:
+        target_file = destination / file.path
+        url = _map_url(file.url)
         if verbose:
             print(f"Looking for {target_file}")
         if target_file.exists():
@@ -108,6 +108,7 @@ async def main(
     sd15=False,
     sdxl=False,
     flux=False,
+    illu=False,
     upscalers=False,
     checkpoints=[],
     controlnet=False,
@@ -122,9 +123,9 @@ async def main(
 ):
     print(f"Generative AI for Krita - Model download - v{resources.version}")
     verbose = verbose or dry_run
-    assert (
-        sum([minimal, recommended, all]) <= 1
-    ), "Only one of --minimal, --recommended, --all can be specified"
+    assert sum([minimal, recommended, all]) <= 1, (
+        "Only one of --minimal, --recommended, --all can be specified"
+    )
 
     versions = [Arch.all]
     if sd15 or minimal or all:
@@ -133,6 +134,9 @@ async def main(
         versions.append(Arch.sdxl)
     if flux:
         versions.append(Arch.flux)
+    if illu or all:
+        versions.append(Arch.illu)
+        versions.append(Arch.illu_v)
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=60)
     async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as client:
@@ -148,7 +152,7 @@ async def main(
             models.update([m for m in required_models if m.kind is ResourceKind.upscaler])
             models.update(resources.upscale_models)
         if controlnet or recommended or all:
-            kinds = [ResourceKind.controlnet, ResourceKind.ip_adapter]
+            kinds = [ResourceKind.controlnet, ResourceKind.ip_adapter, ResourceKind.clip_vision]
             models.update([m for m in optional_models if m.kind in kinds and m.arch in versions])
         if prefetch or all:
             models.update(resources.prefetch_models)
@@ -196,6 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("-a", "--all", action="store_true", help="download ALL models")
     parser.add_argument("--sd15", action="store_true", help="[Workload] everything needed to run SD 1.5 (no checkpoints)")
     parser.add_argument("--sdxl", action="store_true", help="[Workload] everything needed to run SDXL (no checkpoints)")
+    parser.add_argument("--illu", action="store_true", help="[Workload] everything needed to run Illustrious-SDXL (no checkpoints)")
     parser.add_argument("--flux", action="store_true", help="[Workload] everything needed to run Flux (no checkpoints)")
     parser.add_argument("--checkpoints", action="store_true", dest="checkpoints", help="download all checkpoints for selected workloads")
     parser.add_argument("--controlnet", action="store_true", help="download ControlNet models for selected workloads")
@@ -214,6 +219,9 @@ if __name__ == "__main__":
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.sdxl]
     if args.checkpoints and args.flux:
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.flux]
+    if args.checkpoints and args.illu:
+        checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu]
+        checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu_v]
     asyncio.run(
         main(
             destination=args.destination,
@@ -222,6 +230,7 @@ if __name__ == "__main__":
             sd15=args.sd15,
             sdxl=args.sdxl,
             flux=args.flux,
+            illu=args.illu,
             upscalers=args.upscalers,
             checkpoints=checkpoints,
             controlnet=args.controlnet,

@@ -6,7 +6,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from PyQt5.QtCore import Qt
 
 from ai_diffusion import workflow
 from ai_diffusion.api import LoraInput, WorkflowKind, WorkflowInput, ControlInput, RegionInput
@@ -15,7 +14,7 @@ from ai_diffusion.api import SamplingInput, ImageInput
 from ai_diffusion.client import ClientModels, CheckpointInfo
 from ai_diffusion.comfy_client import ComfyClient
 from ai_diffusion.cloud_client import CloudClient
-from ai_diffusion.comfy_workflow import ComfyWorkflow, ComfyNode, Output
+from ai_diffusion.comfy_workflow import ComfyWorkflow
 from ai_diffusion.files import FileLibrary, FileCollection, File, FileSource
 from ai_diffusion.resources import ControlMode
 from ai_diffusion.settings import PerformanceSettings
@@ -150,20 +149,20 @@ def test_inpaint_params():
     bounds = Bounds(0, 0, 100, 100)
 
     a = detect_inpaint(InpaintMode.fill, bounds, Arch.sd15, "", [], 1.0)
-    assert a.fill is FillMode.blur and a.use_inpaint_model == True and a.use_reference == True
+    assert a.fill is FillMode.blur and a.use_inpaint_model and a.use_reference
 
     b = detect_inpaint(InpaintMode.add_object, bounds, Arch.sd15, "", [], 1.0)
-    assert b.fill is FillMode.neutral and b.use_condition_mask == False
+    assert b.fill is FillMode.neutral and not b.use_condition_mask
 
     c = detect_inpaint(InpaintMode.replace_background, bounds, Arch.sdxl, "", [], 1.0)
-    assert c.fill is FillMode.replace and c.use_inpaint_model == True and c.use_reference == False
+    assert c.fill is FillMode.replace and c.use_inpaint_model and not c.use_reference
 
     d = detect_inpaint(InpaintMode.add_object, bounds, Arch.sd15, "prompt", [], 1.0)
-    assert d.use_condition_mask == True
+    assert d.use_condition_mask
 
     control = [ControlInput(ControlMode.line_art, Image.create(Extent(4, 4)))]
     e = detect_inpaint(InpaintMode.add_object, bounds, Arch.sd15, "prompt", control, 1.0)
-    assert e.use_condition_mask == False
+    assert not e.use_condition_mask
 
 
 def test_prepare_lora():
@@ -446,7 +445,7 @@ def test_regions_upscale(qtapp, client: Client):
         upscale_model=client.models.default_upscaler,
         upscale_factor=2,
     )
-    run_and_save(qtapp, client, job, f"test_regions_upscale")
+    run_and_save(qtapp, client, job, "test_regions_upscale")
 
 
 def test_regions_ip_adapter(qtapp, client: Client):
@@ -458,7 +457,36 @@ def test_regions_ip_adapter(qtapp, client: Client):
     prompt.regions[3].positive = ""
     prompt.regions[3].control.append(ControlInput(ControlMode.reference, cat))
     job = create(WorkflowKind.generate, client, canvas=Extent(1024, 1024), cond=prompt)
-    run_and_save(qtapp, client, job, f"test_regions_ip_adapter")
+    run_and_save(qtapp, client, job, "test_regions_ip_adapter")
+
+
+def test_regions_lora(qtapp, client: Client):
+    files = FileLibrary.instance()
+    files.loras.add(File.local(test_dir / "data" / "LowRA.safetensors"))
+    files.loras.add(File.local(test_dir / "data" / "Ink scenery.safetensors"))
+    root_text = "snowy landscape, tundra, illustration, truck in the distance"
+    lines = Image.load(image_dir / "truck_landscape_lines.webp")
+    prompt = ConditioningInput(root_text)
+    prompt.regions = [
+        RegionInput(
+            Mask.load(image_dir / "region_mask_bg.png").to_image(),
+            Bounds(0, 0, 1024, 1024),
+            "frozen lake . " + root_text,
+        ),
+        RegionInput(
+            Mask.load(image_dir / "region_mask_3.png").to_image(),
+            Bounds(600, 150, 424, 600),
+            "truck on an abandoned road . <lora:LowRA:1.0>" + root_text,
+        ),
+        RegionInput(
+            Mask.load(image_dir / "region_mask_2.png").to_image(),
+            Bounds(0, 250, 355, 700),
+            "ink scenery, mountains, trees, <lora:Ink scenery:2.0>" + root_text,
+        ),
+    ]
+    prompt.control = [ControlInput(ControlMode.soft_edge, lines, 0.5)]
+    job = create(WorkflowKind.generate, client, canvas=Extent(1024, 1024), cond=prompt, files=files)
+    run_and_save(qtapp, client, job, "test_regions_lora")
 
 
 @pytest.mark.parametrize(
@@ -529,7 +557,7 @@ def test_create_control_image(qtapp, client: Client, mode):
 
 
 def test_create_open_pose_vector(qtapp, client: Client):
-    image_name = f"test_create_open_pose_vector.svg"
+    image_name = "test_create_open_pose_vector.svg"
     image = Image.load(image_dir / "adobe_stock.jpg")
     job = workflow.prepare_create_control_image(image, ControlMode.pose, default_perf)
 
@@ -698,7 +726,31 @@ def test_refine_max_pixels(qtapp, client):
     job = create(
         WorkflowKind.refine, client, canvas=image, cond=cond, strength=0.6, perf=perf_settings
     )
-    run_and_save(qtapp, client, job, f"test_refine_max_pixels")
+    run_and_save(qtapp, client, job, "test_refine_max_pixels")
+
+
+def test_fill_control_max_pixels(qtapp, client):
+    perf_settings = PerformanceSettings(max_pixel_count=2)  # million pixels
+    image = Image.load(image_dir / "beach_1536x1024.webp")
+    image = Image.scale(image, Extent(2304, 1536))
+    mask = Mask.load(image_dir / "beach_mask_2304x1536.webp")
+    mask.bounds = Bounds(700, 0, 2304 - 700, 1536)
+    depth = Image.load(image_dir / "beach_depth_2304x1536.webp")
+    prompt = ConditioningInput("beach, the sea, cliffs, palm trees")
+    prompt.control = [ControlInput(ControlMode.depth, depth)]
+    inpaint = detect_inpaint(
+        InpaintMode.fill, mask.bounds, Arch.sd15, prompt.positive, prompt.control, 1.0
+    )
+    job = create(
+        WorkflowKind.inpaint,
+        client,
+        canvas=image,
+        mask=mask,
+        cond=prompt,
+        inpaint=inpaint,
+        perf=perf_settings,
+    )
+    run_and_save(qtapp, client, job, "test_fill_control_max_pixels", image, mask)
 
 
 def test_outpaint_resolution_multiplier(qtapp, client):
@@ -718,7 +770,7 @@ def test_outpaint_resolution_multiplier(qtapp, client):
         inpaint=params,
         perf=perf_settings,
     )
-    run_and_save(qtapp, client, job, f"test_outpaint_resolution_multiplier", image, mask)
+    run_and_save(qtapp, client, job, "test_outpaint_resolution_multiplier", image, mask)
 
 
 def test_lora(qtapp, client):
@@ -860,42 +912,84 @@ def test_inpaint_benchmark(pytestconfig, qtapp, client):
 
 
 # def test_reproduce(qtapp, client: Client):
-#     workflow = {
-#         "conditioning": {
-#             "control": [{"strength": 0.5, "mode": "blur"}],
-#             "negative": "<redacted>",
-#             "positive": "<redacted>",
-#             "regions": [],
-#             "style": "<redacted>",
-#         },
+#     json_text = """
+#     {
 #         "images": {
 #             "extent": {
-#                 "desired": [672, 672],
-#                 "initial": [8736, 15552],
-#                 "input": [2912, 5184],
-#                 "target": [8736, 15552],
+#                 "desired": [
+#                 3000,
+#                 2000
+#                 ],
+#                 "initial": [
+#                 768,
+#                 512
+#                 ],
+#                 "input": [
+#                 3000,
+#                 2000
+#                 ],
+#                 "target": [
+#                 5760,
+#                 3840
+#                 ]
 #             },
-#             "initial_image": 0,
+#             "hires_image": 1,
+#             "hires_mask": 2,
+#             "initial_image": 0
 #         },
-#         "kind": "upscale_tiled",
+#         "conditioning": {
+#             "control": [
+#                 {
+#                     "mode": "line_art",
+#                     "image": 3,
+#                     "range": [
+#                         0,
+#                         0.8
+#                     ]
+#                 }
+#             ],
+#             "negative": "<redacted>",
+#             "positive": "<redacted>",
+#             "style": "<redacted>"
+#         },
+#         "inpaint": {
+#             "feather": 164,
+#             "grow": 164,
+#             "mode": "custom",
+#             "target_bounds": [
+#                 2008,
+#                 1152,
+#                 3752,
+#                 2680
+#             ],
+#             "use_inpaint_model": true
+#         },
 #         "models": {
-#             "checkpoint": "realisticVisionV51_v51VAE.safetensors",
-#             "loras": [],
+#             "checkpoint": "serenity_v21Safetensors.safetensors",
 #             "vae": "Checkpoint Default",
-#             "version": "sd15",
+#             "version": "sd15"
 #         },
 #         "sampling": {
 #             "cfg_scale": 7,
 #             "sampler": "dpmpp_2m",
 #             "scheduler": "karras",
-#             "seed": 1159574572,
-#             "start_step": 14,
-#             "total_steps": 20,
+#             "seed": 473470401,
+#             "total_steps": 20
 #         },
-#         "upscale_model": "4x_NMKD-Superscale-SP_178000_G.pth",
+#         "crop_upscale_extent": [
+#         2904,
+#         2072
+#         ],
+#         "kind": "inpaint",
+#         "nsfw_filter": 0.8
 #     }
-#     image = Image.create(Extent(2912, 5184))
-#     images = ImageCollection([image])
+#     """
+#     workflow = json.loads(json_text)
+#     initial = Image.create(Extent(768, 512))
+#     hires = Image.create(Extent(2904, 2072))
+#     mask = Mask.transparent(Bounds(0, 0, 3000, 2000))
+#     lineart = Image.create(Extent(3000, 2000))
+#     images = ImageCollection([initial, hires, mask.to_image(), lineart])
 #     data, offsets = images.to_bytes()
 #     workflow["image_data"] = {"bytes": data, "offsets": offsets}
 #     input = WorkflowInput.from_dict(workflow)

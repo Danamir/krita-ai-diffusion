@@ -1,4 +1,4 @@
-from dataclasses import Field, dataclass, field, is_dataclass, fields
+from dataclasses import Field, dataclass, field, is_dataclass, fields, MISSING
 from copy import copy
 from enum import Enum
 from types import GenericAlias, UnionType
@@ -33,7 +33,6 @@ class ExtentInput:
 class ImageInput:
     extent: ExtentInput
     initial_image: Image | None = None
-    initial_mask: Image | None = None  # deprecated (1.20.0) - hires_mask is scaled during workflow
     hires_image: Image | None = None
     hires_mask: Image | None = None
 
@@ -61,6 +60,7 @@ class CheckpointInput:
     loras: list[LoraInput] = field(default_factory=list)
     clip_skip: int = 0
     v_prediction_zsnr: bool = False
+    rescale_cfg: float = 0.7
     self_attention_guidance: bool = False
 
 
@@ -96,6 +96,7 @@ class RegionInput:
     bounds: Bounds
     positive: str
     control: list[ControlInput] = field(default_factory=list)
+    loras: list[LoraInput] = field(default_factory=list)
 
 
 @dataclass
@@ -222,7 +223,7 @@ class WorkflowInput:
 def _base_cost(arch: Arch):
     if arch is Arch.sd15:
         return 1
-    if arch is Arch.sdxl:
+    if arch.is_sdxl_like:
         return 2
     if arch is Arch.flux:
         return 4
@@ -292,8 +293,12 @@ class Deserializer:
         return type(*values)
 
     def _field(self, field: Field, value):
-        if value is None:
+        if value is None and field.default is not MISSING:
             return field.default
+        elif value is None and field.default_factory is not MISSING:
+            return field.default_factory()
+        elif value is None:
+            return None
         field_type = field.type
         if isinstance(field_type, UnionType):
             field_type = get_args(field_type)[0]

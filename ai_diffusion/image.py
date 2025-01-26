@@ -1,6 +1,6 @@
 from __future__ import annotations
 from enum import Enum
-from math import ceil, sqrt
+from math import sqrt
 from PyQt5.QtGui import QImage, QImageWriter, QImageReader, QPixmap, QIcon, QPainter, QColorSpace
 from PyQt5.QtGui import qRgba, qRed, qGreen, qBlue, qAlpha, qGray
 from PyQt5.QtCore import Qt, QByteArray, QBuffer, QRect, QSize, QFile, QIODevice
@@ -295,10 +295,17 @@ class ImageFileFormat(Enum):
         return self
 
 
+_qt_supports_webp = None
+
+
+def qt_supports_webp():
+    global _qt_supports_webp
+    if _qt_supports_webp is None:
+        _qt_supports_webp = QByteArray(b"webp") in QImageWriter.supportedImageFormats()
+    return _qt_supports_webp
+
+
 class Image:
-
-    _qt_supports_webp = True
-
     def __init__(self, qimage: QImage):
         self._qimage = qimage
 
@@ -489,7 +496,7 @@ class Image:
 
     def write(self, buffer: QIODevice, format=ImageFileFormat.png):
         # Compression takes time for large images and blocks the UI, might be worth to thread.
-        if not self._qt_supports_webp:
+        if not qt_supports_webp():
             format = format.no_webp_fallback
         format_str, quality = format.value
         writer = QImageWriter(buffer, QByteArray(format_str.encode("utf-8")))
@@ -501,7 +508,8 @@ class Image:
                 log.warning(
                     "To enable support for writing webp images, you may need to install the 'qt5-imageformats' package."
                 )
-                Image._qt_supports_webp = False
+                global _qt_supports_webp
+                _qt_supports_webp = False
                 self.write(buffer, format.no_webp_fallback)
             raise Exception(f"Failed to write image to buffer: {writer.errorString()} {info}")
 
@@ -679,18 +687,12 @@ class ImageCollection:
 
 
 class Mask:
-    _data: Optional[QByteArray]
-
-    bounds: Bounds
-    image: QImage
-
     def __init__(self, bounds: Bounds, data: Union[QImage, QByteArray]):
         self.bounds = bounds
         if isinstance(data, QImage):
-            self.image = data
+            self.image: QImage = data
         else:
             assert len(data) == bounds.width * bounds.height
-            self._data = data
             self.image = QImage(
                 data.data(),
                 bounds.width,

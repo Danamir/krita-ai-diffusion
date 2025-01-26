@@ -7,13 +7,11 @@ from PyQt5.QtWidgets import (
     QWidget,
     QPlainTextEdit,
     QLabel,
-    QLineEdit,
     QMenu,
     QSpinBox,
     QToolButton,
     QComboBox,
     QHBoxLayout,
-    QVBoxLayout,
     QSizePolicy,
     QStyle,
     QStyleOption,
@@ -22,6 +20,7 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QPushButton,
     QFrame,
+    QScrollBar,
 )
 from PyQt5.QtGui import (
     QDesktopServices,
@@ -36,7 +35,7 @@ from PyQt5.QtGui import (
     QPaintEvent,
     QKeySequence,
 )
-from PyQt5.QtCore import QObject, Qt, QMetaObject, QSize, pyqtSignal, QEvent, QUrl
+from PyQt5.QtCore import Qt, QMetaObject, QSize, pyqtSignal, QEvent, QUrl
 from krita import Krita
 
 from ..style import Style, Styles
@@ -181,7 +180,6 @@ class QueuePopup(QMenu):
 
 
 class QueueButton(QToolButton):
-
     def __init__(self, supports_batch=True, parent: QWidget | None = None):
         super().__init__(parent)
         self._model = root.active_model
@@ -321,52 +319,75 @@ class StyleSelectWidget(QWidget):
             self._combo.setCurrentText(style.name)
 
 
-def handle_weight_adjustment(
-    self: MultiLineTextPromptWidget | SingleLineTextPromptWidget, event: QKeyEvent
-):
-    """Handles Ctrl + (arrow key up / arrow key down) attention weight adjustment."""
-    if event.key() in [Qt.Key.Key_Up, Qt.Key.Key_Down] and (event.modifiers() & Qt.Modifier.CTRL):
-        if self.hasSelectedText():
-            start = self.selectionStart()
-            end = self.selectionEnd()
-        else:
-            start, end = select_on_cursor_pos(self.text(), self.cursorPosition())
+class ResizeHandle(QWidget):
+    """A small resize handle that appears at the bottom of the prompt widget."""
 
-        text = self.text()
-        target_text = text[start:end]
-        text_after_edit = edit_attention(target_text, event.key() == Qt.Key.Key_Up)
-        self.setText(text[:start] + text_after_edit + text[end:])
-        if isinstance(self, MultiLineTextPromptWidget):
-            self.setSelection(start, start + len(text_after_edit))
-        else:
-            # Note: setSelection has some wield bug in `SingleLineTextPromptWidget`
-            # that the end range will be set to end of text. So set cursor instead
-            # as compromise.
-            self.setCursorPosition(start + len(text_after_edit) - 2)
+    handle_dragged = pyqtSignal(int)
 
-
-class MultiLineTextPromptWidget(QPlainTextEdit):
-    activated = pyqtSignal()
-
-    _line_count = 2
-
-    def __init__(self, parent: QWidget | None):
+    def __init__(self, parent: QWidget):
         super().__init__(parent)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self.setFixedSize(22, 8)
+        self._dragging = False
+
+    def mousePressEvent(self, a0: QMouseEvent | None) -> None:
+        if ensure(a0).button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
+        self._dragging = False
+
+    def mouseMoveEvent(self, a0: QMouseEvent | None) -> None:
+        if not self._dragging:
+            return
+        y_pos = self.mapToParent(ensure(a0).pos()).y()
+        self.handle_dragged.emit(y_pos)
+
+    def paintEvent(self, a0: QPaintEvent | None) -> None:
+        if not self.isVisible():
+            return
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(QPalette.ColorRole.PlaceholderText).lighter(100))
+        painter.setBrush(painter.pen().color())
+        w, h = self.width(), self.height()
+        for i, x in enumerate(range(2, w - 1, 3)):
+            y = 2 * h // 3 if i % 2 == 0 else h // 3
+            painter.drawEllipse(x - 1, y - 1, 2, 2)
+
+
+class TextPromptWidget(QPlainTextEdit):
+    activated = pyqtSignal()
+    text_changed = pyqtSignal(str)
+    handle_dragged = pyqtSignal(int)
+
+    def __init__(self, line_count=2, is_negative=False, parent=None):
+        super().__init__(parent)
+        self._line_count = line_count
+        self._is_negative = is_negative
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setTabChangesFocus(True)
         self.setFrameStyle(QFrame.Shape.NoFrame)
-        self.line_count = 2
 
         self._completer = PromptAutoComplete(self)
-        self.textChanged.connect(self._completer.check_completion)
+        self.textChanged.connect(self.notify_text_changed)
+        self.activated.connect(self.notify_activated)
+
+        self._resize_handle: ResizeHandle | None = None
+
+        palette: QPalette = self.palette()
+        self._base_color = palette.color(QPalette.ColorRole.Base)
+        self.is_negative = is_negative
+        self.line_count = line_count
 
     def event(self, e: QEvent | None):
         assert e is not None
         # Ctrl+Backspace should be handled by QPlainTextEdit, not Krita.
         if e.type() == QEvent.Type.ShortcutOverride:
             assert isinstance(e, QKeyEvent)
-            if e.matches(QKeySequence.DeleteStartOfWord):
+            if e.matches(QKeySequence.StandardKey.DeleteStartOfWord):
                 e.accept()
         return super().event(e)
 
@@ -376,12 +397,69 @@ class MultiLineTextPromptWidget(QPlainTextEdit):
             e.ignore()
             return
 
-        handle_weight_adjustment(self, e)
+        self.handle_weight_adjustment(e)
 
         if e.key() == Qt.Key.Key_Return and e.modifiers() == Qt.KeyboardModifier.ShiftModifier:
             self.activated.emit()
         else:
             super().keyPressEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._resize_handle:
+            self._place_resize_handle()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        if scroll := self.verticalScrollBar():
+            scroll.triggerAction(QScrollBar.SliderAction.SliderToMinimum)
+
+    def focusNextPrevChild(self, next):
+        if self._completer.is_active:
+            return False
+        return super().focusNextPrevChild(next)
+
+    def notify_text_changed(self):
+        self._completer.check_completion()
+        self.text_changed.emit(self.text)
+
+    def notify_activated(self):
+        self.activated.emit()
+
+    @property
+    def text(self):
+        return self.toPlainText()
+
+    @text.setter
+    def text(self, value: str):
+        if value == self.text:
+            return
+        with SignalBlocker(self):  # avoid auto-completion on non-user input
+            self.setPlainText(value)
+
+    @property
+    def is_resizable(self):
+        return self._resize_handle is not None
+
+    @is_resizable.setter
+    def is_resizable(self, value: bool):
+        if value and self._resize_handle is None:
+            self._resize_handle = ResizeHandle(self)
+            self._resize_handle.handle_dragged.connect(self.handle_dragged)
+            self._place_resize_handle()
+            self._resize_handle.show()
+        if not value and self._resize_handle is not None:
+            self._resize_handle.handle_dragged.disconnect(self.handle_dragged)
+            self._resize_handle.deleteLater()
+            self._resize_handle = None
+
+    def _place_resize_handle(self):
+        if self._resize_handle:
+            rect = self.geometry()
+            self._resize_handle.move(
+                (rect.width() - self._resize_handle.width()) // 2,
+                rect.height() - self._resize_handle.height(),
+            )
 
     @property
     def line_count(self):
@@ -391,124 +469,7 @@ class MultiLineTextPromptWidget(QPlainTextEdit):
     def line_count(self, value: int):
         self._line_count = value
         fm = QFontMetrics(ensure(self.document()).defaultFont())
-        self.setFixedHeight(fm.lineSpacing() * value + 8)
-
-    def hasSelectedText(self) -> bool:
-        return self.textCursor().hasSelection()
-
-    def selectionStart(self) -> int:
-        return self.textCursor().selectionStart()
-
-    def selectionEnd(self) -> int:
-        return self.textCursor().selectionEnd()
-
-    def cursorPosition(self) -> int:
-        return self.textCursor().position()
-
-    def setCursorPosition(self, pos: int):
-        cursor = self.textCursor()
-        cursor.setPosition(pos)
-        self.setTextCursor(cursor)
-
-    def text(self) -> str:
-        return self.toPlainText()
-
-    def setText(self, text: str):
-        self.setPlainText(text)
-
-    def setSelection(self, start: int, end: int):
-        new_cursor = self.textCursor()
-        new_cursor.setPosition(min(end, len(self.text())))
-        new_cursor.setPosition(min(start, len(self.text())), QTextCursor.KeepAnchor)
-        self.setTextCursor(new_cursor)
-
-
-class SingleLineTextPromptWidget(QLineEdit):
-
-    _completer: PromptAutoComplete
-
-    def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self._completer = PromptAutoComplete(self)
-        self.textChanged.connect(self._completer.check_completion)
-        self.setFrame(False)
-        self.setStyleSheet(f"QLineEdit {{ background: transparent; }}")
-
-    def keyPressEvent(self, a0: QKeyEvent | None):
-        assert a0 is not None
-        handle_weight_adjustment(self, a0)
-        super().keyPressEvent(a0)
-
-
-class TextPromptWidget(QFrame):
-    """Wraps a single or multi-line text widget, with ability to switch between them.
-    Using QPlainTextEdit set to a single line doesn't work properly because it still
-    scrolls to the next line when eg. selecting and then looks like it's empty."""
-
-    activated = pyqtSignal()
-    text_changed = pyqtSignal(str)
-
-    _line_count = 2
-    _is_negative = False
-
-    def __init__(self, line_count=2, is_negative=False, parent=None):
-        super().__init__(parent)
-        self._line_count = line_count
-        self._is_negative = is_negative
-        self._layout = QVBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(self._layout)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        self._multi = MultiLineTextPromptWidget(self)
-        self._multi.line_count = self._line_count
-        self._multi.activated.connect(self.notify_activated)
-        self._multi.textChanged.connect(self.notify_text_changed)
-        self._multi.setVisible(self._line_count > 1)
-
-        self._single = SingleLineTextPromptWidget(self)
-        self._single.textChanged.connect(self.notify_text_changed)
-        self._single.returnPressed.connect(self.notify_activated)
-        self._single.setVisible(self._line_count == 1)
-
-        self._layout.addWidget(self._multi)
-        self._layout.addWidget(self._single)
-
-        palette: QPalette = self._multi.palette()
-        self._base_color = palette.color(QPalette.ColorRole.Base)
-        self.is_negative = self._is_negative
-
-    def notify_text_changed(self):
-        self.text_changed.emit(self.text)
-
-    def notify_activated(self):
-        self.activated.emit()
-
-    @property
-    def text(self):
-        return self._multi.text() if self._line_count > 1 else self._single.text()
-
-    @text.setter
-    def text(self, value: str):
-        if value == self.text:
-            return
-        widget = self._multi if self._line_count > 1 else self._single
-        with SignalBlocker(widget):  # avoid auto-completion on non-user input
-            widget.setText(value)
-
-    @property
-    def line_count(self):
-        return self._line_count
-
-    @line_count.setter
-    def line_count(self, value: int):
-        text = self.text
-        self._line_count = value
-        self.text = text
-        self._multi.setVisible(self._line_count > 1)
-        self._single.setVisible(self._line_count == 1)
-        if self._line_count > 1:
-            self._multi.line_count = self._line_count
+        self.setFixedHeight(fm.lineSpacing() * value + 10)
 
     @property
     def is_negative(self):
@@ -517,42 +478,54 @@ class TextPromptWidget(QFrame):
     @is_negative.setter
     def is_negative(self, value: bool):
         self._is_negative = value
-        for w in (self._multi, self._single):
-            if not value:
-                w.setPlaceholderText(_("Describe the content you want to see, or leave empty."))
-            else:
-                w.setPlaceholderText(_("Describe content you want to avoid."))
+        if not value:
+            self.setPlaceholderText(_("Describe the content you want to see, or leave empty."))
+        else:
+            self.setPlaceholderText(_("Describe content you want to avoid."))
 
         if value:
             self.setContentsMargins(0, 2, 0, 2)
             self.setFrameStyle(QFrame.Shape.StyledPanel)
-            self.setStyleSheet(f"QFrame {{ background: rgba(255, 0, 0, 15); }}")
+            self.setStyleSheet("QFrame { background: rgba(255, 0, 0, 15); }")
         else:
             self.setFrameStyle(QFrame.Shape.NoFrame)
 
     @property
     def has_focus(self):
-        return self._multi.hasFocus() or self._single.hasFocus()
+        return self.hasFocus()
 
     @has_focus.setter
     def has_focus(self, value: bool):
         if value:
-            if self._line_count > 1:
-                self._multi.setFocus()
-            else:
-                self._single.setFocus()
-
-    def install_event_filter(self, obj: QObject):
-        self._multi.installEventFilter(obj)
-        self._single.installEventFilter(obj)
+            self.setFocus()
 
     def move_cursor_to_end(self):
-        if self._line_count > 1:
-            cursor = self._multi.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self._multi.setTextCursor(cursor)
-        else:
-            self._single.setCursorPosition(len(self._single.text()))
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+    def handle_weight_adjustment(self, event: QKeyEvent):
+        """Handles Ctrl + (arrow key up / arrow key down) attention weight adjustment."""
+        if event.key() in [Qt.Key.Key_Up, Qt.Key.Key_Down] and (
+            event.modifiers() & Qt.Modifier.CTRL
+        ):
+            cursor = self.textCursor()
+            text = self.toPlainText()
+
+            if cursor.hasSelection():
+                start = cursor.selectionStart()
+                end = cursor.selectionEnd()
+            else:
+                start, end = select_on_cursor_pos(text, cursor.position())
+
+            target_text = text[start:end]
+            text_after_edit = edit_attention(target_text, event.key() == Qt.Key.Key_Up)
+            text = text[:start] + text_after_edit + text[end:]
+            self.setPlainText(text)
+            cursor = self.textCursor()
+            cursor.setPosition(min(start + len(text_after_edit), len(text)))
+            cursor.setPosition(min(start, len(text)), QTextCursor.KeepAnchor)
+            self.setTextCursor(cursor)
 
 
 class StrengthSnapping:
@@ -851,7 +824,7 @@ class ErrorBox(QFrame):
             self.setStyleSheet("QFrame#errorBox { border: 1px solid #a01020; }")
         else:
             self.setStyleSheet(None)
-        self.hide()
+        self.setVisible(False)
 
     @property
     def error(self):
@@ -881,7 +854,7 @@ class ErrorBox(QFrame):
         if text != self._original_error:
             self._label.setToolTip(self._original_error)
         self._copy_button.setVisible(True)
-        self.show()
+        self.setVisible(True)
 
     def _show_payment_error(self, data: dict[str, Any] | None):
         self.reset(theme.yellow)
@@ -894,7 +867,7 @@ class ErrorBox(QFrame):
             )
         self._label.setText(message)
         self._recharge_button.setVisible(True)
-        self.show()
+        self.setVisible(True)
 
     def _copy_error(self):
         if clipboard := QGuiApplication.clipboard():

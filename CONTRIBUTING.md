@@ -60,7 +60,12 @@ The easiest way to run a development version of the plugin is to use symlinks:
 
 ### Code formatting
 
-The codebase uses [black](https://github.com/psf/black) for formatting. You can check locally by running `black` in the repository root, or use an IDE integration.
+The codebase uses [ruff](https://docs.astral.sh/ruff/) for linting. You can
+use an IDE integration, or check locally by running in the repository root:
+```
+ruff format
+ruff check
+```
 
 ### Code style
 
@@ -74,16 +79,21 @@ The `Krita` module is special in that it is usually only available when running 
 
 You can run `pyright` from the repository root to perform type checks on the entire codebase. This is also done by the CI.
 
-Configuration for VSCode with Pylance (.vscode/settings.json):
-```
-{
-  "python.analysis.typeCheckingMode": "basic",
-  "python.analysis.exclude": [
-    "scripts/typeshed/**",
-    "ai_diffusion/websockets/**"
-  ]
-}
-```
+### Debug
+
+The project includes a `launch.json` for VSCode which is configured to attach to
+a running Krita process. This allows to use the visual debugger for exceptions,
+breakpoints, inspecting and stepping through the code. Start debugging via the
+"Run and Debug" tab (F5).
+
+The way it works is:
+1. `debugpy` is added to the `ai_diffusion` folder as a git submodule to make it
+   available inside Krita's embedded Python
+1. `extension.py` starts a debug server if the `debugpy` module is present
+   (skipped for release deployments)
+2. VSCode (or more generally any `debugpy` client) attaches to the server
+
+You can also add breakpoints inside the code with `import debugpy; debugpy.breakpoint()`.
 
 ### Tests
 

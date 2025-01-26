@@ -1,0 +1,119 @@
+/* Dark mode colors. */
+:root {
+	--sl-content-width: 800px;
+
+	--sl-color-accent-low: #371c00;
+	--sl-color-accent: rgb(234, 155, 66);
+	--sl-color-accent-high: rgb(245, 179, 88);
+	--sl-color-white: #ffffff;
+	--sl-color-gray-1: #efedec;
+	--sl-color-gray-2: #c3c1c0;
+	--sl-color-gray-3: #8e8b89;
+	--sl-color-gray-4: #5a5755;
+	--sl-color-gray-5: #3a3836;
+	--sl-color-gray-6: #292624;
+	--sl-color-black: #191817;
+
+	--sl-hue-purple: 18;
+	--sl-hue-blue: 190;
+
+	/* Overwrite default starlight handling of images for inline icons. */
+	[data-icon],
+	.inline-icon {
+		display: inline !important;
+		margin-bottom: 0 !important;
+		margin-top: 0 !important;
+		font-size: 1.0rem;
+		vertical-align: baseline;
+	}
+}
+
+/* Light mode colors. */
+:root[data-theme='light'] {
+	--sl-color-accent-low: rgb(240, 169, 142);
+	--sl-color-accent: rgb(141, 83, 68);
+	--sl-color-accent-high: #4b1500;
+	--sl-color-white: #191817;
+	--sl-color-gray-1: #292624;
+	--sl-color-gray-2: #3a3836;
+	--sl-color-gray-3: #5a5755;
+	--sl-color-gray-4: #8e8b89;
+	--sl-color-gray-5: #c3c1c0;
+	--sl-color-gray-6: #efedec;
+	--sl-color-gray-7: #eef1f1;
+	--sl-color-black: #f7f6f6;
+
+	.plugin-icon>svg {
+		filter: invert(1);
+	}
+}
+
+.front-cards {
+	gap: 1rem;
+}
+
+@media screen and (min-width: 800px) {
+	.front-cards {
+		display: flex;
+	}
+}
+
+.front-cards ul {
+	list-style: none;
+	padding-left: 0;
+}
+
+span.soft {
+	color: var(--sl-color-gray-3);
+}
+
+aside.hint {
+	background-color: var(--sl-color-gray-6);
+	border-left: 4px solid var(--sl-color-gray-4);
+	padding: 1em;
+	margin: 1em 0;
+}
+
+.model-table {
+	font-size: smaller;
+}
+
+.model-table table p {
+	margin: 0;
+}
+
+span.sep {
+	color: var(--sl-color-gray-3);
+	padding-left: 0.1em;
+	padding-right: 0.2em;
+}
+
+.model-table div.filters {
+	background-color: var(--sl-color-gray-6);
+	border: var(--sl-color-gray-5) 1px solid;
+	padding: 0 0.5em;
+	margin-top: 0rem !important;
+}
+
+.model-table .filters>div {
+	display: flex;
+	margin: 0.3rem 0;
+	border: none;
+	padding: 0;
+}
+
+.model-table .filters>div>div {
+	margin-top: 0;
+}
+
+.model-table ul {
+	display: flex;
+	flex-wrap: wrap;
+	padding: 0 !important;
+	margin-top: 0 !important;
+}
+
+.model-table ul li {
+	display: block;
+	margin: 0 0.5em;
+}

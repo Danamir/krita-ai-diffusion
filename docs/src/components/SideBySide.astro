@@ -1,0 +1,45 @@
+---
+import { Image } from "astro:assets";
+
+const { img1, img2 } = Astro.props;
+
+function findImage(img: string) {
+  const imageFiles = import.meta.glob<{ default: ImageMetadata }>(
+    "/src/assets/**/*",
+  );
+  const imgFile = `/src/assets/${img}.webp`;
+  if (!(imgFile in imageFiles)) {
+    throw new Error(`Missing image: ${imgFile}`);
+  }
+  return imageFiles[imgFile]();
+}
+---
+
+<div class="side-by-side">
+  <div>
+    <Image src={findImage(img1)} alt="Control Image" />
+    <p>Control Image</p>
+  </div>
+  <div>
+    <Image src={findImage(img2)} alt="Generated Result" />
+    <p>Generated Result</p>
+  </div>
+</div>
+
+<style>
+  .side-by-side {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .side-by-side > div {
+    margin-top: 0 !important;
+    font-size: smaller;
+    color: var(--sl-color-gray-4);
+  }
+  .side-by-side p {
+    margin-top: 0.3rem !important;
+    text-align: center;
+    font-style: italic;
+  }
+</style>

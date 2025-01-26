@@ -1,5 +1,6 @@
 from base64 import b64decode
 from PIL import Image
+from datetime import datetime
 import os
 import pytest
 
@@ -13,14 +14,16 @@ if (root_dir / "service" / "pod" / "lib").exists():
 
     dotenv.load_dotenv(root_dir / "service" / "web" / ".env.local")
     from service.pod.lib import image_transfer
+    from service.pod.lib import log
 
     max_b64_size_config = {
         "transfer": 100_000,  # use R2 for images > 100kb -> will use R2
         "b64": 5_000_000,  # use R2 for images > 5mb -> will use b64
     }
 
+    @pytest.mark.parametrize("format", ["webp", "png"])
     @pytest.mark.parametrize("mode", ["b64", "transfer"])
-    def test_send(qtapp, mode: str):
+    def test_send(qtapp, format: str, mode: str):
         images = [
             Image.open(test_dir / "images" / f).convert("RGBA")
             for f in ("cat.webp", "pegonia.webp")
@@ -28,7 +31,10 @@ if (root_dir / "service" / "pod" / "lib").exists():
         max_b64_size = max_b64_size_config[mode]
 
         async def main():
-            transfer = await image_transfer.send_images(images, max_inline_size=max_b64_size)
+            metrics = log.Metrics("test", datetime.now())
+            transfer = await image_transfer.send_images(
+                images, metrics, max_inline_size=max_b64_size, format=format
+            )
             assert len(transfer["offsets"]) == 2
 
             if mode == "transfer":

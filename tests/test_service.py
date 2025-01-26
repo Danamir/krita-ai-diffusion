@@ -4,6 +4,7 @@ import subprocess
 import os
 import sys
 import asyncio
+import dotenv
 
 from ai_diffusion.api import WorkflowInput, WorkflowKind, ControlInput, ImageInput, CheckpointInput
 from ai_diffusion.api import SamplingInput, ConditioningInput, ExtentInput, RegionInput
@@ -79,6 +80,7 @@ def cloud_client(pytestconfig, qtapp, pod_server):
         pytest.skip("Diffusion is disabled on CI")
     if not has_local_cloud:
         pytest.skip("Local cloud service not found")
+    dotenv.load_dotenv(root_dir / "service" / "web" / ".env.local")
     url = os.environ["TEST_SERVICE_URL"]
     token = os.environ["TEST_SERVICE_TOKEN"]
     return qtapp.run(CloudClient.connect(url, token))
@@ -160,6 +162,8 @@ cost_params = {
     "upscale-tiled": (Arch.sd15, 1, 512, 512, 10),
     "upscale-tiled-2": (Arch.sd15, 1, 320, 640, 10),
     "upscaled-invalid": (Arch.sd15, 1, 512, 512, 10),
+    "illustrious": (Arch.illu, 2, 1024, 1024, 20),
+    "illustrious-v": (Arch.illu_v, 2, 1024, 1024, 20),
 }
 
 
