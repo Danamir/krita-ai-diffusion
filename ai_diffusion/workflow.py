@@ -258,14 +258,14 @@ class TextPrompt:
         self.text = text
         self.language = language
 
-    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None, split_conditioning=False):
+    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None):
         text = self.text
         if text != "" and style_prompt:
             text = merge_prompt(text, style_prompt, self.language)
         if self._output is None or self._clip != clip:
             if text and self.language:
                 text = w.translate(text)
-            self._output = w.clip_text_encode(clip, text, models, split_conditioning)
+            self._output = w.clip_text_encode(clip, text, models, settings.split_conditioning_sdxl)
             self._clip = clip
         return self._output
 
@@ -301,8 +301,8 @@ class Region:
                 self.clip = w.set_clip_hooks(clip, hooks)
         return self.clip
 
-    def encode_prompt(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None):
-        return self.positive.encode(w, self.patch_clip(w, clip), style_prompt)
+    def encode_prompt(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None):
+        return self.positive.encode(w, self.patch_clip(w, clip), style_prompt, models)
 
     def copy(self):
         control = [copy(c) for c in self.control]
@@ -381,8 +381,8 @@ def encode_text_prompt(
     models: ModelDict,
 ):
     if len(cond.regions) <= 1 or all(len(r.loras) == 0 for r in cond.regions):
-        positive = cond.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
-        negative = cond.negative.encode(w, clip, None, models, split_conditioning=settings.split_conditioning_sdxl)
+        positive = cond.positive.encode(w, clip, cond.style_prompt, models)
+        negative = cond.negative.encode(w, clip, None, models)
         return positive, negative
 
     assert regions is not None
@@ -391,8 +391,8 @@ def encode_text_prompt(
     region_masks = w.list_region_masks(regions)
 
     for i, region in enumerate(cond.regions):
-        region_positive = region.encode_prompt(w, clip, cond.style_prompt)
-        region_negative = cond.negative.encode(w, region.patch_clip(w, clip))
+        region_positive = region.encode_prompt(w, clip, cond.style_prompt, models)
+        region_negative = cond.negative.encode(w, region.patch_clip(w, clip), None, models)
         mask = w.mask_batch_element(region_masks, i)
         positive, negative = w.combine_masked_conditioning(
             region_positive, region_negative, positive, negative, mask
@@ -421,15 +421,15 @@ def apply_attention_mask(
 
     bottom_region = cond.regions[0]
     if bottom_region.is_background:
-        regions = w.background_region(bottom_region.encode_prompt(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl))
+        regions = w.background_region(bottom_region.encode_prompt(w, clip, cond.style_prompt, models))
         remaining = cond.regions[1:]
     else:
-        regions = w.background_region(cond.positive.encode(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl))
+        regions = w.background_region(cond.positive.encode(w, clip, cond.style_prompt, models))
         remaining = cond.regions
 
     for region in remaining:
         mask = region.mask.load(w, shape)
-        prompt = region.encode_prompt(w, clip, cond.style_prompt, models, split_conditioning=settings.split_conditioning_sdxl)
+        prompt = region.encode_prompt(w, clip, cond.style_prompt, models)
         regions = w.define_region(regions, mask, prompt)
 
     model = w.attention_mask(model, regions)
@@ -666,7 +666,7 @@ def scale_refine_and_decode(
     latent = w.vae_encode(vae, upscale)
     params = _sampler_params(sampling, strength=0.4)
 
-    positive, negative = encode_text_prompt(w, cond, clip, regions)
+    positive, negative = encode_text_prompt(w, cond, clip, regions, models)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
