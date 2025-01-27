@@ -258,7 +258,7 @@ class TextPrompt:
         self.text = text
         self.language = language
 
-    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None):
+    def encode(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict | None = None):
         text = self.text
         if text != "" and style_prompt:
             text = merge_prompt(text, style_prompt, self.language)
@@ -301,7 +301,7 @@ class Region:
                 self.clip = w.set_clip_hooks(clip, hooks)
         return self.clip
 
-    def encode_prompt(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict = None):
+    def encode_prompt(self, w: ComfyWorkflow, clip: Output, style_prompt: str | None = None, models: ModelDict | None = None):
         return self.positive.encode(w, self.patch_clip(w, clip), style_prompt, models)
 
     def copy(self):
@@ -378,7 +378,7 @@ def encode_text_prompt(
     cond: Conditioning,
     clip: Output,
     regions: Output | None,
-    models: ModelDict,
+    models: ModelDict | None,
 ):
     if len(cond.regions) <= 1 or all(len(r.loras) == 0 for r in cond.regions):
         positive = cond.positive.encode(w, clip, cond.style_prompt, models)
@@ -408,7 +408,7 @@ def apply_attention_mask(
     cond: Conditioning,
     clip: Output,
     shape: Extent | ImageReshape = no_reshape,
-    models: ModelDict = None,
+    models: ModelDict | None = None,
 ):
     if len(cond.regions) == 0:
         return model, None
@@ -1177,7 +1177,7 @@ def upscale_tiled(
         tile_cond = cond.copy()
         regions = [tiled_region(r, i, bounds) for r in tile_cond.regions]
         tile_cond.regions = [r for r in regions if r is not None]
-        tile_model, regions = apply_attention_mask(w, model, tile_cond, clip, models)
+        tile_model, regions = apply_attention_mask(w, model, tile_cond, clip, no_reshape, models)
         tile_model = apply_regional_ip_adapter(w, tile_model, tile_cond.regions, no_reshape, models)
         positive, negative = encode_text_prompt(w, tile_cond, clip, regions, models)
 

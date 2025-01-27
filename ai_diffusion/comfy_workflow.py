@@ -628,7 +628,7 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict = None, split_conditioning=False):
+    def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict | None = None, split_conditioning=False):
         if models and models.arch in (Arch.sdxl, Arch.illu, Arch.illu_v, Arch.flux):
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
