@@ -62,6 +62,7 @@ class CheckpointInput:
     v_prediction_zsnr: bool = False
     rescale_cfg: float = 0.7
     self_attention_guidance: bool = False
+    dynamic_caching: bool = False
 
 
 @dataclass
@@ -147,6 +148,12 @@ class InpaintParams:
 
 
 @dataclass
+class UpscaleInput:
+    model: str = ""  # if empty do tiled refine without upscale model
+    tile_overlap: int = -1
+
+
+@dataclass
 class CustomWorkflowInput:
     workflow: dict
     params: dict[str, Any]
@@ -161,7 +168,7 @@ class WorkflowInput:
     conditioning: ConditioningInput | None = None
     inpaint: InpaintParams | None = None
     crop_upscale_extent: Extent | None = None
-    upscale_model: str = ""
+    upscale: UpscaleInput | None = None
     control_mode: ControlMode = ControlMode.reference
     batch_count: int = 1
     nsfw_filter: float = 0.0

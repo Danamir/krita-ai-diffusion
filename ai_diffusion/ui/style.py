@@ -35,6 +35,7 @@ from .settings_widgets import ComboBoxSetting, TextSetting, LineEditSetting, Set
 from .settings_widgets import SettingsTab, WarningIcon
 from .widget import create_framed_label
 from .theme import SignalBlocker, add_header, icon
+from .switch import SwitchWidget
 from . import theme
 
 
@@ -80,6 +81,10 @@ class LoraItem(QWidget):
 
         self._warning_icon = WarningIcon(self)
 
+        self._enabled = SwitchWidget(self)
+        self._enabled.setChecked(True)
+        self._enabled.toggled.connect(self._notify_changed)
+
         self._strength = QSpinBox(self)
         self._strength.setMinimum(-400)
         self._strength.setMaximum(400)
@@ -96,6 +101,7 @@ class LoraItem(QWidget):
         item_layout = QHBoxLayout()
         item_layout.setContentsMargins(0, 0, 0, 0)
         item_layout.addLayout(expander_layout, 3)
+        item_layout.addWidget(self._enabled)
         item_layout.addWidget(self._strength, 1)
         item_layout.addWidget(self._warning_icon)
         item_layout.addWidget(self._remove)
@@ -236,8 +242,10 @@ class LoraItem(QWidget):
     @property
     def value(self):
         if self._current is None:
-            return dict(name="", strength=1.0)
-        return dict(name=self._current.id, strength=self.strength)
+            return dict(name="", strength=1.0, enabled=True)
+        return dict(
+            name=self._current.id, strength=self.strength, enabled=self._enabled.isChecked()
+        )
 
     @value.setter
     def value(self, v: dict):
@@ -250,6 +258,7 @@ class LoraItem(QWidget):
             else:
                 self._select.setEditText(self._current.name)
         self.strength = v["strength"]
+        self._enabled.setChecked(v.get("enabled", True))
         self._update()
 
     def apply_filter(self, name_filter: str):
@@ -628,15 +637,14 @@ class StylePresets(SettingsTab):
         checkpoint_advanced.toggled.connect(self._toggle_checkpoint_advanced)
         self._layout.addWidget(checkpoint_advanced)
 
-        self._checkpoint_advanced_widgets = [
-            add("architecture", ComboBoxSetting(StyleSettings.architecture, parent=self)),
-            add("vae", ComboBoxSetting(StyleSettings.vae, parent=self)),
-        ]
+        self._arch_select: ComboBoxSetting = add(
+            "architecture", ComboBoxSetting(StyleSettings.architecture, parent=self)
+        )
+        self._vae = add("vae", ComboBoxSetting(StyleSettings.vae, parent=self))
 
         self._clip_skip = add("clip_skip", SpinBoxSetting(StyleSettings.clip_skip, self, 0, 12))
         self._clip_skip_check = self._clip_skip.add_checkbox(_("Override"))
         self._clip_skip_check.toggled.connect(self._toggle_clip_skip)
-        self._checkpoint_advanced_widgets.append(self._clip_skip)
 
         self._resolution_spin = add(
             "preferred_resolution",
@@ -644,19 +652,24 @@ class StylePresets(SettingsTab):
         )
         resolution_check = self._resolution_spin.add_checkbox(_("Override"))
         resolution_check.toggled.connect(self._toggle_preferred_resolution)
-        self._checkpoint_advanced_widgets.append(self._resolution_spin)
 
         self._zsnr = add(
             "v_prediction_zsnr", SwitchSetting(StyleSettings.v_prediction_zsnr, parent=self)
         )
-        self._checkpoint_advanced_widgets.append(self._zsnr)
 
         self._sag = add(
             "self_attention_guidance",
             SwitchSetting(StyleSettings.self_attention_guidance, parent=self),
         )
-        self._checkpoint_advanced_widgets.append(self._sag)
 
+        self._checkpoint_advanced_widgets = [
+            self._arch_select,
+            self._vae,
+            self._clip_skip,
+            self._resolution_spin,
+            self._zsnr,
+            self._sag,
+        ]
         for widget in self._checkpoint_advanced_widgets:
             widget.indent = 1
         self._toggle_checkpoint_advanced(False)
@@ -842,6 +855,14 @@ class StylePresets(SettingsTab):
 
     def _enable_checkpoint_advanced(self):
         arch = resolve_arch(self.current_style, root.connection.client_if_connected)
+        if arch.is_sdxl_like:
+            valid_archs = (Arch.auto, Arch.sdxl, Arch.illu, Arch.illu_v)
+        else:
+            valid_archs = (Arch.auto, arch)
+        with SignalBlocker(self._arch_select):
+            self._arch_select.set_items([(e.value, e.name) for e in valid_archs])
+            if self.current_style.architecture in valid_archs:
+                self._arch_select.value = self.current_style.architecture
         self._clip_skip_check.setEnabled(arch.supports_clip_skip)
         self._clip_skip.enabled = arch.supports_clip_skip and self.current_style.clip_skip > 0
         self._zsnr.enabled = arch.supports_attention_guidance

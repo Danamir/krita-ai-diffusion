@@ -7,7 +7,7 @@ from uuid import uuid4
 import json
 
 from .client import ModelDict
-from .image import Bounds, Extent, Image
+from .image import Bounds, Extent, Image, ImageCollection
 from .resources import Arch, ControlMode
 from .util import base_type_match, client_logger as log
 
@@ -54,7 +54,7 @@ class ComfyWorkflow:
 
     def __init__(self, node_inputs: dict | None = None, run_mode=ComfyRunMode.server):
         self.root: dict[str, dict] = {}
-        self.images: dict[str, Image] = {}
+        self.images: dict[str, Image | ImageCollection] = {}
         self.node_count = 0
         self.sample_count = 0
         self._cache: dict[str, Output | Output2 | Output3 | Output4] = {}
@@ -200,7 +200,7 @@ class ComfyWorkflow:
     def __contains__(self, node: ComfyNode):
         return any(n == node for n in self)
 
-    def _add_image(self, image: Image):
+    def _add_image(self, image: Image | ImageCollection):
         id = str(uuid4())
         self.images[id] = image
         return id
@@ -1025,6 +1025,11 @@ class ComfyWorkflow:
     def mask_to_image(self, mask: Output):
         return self.add("MaskToImage", 1, mask=mask)
 
+    def batch_mask(self, batch: Output, mask: Output):
+        image_batch = self.mask_to_image(batch)
+        image = self.mask_to_image(mask)
+        return self.image_to_mask(self.batch_image(image_batch, image))
+
     def mask_batch_element(self, mask_batch: Output, index: int):
         image_batch = self.mask_to_image(mask_batch)
         image = self.image_batch_element(image_batch, index)
@@ -1058,15 +1063,39 @@ class ComfyWorkflow:
             return self.add("ETN_NSFWFilter", 1, image=image, sensitivity=sensitivity)
         return image
 
-    def load_image(self, image: Image):
+    def load_image(self, image: Image | ImageCollection):
         if self._run_mode is ComfyRunMode.runtime:
-            return self.add("ETN_InjectImage", 1, id=self._add_image(image))
+            return self._load_image_batch(image, self._load_image_runtime, self.batch_image)
+        else:
+            return self._load_image_batch(image, self._load_image_base64, self.batch_image)
+
+    def load_mask(self, mask: Image | ImageCollection):
+        if self._run_mode is ComfyRunMode.runtime:
+            return self._load_image_batch(mask, self._load_mask_runtime, self.batch_mask)
+        else:
+            return self._load_image_batch(mask, self._load_mask_base64, self.batch_mask)
+
+    def _load_image_runtime(self, image: Image):
+        return self.add("ETN_InjectImage", 1, id=self._add_image(image))
+
+    def _load_image_base64(self, image: Image):
         return self.add("ETN_LoadImageBase64", 1, image=image.to_base64())
 
-    def load_mask(self, mask: Image):
-        if self._run_mode is ComfyRunMode.runtime:
-            return self.add("ETN_InjectMask", 1, id=self._add_image(mask))
+    def _load_mask_runtime(self, mask: Image):
+        return self.add("ETN_InjectMask", 1, id=self._add_image(mask))
+
+    def _load_mask_base64(self, mask: Image):
         return self.add("ETN_LoadMaskBase64", 1, mask=mask.to_base64())
+
+    def _load_image_batch(self, images: Image | ImageCollection, loader, batcher) -> Output:
+        if isinstance(images, Image):
+            return loader(images)
+        result = None
+        for image in images:
+            img = loader(image)
+            result = img if result is None else batcher(result, img)
+        assert result is not None
+        return result
 
     def send_image(self, image: Output):
         if self._run_mode is ComfyRunMode.runtime:
@@ -1130,6 +1159,18 @@ class ComfyWorkflow:
             # use smaller model, but it requires onnxruntime, see #630
             mdls["bbox_detector"] = "yolo_nas_l_fp16.onnx"
         return self.add("DWPreprocessor", 1, image=image, resolution=resolution, **feat, **mdls)
+
+    def apply_first_block_cache(self, model: Output, arch: Arch):
+        return self.add(
+            "ApplyFBCacheOnModel",
+            1,
+            model=model,
+            object_to_patch="diffusion_model",
+            residual_diff_threshold=0.2 if arch.is_sdxl_like else 0.12,
+            start=0.0,
+            end=1.0,
+            max_consecutive_cache_hits=-1,
+        )
 
     def create_hook_lora(self, loras: list[tuple[str, float]]):
         key = "CreateHookLora" + str(loras)

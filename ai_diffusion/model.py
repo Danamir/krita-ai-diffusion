@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from enum import Enum
+from tempfile import TemporaryDirectory
 import time
 from typing import Any, NamedTuple
 from PyQt5.QtCore import QObject, QUuid, pyqtSignal, Qt
@@ -13,13 +14,13 @@ import uuid
 
 from . import eventloop, workflow, util
 from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput, SamplingInput
-from .api import InpaintMode, InpaintParams, FillMode, ImageInput, CustomWorkflowInput
+from .api import InpaintMode, InpaintParams, FillMode, ImageInput, CustomWorkflowInput, UpscaleInput
 from .localization import translate as _
 from .util import clamp, ensure, trim_text, client_logger as log
 from .settings import ApplyBehavior, settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds, DummyImage
-from .client import ClientMessage, ClientEvent, ClientOutput
+from .client import Client, ClientMessage, ClientEvent, ClientOutput
 from .client import filter_supported_styles, resolve_arch
 from .custom_workflow import CustomWorkspace, WorkflowCollection, CustomGenerationMode
 from .document import Document, KritaDocument
@@ -82,6 +83,7 @@ class Model(QObject, ObservableProperties):
     batch_count = Property(1, persist=True)
     seed = Property(0, persist=True)
     fixed_seed = Property(False, persist=True)
+    resolution_multiplier = Property(1.0, persist=True)
     queue_front = Property(False, persist=True)
     translation_enabled = Property(True, persist=True)
     progress_kind = Property(ProgressKind.generation)
@@ -95,6 +97,7 @@ class Model(QObject, ObservableProperties):
     batch_count_changed = pyqtSignal(int)
     seed_changed = pyqtSignal(int)
     fixed_seed_changed = pyqtSignal(bool)
+    resolution_multiplier_changed = pyqtSignal(float)
     queue_front_changed = pyqtSignal(bool)
     translation_enabled_changed = pyqtSignal(bool)
     progress_kind_changed = pyqtSignal(ProgressKind)
@@ -209,7 +212,7 @@ class Model(QObject, ObservableProperties):
             self.seed if self.fixed_seed else workflow.generate_seed(),
             client.models,
             FileLibrary.instance(),
-            client.performance_settings,
+            self._performance_settings(client),
             mask=mask,
             strength=self.strength,
             inpaint=inpaint,
@@ -243,12 +246,12 @@ class Model(QObject, ObservableProperties):
         job.id = await client.enqueue(input, self.queue_front)
 
     def _prepare_upscale_image(self, dryrun=False):
+        client = self._connection.client
         extent = self._doc.extent
         image = self._doc.get_image(Bounds(0, 0, *extent)) if not dryrun else DummyImage(extent)
         params = self.upscale.params
+        params.upscale.model = params.upscale.model or client.models.default_upscaler
         bounds = Bounds(0, 0, *self._doc.extent)
-        client = self._connection.client
-        upscaler = params.upscaler or client.models.default_upscaler
         if params.use_prompt and not dryrun:
             conditioning, job_regions = process_regions(self.regions, bounds, min_coverage=0)
             conditioning.language = self.prompt_translation_language
@@ -271,13 +274,13 @@ class Model(QObject, ObservableProperties):
                 params.seed,
                 client.models,
                 FileLibrary.instance(),
-                client.performance_settings,
+                self._performance_settings(client),
                 strength=params.strength,
                 upscale_factor=params.factor,
-                upscale_model=upscaler,
+                upscale=params.upscale,
             )
         else:
-            input = workflow.prepare_upscale_simple(image, upscaler, params.factor)
+            input = workflow.prepare_upscale_simple(image, params.upscale.model, params.factor)
 
         target_bounds = Bounds(0, 0, *params.target_extent)
         name = f"{target_bounds.width}x{target_bounds.height}"
@@ -358,7 +361,7 @@ class Model(QObject, ObservableProperties):
             self.seed,
             client.models,
             FileLibrary.instance(),
-            client.performance_settings,
+            self._performance_settings(client),
             mask=mask,
             strength=self.live.strength,
             inpaint=inpaint if mask else None,
@@ -381,6 +384,7 @@ class Model(QObject, ObservableProperties):
             img_input = ImageInput.from_extent(bounds.extent)
             img_input.initial_image = self._get_current_image(bounds)
             is_live = self.custom.mode is CustomGenerationMode.live
+            is_anim = self.custom.mode is CustomGenerationMode.animation
             seed = self.seed if is_live or self.fixed_seed else workflow.generate_seed()
 
             if next(wf.find(type="ETN_KritaSelection"), None):
@@ -390,7 +394,7 @@ class Model(QObject, ObservableProperties):
                 else:
                     img_input.hires_mask = Mask.transparent(bounds).to_image()
 
-            params = self.custom.collect_parameters(self.layers, bounds)
+            params = self.custom.collect_parameters(self.layers, bounds, is_anim)
             input = WorkflowInput(
                 WorkflowKind.custom,
                 img_input,
@@ -398,7 +402,11 @@ class Model(QObject, ObservableProperties):
                 custom_workflow=CustomWorkflowInput(wf.root, params),
             )
             job_params = JobParams(bounds, self.custom.job_name, metadata=self.custom.params)
-            job_kind = JobKind.live_preview if is_live else JobKind.diffusion
+            job_kind = {
+                CustomGenerationMode.regular: JobKind.diffusion,
+                CustomGenerationMode.live: JobKind.live_preview,
+                CustomGenerationMode.animation: JobKind.animation,
+            }[self.custom.mode]
 
             if input == previous_input:
                 return None
@@ -431,7 +439,7 @@ class Model(QObject, ObservableProperties):
             image = self._doc.get_image(Bounds(0, 0, *self._doc.extent))
             mask, _ = self.document.create_mask_from_selection(padding=0.25, multiple=64)
             bounds = mask.bounds if mask else None
-            perf = self._connection.client.performance_settings
+            perf = self._performance_settings(self._connection.client)
             input = workflow.prepare_create_control_image(image, control.mode, perf, bounds)
             job = self.jobs.add_control(control, Bounds(0, 0, *image.extent))
         except Exception as e:
@@ -493,7 +501,7 @@ class Model(QObject, ObservableProperties):
                 self.add_upscale_layer(job)
             self._finish_job(job, message.event)
             show_preview = settings.auto_preview and self._layer is None
-            if job.id and job.kind is JobKind.diffusion and show_preview:
+            if job.id and job.kind in [JobKind.diffusion, JobKind.animation] and show_preview:
                 self.jobs.select(job.id, 0)
         elif message.event is ClientEvent.interrupted:
             self._finish_job(job, message.event)
@@ -525,6 +533,9 @@ class Model(QObject, ObservableProperties):
     def show_preview(self, job_id: str, index: int, name_prefix="Preview"):
         job = self.jobs.find(job_id)
         assert job is not None, "Cannot show preview, invalid job id"
+        if job.kind is JobKind.animation:
+            return  # don't show animation preview on canvas (it's slow and clumsy)
+
         name = f"[{name_prefix}] {trim_text(job.params.name, 77)}"
         image = job.results[index]
         bounds = job.params.bounds
@@ -630,13 +641,33 @@ class Model(QObject, ObservableProperties):
         job = self.jobs.find(job_id)
         assert job is not None, "Cannot apply result, invalid job id"
 
-        self.apply_result(job.results[index], job.params, settings.apply_behavior, "[Generated] ")
+        if job.kind is JobKind.animation and len(job.results) > 1:
+            self.apply_animation(job)
+        else:
+            self.apply_result(
+                job.results[index], job.params, settings.apply_behavior, "[Generated] "
+            )
 
         if self._layer:
             self._layer.remove()
             self._layer = None
         self.jobs.selection = None
         self.jobs.notify_used(job_id, index)
+
+    def apply_animation(self, job: Job):
+        assert job.kind is JobKind.animation
+        with TemporaryDirectory(prefix="animation") as temp_dir:
+            frames = []
+            for i, image in enumerate(job.results):
+                filename = Path(temp_dir) / f"{i:03}.png"
+                image.save(filename)
+                frames.append(filename)
+            self.document.import_animation(frames, self.document.playback_time_range[0])
+
+        async def _set_layer_name():
+            self.layers.active.name = f"[Animation] {trim_text(job.params.name, 200)}"
+
+        eventloop.run(_set_layer_name())
 
     def add_control_layer(self, job: Job, result: ClientOutput | None):
         assert job.kind is JobKind.control_layer and job.control
@@ -685,6 +716,12 @@ class Model(QObject, ObservableProperties):
                 return workflow.detect_inpaint_mode(self.document.extent, bounds)
             return InpaintMode.fill
         return self.inpaint.mode
+
+    def _performance_settings(self, client: Client):
+        result = client.performance_settings
+        if self.resolution_multiplier != 1.0:
+            result.resolution_multiplier = self.resolution_multiplier
+        return result
 
     @property
     def prompt_translation_language(self):
@@ -766,7 +803,7 @@ class CustomInpaint(QObject, ObservableProperties):
 
 
 class UpscaleParams(NamedTuple):
-    upscaler: str
+    upscale: UpscaleInput
     factor: float
     use_diffusion: bool
     unblur_strength: float
@@ -776,12 +813,19 @@ class UpscaleParams(NamedTuple):
     seed: int
 
 
+class TileOverlapMode(Enum):
+    auto = 0
+    custom = 1
+
+
 class UpscaleWorkspace(QObject, ObservableProperties):
     upscaler = Property("", persist=True)
     factor = Property(2.0, persist=True, setter="_set_factor")
     use_diffusion = Property(True, persist=True)
     strength = Property(0.3, persist=True)
-    unblur_strength = Property(1, persist=True)
+    unblur_strength = Property(0.5, persist=True)
+    tile_overlap_mode = Property(TileOverlapMode.auto, persist=True)
+    tile_overlap = Property(48, persist=True)
     use_prompt = Property(False, persist=True)
     can_generate = Property(True)
 
@@ -789,7 +833,9 @@ class UpscaleWorkspace(QObject, ObservableProperties):
     factor_changed = pyqtSignal(float)
     use_diffusion_changed = pyqtSignal(bool)
     strength_changed = pyqtSignal(float)
-    unblur_strength_changed = pyqtSignal(int)
+    unblur_strength_changed = pyqtSignal(float)
+    tile_overlap_mode_changed = pyqtSignal(TileOverlapMode)
+    tile_overlap_changed = pyqtSignal(int)
     use_prompt_changed = pyqtSignal(bool)
     target_extent_changed = pyqtSignal(Extent)
     can_generate_changed = pyqtSignal(bool)
@@ -828,18 +874,17 @@ class UpscaleWorkspace(QObject, ObservableProperties):
 
     @property
     def params(self):
+        overlap = self.tile_overlap if self.tile_overlap_mode is TileOverlapMode.custom else -1
         return UpscaleParams(
-            upscaler=self.upscaler,
+            upscale=UpscaleInput(self.upscaler, overlap),
             factor=self.factor,
             use_diffusion=self.use_diffusion,
-            unblur_strength=self._unblur_strength_map[self.unblur_strength],
+            unblur_strength=self.unblur_strength,
             use_prompt=self.use_prompt,
             strength=self.strength,
             target_extent=self.target_extent,
             seed=self._model.seed if self._model.fixed_seed else workflow.generate_seed(),
         )
-
-    _unblur_strength_map = {0: 0.0, 1: 0.5, 2: 1.0}
 
 
 class LiveScheduler:
@@ -1081,7 +1126,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
             conditioning,
             style=m.style,
             seed=seed,
-            perf=m._connection.client.performance_settings,
+            perf=m._performance_settings(m._connection.client),
             models=m._connection.client.models,
             files=FileLibrary.instance(),
             strength=m.strength,

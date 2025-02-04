@@ -31,7 +31,6 @@ from PyQt5.QtGui import (
     QPalette,
     QTextCursor,
     QPainter,
-    QIcon,
     QPaintEvent,
     QKeySequence,
 )
@@ -48,7 +47,7 @@ from ..text import edit_attention, select_on_cursor_pos
 from ..localization import translate as _
 from ..util import ensure
 from ..workflow import apply_strength, snap_to_percent
-from ..settings import settings
+from ..settings import Settings, settings
 from .autocomplete import PromptAutoComplete
 from .theme import SignalBlocker
 from . import actions, theme
@@ -113,15 +112,32 @@ class QueuePopup(QMenu):
         seed_layout.addWidget(self._randomize_seed)
         self._layout.addLayout(seed_layout, 1, 1)
 
+        resolution_multiplier_label = QLabel(_("Resolution"), self)
+        self._resolution_multiplier_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._resolution_multiplier_slider.setRange(3, 15)
+        self._resolution_multiplier_slider.setValue(10)
+        self._resolution_multiplier_slider.setSingleStep(1)
+        self._resolution_multiplier_slider.setPageStep(1)
+        self._resolution_multiplier_slider.setToolTip(Settings._resolution_multiplier.desc)
+        self._resolution_multiplier_slider.valueChanged.connect(self._set_resolution_multiplier)
+        self._resolution_multiplier_display = QLabel("1.0 x", self)
+        self._resolution_multiplier_display.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._resolution_multiplier_display.setMinimumWidth(20)
+        resolution_multiplier_layout = QHBoxLayout()
+        resolution_multiplier_layout.addWidget(self._resolution_multiplier_slider)
+        resolution_multiplier_layout.addWidget(self._resolution_multiplier_display)
+        self._layout.addWidget(resolution_multiplier_label, 2, 0)
+        self._layout.addLayout(resolution_multiplier_layout, 2, 1)
+
         enqueue_label = QLabel(_("Enqueue"), self)
         self._queue_front_combo = QComboBox(self)
         self._queue_front_combo.addItem(_("in Front (new jobs first)"), True)
         self._queue_front_combo.addItem(_("at the Back"), False)
-        self._layout.addWidget(enqueue_label, 2, 0)
-        self._layout.addWidget(self._queue_front_combo, 2, 1)
+        self._layout.addWidget(enqueue_label, 3, 0)
+        self._layout.addWidget(self._queue_front_combo, 3, 1)
 
         cancel_label = QLabel(_("Cancel"), self)
-        self._layout.addWidget(cancel_label, 3, 0)
+        self._layout.addWidget(cancel_label, 4, 0)
         self._cancel_active = self._create_cancel_button(_("Active"), actions.cancel_active)
         self._cancel_queued = self._create_cancel_button(_("Queued"), actions.cancel_queued)
         self._cancel_all = self._create_cancel_button(_("All"), actions.cancel_all)
@@ -129,7 +145,7 @@ class QueuePopup(QMenu):
         cancel_layout.addWidget(self._cancel_active)
         cancel_layout.addWidget(self._cancel_queued)
         cancel_layout.addWidget(self._cancel_all)
-        self._layout.addLayout(cancel_layout, 3, 1)
+        self._layout.addLayout(cancel_layout, 4, 1)
 
         self._model = root.active_model
 
@@ -153,6 +169,7 @@ class QueuePopup(QMenu):
             self._model.fixed_seed_changed.connect(self._seed_input.setEnabled),
             self._model.fixed_seed_changed.connect(self._randomize_seed.setEnabled),
             self._randomize_seed.clicked.connect(self._model.generate_seed),
+            model.resolution_multiplier_changed.connect(self._update_resolution_multiplier),
             bind_combo(self._model, "queue_front", self._queue_front_combo),
             model.jobs.count_changed.connect(self._update_cancel_buttons),
         ]
@@ -172,6 +189,15 @@ class QueuePopup(QMenu):
         self._cancel_active.setEnabled(has_active)
         self._cancel_queued.setEnabled(has_queued)
         self._cancel_all.setEnabled(has_active or has_queued)
+
+    def _update_resolution_multiplier(self):
+        slider_value = round(self.model.resolution_multiplier * 10)
+        if self._resolution_multiplier_slider.value() != slider_value:
+            self._resolution_multiplier_slider.setValue(slider_value)
+
+    def _set_resolution_multiplier(self, value: int):
+        self.model.resolution_multiplier = value / 10
+        self._resolution_multiplier_display.setText(f"{(value / 10):.1f} x")
 
     def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
         if parent := cast(QWidget, self.parent()):
@@ -373,7 +399,6 @@ class TextPromptWidget(QPlainTextEdit):
 
         self._completer = PromptAutoComplete(self)
         self.textChanged.connect(self.notify_text_changed)
-        self.activated.connect(self.notify_activated)
 
         self._resize_handle: ResizeHandle | None = None
 
@@ -422,9 +447,6 @@ class TextPromptWidget(QPlainTextEdit):
     def notify_text_changed(self):
         self._completer.check_completion()
         self.text_changed.emit(self.text)
-
-    def notify_activated(self):
-        self.activated.emit()
 
     @property
     def text(self):
@@ -584,7 +606,7 @@ class StrengthWidget(QWidget):
 
     value_changed = pyqtSignal(float)
 
-    def __init__(self, slider_range: tuple[int, int] = (1, 100), parent=None):
+    def __init__(self, slider_range: tuple[int, int] = (1, 100), prefix=True, parent=None):
         super().__init__(parent)
         self._layout = QHBoxLayout()
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -599,8 +621,10 @@ class StrengthWidget(QWidget):
 
         self._input = StrengthSpinBox(self)
         self._input.setValue(self._value)
-        self._input.setPrefix(_("Strength") + ": ")
+        if prefix:
+            self._input.setPrefix(_("Strength") + ": ")
         self._input.setSuffix("%")
+        self._input.setSpecialValueText(_("Off"))
         self._input.valueChanged.connect(self.notify_changed)
 
         settings.changed.connect(self.update_suffix)
@@ -712,18 +736,15 @@ class WorkspaceSelectWidget(QToolButton):
 
 
 class GenerateButton(QPushButton):
-    model: Model
-    _operation: str
-    _kind: JobKind
-    _cost: int = 0
-    _cost_icon: QIcon
-
     def __init__(self, kind: JobKind, parent: QWidget):
         super().__init__(parent)
         self.model = root.active_model
         self._operation = _("Generate")
         self._kind = kind
+        self._cost = 0
         self._cost_icon = theme.icon("interstice")
+        self._seed_icon = theme.icon("seed")
+        self._resolution_icon = theme.icon("resolution-multiplier")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
 
     @property
@@ -766,10 +787,12 @@ class GenerateButton(QPushButton):
         content_rect = content_rect.adjusted(pixmap.width() + 5, 0, 0, 0)
         style.drawItemText(painter, content_rect, vcenter, self.palette(), True, self._operation)
 
+        cost_width = 0
         if is_hover and self._cost > 0:
-            cost_width = fm.width(str(self._cost))
             pixmap = self._cost_icon.pixmap(fm.height())
-            cost_rect = rect.adjusted(rect.width() - pixmap.width() - cost_width - 16, 0, 0, 0)
+            text_width = fm.width(str(self._cost))
+            cost_width = text_width + 16 + pixmap.width()
+            cost_rect = rect.adjusted(rect.width() - cost_width, 0, 0, 0)
             painter.setOpacity(0.3)
             painter.drawLine(
                 cost_rect.left(), cost_rect.top() + 6, cost_rect.left(), cost_rect.bottom() - 6
@@ -777,8 +800,22 @@ class GenerateButton(QPushButton):
             painter.setOpacity(0.7)
             cost_rect = cost_rect.adjusted(6, 0, 0, 0)
             style.drawItemText(painter, cost_rect, vcenter, self.palette(), True, str(self._cost))
-            cost_rect = cost_rect.adjusted(cost_width + 4, 0, 0, 0)
+            cost_rect = cost_rect.adjusted(text_width + 4, 0, 0, 0)
             style.drawItemPixmap(painter, cost_rect, vcenter, pixmap)
+
+        seed_width = 0
+        if is_hover and self.model.fixed_seed:
+            pixmap = self._seed_icon.pixmap(fm.height())
+            seed_width = pixmap.width() + 4
+            seed_rect = rect.adjusted(rect.width() - cost_width - seed_width, 0, 0, 0)
+            style.drawItemPixmap(painter, seed_rect, vcenter, pixmap)
+
+        if is_hover and self.model.resolution_multiplier != 1.0:
+            pixmap = self._resolution_icon.pixmap(fm.height())
+            resolution_rect = rect.adjusted(
+                rect.width() - cost_width - seed_width - pixmap.width() - 4, 0, 0, 0
+            )
+            style.drawItemPixmap(painter, resolution_rect, vcenter, pixmap)
 
 
 class ErrorBox(QFrame):

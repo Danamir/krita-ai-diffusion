@@ -226,6 +226,7 @@ class CloudClient(Client):
             batch_size=clamp(settings.batch_size, 4, 8),
             resolution_multiplier=settings.resolution_multiplier,
             max_pixel_count=clamp(settings.max_pixel_count, 1, 8),
+            dynamic_caching=False,
         )
 
     @property
@@ -383,7 +384,6 @@ models.checkpoints = {
             ("flat2d_animerge", Arch.sd15),
             ("realvis", Arch.sdxl),
             ("zavychroma", Arch.sdxl),
-            ("pixelwave", Arch.sdxl),
             ("flux_schnell", Arch.flux),
             ("noobai", Arch.illu_v),
         ]

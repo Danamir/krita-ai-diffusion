@@ -9,8 +9,8 @@ import random
 from . import resolution, resources
 from .api import ControlInput, ImageInput, CheckpointInput, SamplingInput, WorkflowInput, LoraInput
 from .api import ExtentInput, InpaintMode, InpaintParams, FillMode, ConditioningInput, WorkflowKind
-from .api import RegionInput, CustomWorkflowInput
-from .image import Bounds, Extent, Image, Mask, multiple_of
+from .api import RegionInput, CustomWorkflowInput, UpscaleInput
+from .image import Bounds, Extent, Image, ImageCollection, Mask, multiple_of
 from .client import ClientModels, ModelDict, resolve_arch
 from .files import FileLibrary, FileFormat
 from .style import Style, StyleSettings, SamplerPresets
@@ -128,6 +128,9 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         vae = w.load_vae(checkpoint.vae)
     if vae is None:
         vae = w.load_vae(models.for_arch(arch).vae)
+
+    if checkpoint.dynamic_caching and (arch in [Arch.flux, Arch.sd3] or arch.is_sdxl_like):
+        model = w.apply_first_block_cache(model, arch)
 
     for lora in checkpoint.loras:
         model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
@@ -810,6 +813,11 @@ def inpaint(
     target_bounds = params.target_bounds
     extent = ScaledExtent.from_input(images.extent)  # for initial generation with large context
 
+    is_inpaint_model = params.use_inpaint_model and models.control.find(ControlMode.inpaint) is None
+    if is_inpaint_model and models.arch is Arch.flux:
+        checkpoint.dynamic_caching = False  # doesn't seem to work with Flux fill model
+        sampling.cfg_scale = 30  # set Flux guidance to 30 (typical values don't work well)
+
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = w.differential_diffusion(model)
     model_orig = copy(model)
@@ -860,12 +868,10 @@ def inpaint(
         )
         inpaint_patch = w.load_fooocus_inpaint(**models.fooocus_inpaint)
         inpaint_model = w.apply_fooocus_inpaint(model, inpaint_patch, latent_inpaint)
-    elif params.use_inpaint_model and models.control.find(ControlMode.inpaint) is None:
+    elif is_inpaint_model:
         positive, negative, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
             vae, in_image, initial_mask, positive, negative
         )
-        if models.arch is Arch.flux:  # flux1-fill based model
-            sampling.cfg_scale = 30
         inpaint_model = model
     else:
         latent = w.vae_encode(vae, in_image)
@@ -1130,21 +1136,24 @@ def upscale_tiled(
     checkpoint: CheckpointInput,
     cond: Conditioning,
     sampling: SamplingInput,
-    upscale_model_name: str,
+    upscale: UpscaleInput,
     misc: MiscParams,
     models: ModelDict,
 ):
     upscale_factor = extent.initial.width / extent.input.width
-    layout = TileLayout.from_denoise_strength(
-        extent.initial, extent.desired.width, sampling.denoise_strength
-    )
+    if upscale.tile_overlap >= 0:
+        layout = TileLayout(extent.initial, extent.desired.width, upscale.tile_overlap)
+    else:
+        layout = TileLayout.from_denoise_strength(
+            extent.initial, extent.desired.width, sampling.denoise_strength
+        )
 
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
 
     in_image = w.load_image(image)
-    if upscale_model_name:
-        upscale_model = w.load_upscale_model(upscale_model_name)
+    if upscale.model:
+        upscale_model = w.load_upscale_model(upscale.model)
         upscaled = w.upscale_image(upscale_model, in_image)
     else:
         upscaled = in_image
@@ -1221,7 +1230,7 @@ def expand_custom(
                 return Output(nodes[input.node], input.output)
         return input
 
-    def get_param(node: ComfyNode, expected_type: type | None = None):
+    def get_param(node: ComfyNode, expected_type: type | tuple[type, type] | None = None):
         name = node.input("name", "")
         value = input.params.get(name)
         if value is None:
@@ -1243,9 +1252,9 @@ def expand_custom(
             case "ETN_Parameter":
                 outputs[node.output(0)] = get_param(node)
             case "ETN_KritaImageLayer":
-                outputs[node.output(0)] = w.load_image(get_param(node, Image))
+                outputs[node.output(0)] = w.load_image(get_param(node, (Image, ImageCollection)))
             case "ETN_KritaMaskLayer":
-                outputs[node.output(0)] = w.load_mask(get_param(node, Image))
+                outputs[node.output(0)] = w.load_mask(get_param(node, (Image, ImageCollection)))
             case "ETN_KritaStyle":
                 style: Style = get_param(node, Style)
                 is_live = node.input("sampler_preset", "auto") == "live"
@@ -1286,7 +1295,7 @@ def prepare(
     strength: float = 1.0,
     inpaint: InpaintParams | None = None,
     upscale_factor: float = 1.0,
-    upscale_model: str = "",
+    upscale: UpscaleInput | None = None,
     is_live: bool = False,
 ) -> WorkflowInput:
     """
@@ -1307,6 +1316,7 @@ def prepare(
     i.models = style.get_models(models.checkpoints.keys())
     i.conditioning.positive += _collect_lora_triggers(i.models.loras, files)
     i.models.loras = unique(i.models.loras + extra_loras, key=lambda l: l.name)
+    i.models.dynamic_caching = perf.dynamic_caching
     arch = i.models.version = resolve_arch(style, models)
 
     _check_server_has_models(i.models, i.conditioning.regions, models, files, style.name)
@@ -1374,7 +1384,9 @@ def prepare(
         tile_size = Extent(tile_size, tile_size)
         extent = ExtentInput(canvas.extent, target_extent.multiple_of(8), tile_size, target_extent)
         i.images = ImageInput(extent, canvas)
-        i.upscale_model = upscale_model if upscale_factor > 1 else ""
+        assert upscale is not None
+        i.upscale = upscale
+        i.upscale.model = i.upscale.model if upscale_factor > 1 else ""
         i.batch_count = 1
 
     else:
@@ -1389,7 +1401,7 @@ def prepare_upscale_simple(image: Image, model: str, factor: float):
     target_extent = image.extent * factor
     extent = ExtentInput(image.extent, image.extent, target_extent, target_extent)
     i = WorkflowInput(WorkflowKind.upscale_simple, ImageInput(extent, image))
-    i.upscale_model = model
+    i.upscale = UpscaleInput(model)
     return i
 
 
@@ -1463,7 +1475,7 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
             models.for_arch(ensure(i.models).version),
         )
     elif i.kind is WorkflowKind.upscale_simple:
-        return upscale_simple(workflow, i.image, i.upscale_model, i.upscale_factor)
+        return upscale_simple(workflow, i.image, ensure(i.upscale).model, i.upscale_factor)
     elif i.kind is WorkflowKind.upscale_tiled:
         return upscale_tiled(
             workflow,
@@ -1472,7 +1484,7 @@ def create(i: WorkflowInput, models: ClientModels, comfy_mode=ComfyRunMode.serve
             ensure(i.models),
             Conditioning.from_input(ensure(i.conditioning)),
             ensure(i.sampling),
-            i.upscale_model,
+            ensure(i.upscale),
             misc,
             models.for_arch(ensure(i.models).version),
         )
