@@ -900,8 +900,12 @@ class ComfyWorkflow:
     def override_clip_device(self, clip: Output, device="cpu"):
         return self.add("OverrideCLIPDevice", 1, clip=clip, device=device)
 
+    def override_vae_device(self, vae: Output, device="cpu"):
+        return self.add("OverrideVAEDevice", 1, vae=vae, device=device)
+
     def vae_encode(self, vae: Output, image: Output, tiled=False, tile_size=1536, fast=False):
         if tiled:
+            vae = self.override_vae_device(vae, "cuda:0")
             return self.add("VAEEncodeTiled_TiledDiffusion", 1, samples=image, vae=vae, tile_size=tile_size, fast=fast)
         else:
             return self.add("VAEEncode", 1, vae=vae, pixels=image)
@@ -911,6 +915,7 @@ class ComfyWorkflow:
 
     def vae_decode(self, vae: Output, latent_image: Output, tiled=False, tile_size=1536, fast=False):
         if tiled:
+            vae = self.override_vae_device(vae, "cuda:0")
             return self.add("VAEDecodeTiled_TiledDiffusion", 1, samples=latent_image, vae=vae, tile_size=tile_size, fast=fast)
         else:
             return self.add("VAEDecode", 1, vae=vae, samples=latent_image)
