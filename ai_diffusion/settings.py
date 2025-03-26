@@ -37,12 +37,24 @@ class ServerBackend(Enum):
             return ServerBackend.cuda
 
 
+class GenerationFinishedAction(Enum):
+    none = _("Do Nothing")
+    preview = _("Preview")
+    apply = _("Apply")
+
+
 class ApplyBehavior(Enum):
-    replace = 0
-    layer = 1
-    layer_group = 2
-    layer_hide_below = 3
-    transparency_mask = 4
+    replace = _("Modify active layer")
+    layer = _("New layer on top")
+    layer_active = _("New layer above active")
+
+
+class ApplyRegionBehavior(Enum):
+    none = _("Do not update regions")
+    replace = _("Modify region layers")
+    layer_group = _("Layer group")
+    transparency_mask = _("Layer group + mask")
+    no_hide = _("Layer group (don't hide)")
 
 
 class PerformancePreset(Enum):
@@ -59,6 +71,7 @@ class PerformancePresetSettings(NamedTuple):
     batch_size: int = 4
     resolution_multiplier: float = 1.0
     max_pixel_count: int = 6
+    tiled_vae: bool = False
 
 
 @dataclass
@@ -67,6 +80,7 @@ class PerformanceSettings:
     resolution_multiplier: float = 1.0
     max_pixel_count: int = 6
     dynamic_caching: bool = False
+    tiled_vae: bool = False
 
 
 class Setting:
@@ -191,9 +205,11 @@ class Settings(QObject):
         _("Negative Prompt"), False, _("Show text editor to describe things to avoid")
     )
 
-    auto_preview: bool
-    _auto_preview = Setting(
-        _("Auto Preview"), True, _("Automatically preview the first generated result on the canvas")
+    generation_finished_action: GenerationFinishedAction
+    _generation_finished_action = Setting(
+        _("Finished Generation"),
+        GenerationFinishedAction.preview,
+        _("Action to take when an image generation job finishes"),
     )
 
     show_steps: bool
@@ -211,15 +227,23 @@ class Settings(QObject):
     apply_behavior: ApplyBehavior
     _apply_behavior = Setting(
         _("Apply Behavior"),
-        ApplyBehavior.layer_hide_below,
+        ApplyBehavior.layer,
         _("Choose how result images are applied to the canvas (generation workspaces)"),
     )
+
+    apply_region_behavior: ApplyRegionBehavior
+    _apply_region_behavior = Setting("Apply Region Behavior", ApplyRegionBehavior.layer_group)
 
     apply_behavior_live: ApplyBehavior
     _apply_behavior_live = Setting(
         "Apply Behavior (Live)",
         ApplyBehavior.replace,
         "Choose how result images are applied to the canvas in Live mode",
+    )
+
+    apply_region_behavior_live: ApplyRegionBehavior
+    _apply_region_behavior_live = Setting(
+        "Apply Region Behavior (Live)", ApplyRegionBehavior.replace
     )
 
     show_builtin_styles: bool
@@ -276,6 +300,13 @@ class Settings(QObject):
         _("Re-use outputs of previous steps (First Block Cache) to speed up generation."),
     )
 
+    tiled_vae: bool
+    _tiled_vae = Setting(
+        _("Tiled VAE"),
+        False,
+        _("Conserve memory by processing output images in smaller tiles."),
+    )
+
     _performance_presets = {
         PerformancePreset.cpu: PerformancePresetSettings(
             batch_size=1,
@@ -286,6 +317,7 @@ class Settings(QObject):
             batch_size=2,
             resolution_multiplier=1.0,
             max_pixel_count=2,
+            tiled_vae=True,
         ),
         PerformancePreset.medium: PerformancePresetSettings(
             batch_size=4,

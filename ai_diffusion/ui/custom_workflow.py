@@ -14,7 +14,7 @@ from ..custom_workflow import CustomParam, ParamKind, SortedWorkflows, WorkflowS
 from ..custom_workflow import CustomGenerationMode
 from ..client import TextOutput
 from ..jobs import JobKind
-from ..model import Model, ApplyBehavior
+from ..model import Model
 from ..properties import Binding, Bind, bind, bind_combo
 from ..style import Styles
 from ..root import root
@@ -884,7 +884,7 @@ class CustomWorkflowWidget(QWidget):
 
     def apply_live_result(self):
         image, params = self.model.custom.live_result
-        self.model.apply_result(image, params, ApplyBehavior.layer)
+        self.model.apply_result(image, params)
         if settings.new_seed_after_apply:
             self.model.generate_seed()
 

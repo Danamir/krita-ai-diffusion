@@ -17,7 +17,7 @@ from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput, S
 from .api import InpaintMode, InpaintParams, FillMode, ImageInput, CustomWorkflowInput, UpscaleInput
 from .localization import translate as _
 from .util import clamp, ensure, trim_text, client_logger as log
-from .settings import ApplyBehavior, settings
+from .settings import ApplyBehavior, ApplyRegionBehavior, GenerationFinishedAction, settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds, DummyImage
 from .client import Client, ClientMessage, ClientEvent, ClientOutput
@@ -501,9 +501,6 @@ class Model(QObject, ObservableProperties):
             elif job.kind is JobKind.upscaling:
                 self.add_upscale_layer(job)
             self._finish_job(job, message.event)
-            show_preview = settings.auto_preview and self._layer is None
-            if job.id and job.kind in [JobKind.diffusion, JobKind.animation] and show_preview:
-                self.jobs.select(job.id, 0)
         elif message.event is ClientEvent.interrupted:
             self._finish_job(job, message.event)
         elif message.event is ClientEvent.error:
@@ -521,13 +518,20 @@ class Model(QObject, ObservableProperties):
         if event is ClientEvent.finished:
             self.jobs.notify_finished(job)
             self.progress = 1
+
+            if job.id and job.kind in [JobKind.diffusion, JobKind.animation]:
+                action = settings.generation_finished_action
+                if action is GenerationFinishedAction.preview and self._layer is None:
+                    self.jobs.select(job.id, 0)
+                elif action is GenerationFinishedAction.apply:
+                    self.apply_generated_result(job.id, 0)
         else:
             self.jobs.notify_cancelled(job)
             self.progress = 0
 
     def update_preview(self):
         if selection := self.jobs.selection:
-            self.show_preview(selection.job, selection.image)
+            self.show_preview(selection[0].job, selection[0].image)
         else:
             self.hide_preview()
 
@@ -556,19 +560,29 @@ class Model(QObject, ObservableProperties):
         if self._layer is not None:
             self._layer.hide()
 
-    def apply_result(self, image: Image, params: JobParams, behavior: ApplyBehavior, prefix=""):
+    def apply_result(
+        self,
+        image: Image,
+        params: JobParams,
+        behavior=ApplyBehavior.layer,
+        region_behavior=ApplyRegionBehavior.layer_group,
+        prefix="",
+    ):
         bounds = Bounds(*params.bounds.offset, *image.extent)
-        if len(params.regions) == 0:
+        if len(params.regions) == 0 or region_behavior is ApplyRegionBehavior.none:
             if behavior is ApplyBehavior.replace:
                 self.layers.update_layer_image(self.layers.active, image, bounds)
             else:
                 name = f"{prefix}{trim_text(params.name, 200)} ({params.seed})"
-                self.layers.create(name, image, bounds)
+                pos = self.layers.active if behavior is ApplyBehavior.layer_active else None
+                self.layers.create(name, image, bounds, above=pos)
         else:  # apply to regions
             with RestoreActiveLayer(self.layers) as restore:
                 active_id = Region.link_target(self.layers.active).id_string
                 for job_region in params.regions:
-                    result = self.create_result_layer(image, params, job_region, behavior, prefix)
+                    result = self.create_result_layer(
+                        image, params, job_region, region_behavior, prefix
+                    )
                     if job_region.layer_id == active_id:
                         restore.target = result
 
@@ -577,7 +591,7 @@ class Model(QObject, ObservableProperties):
         image: Image,
         params: JobParams,
         job_region: JobRegion,
-        behavior: ApplyBehavior,
+        behavior: ApplyRegionBehavior,
         prefix="",
     ):
         name = f"{prefix}{job_region.prompt} ({params.seed})"
@@ -586,7 +600,7 @@ class Model(QObject, ObservableProperties):
         region_layer = Region.link_target(region_layer)
 
         # Replace content if requested and not a group layer
-        if behavior is ApplyBehavior.replace and region_layer.type is not LayerType.group:
+        if behavior is ApplyRegionBehavior.replace and region_layer.type is not LayerType.group:
             region = self.regions.find_linked(region_layer)
             new_layer = self.layers.update_layer_image(
                 region_layer, image, params.bounds, keep_alpha=True
@@ -617,14 +631,14 @@ class Model(QObject, ObservableProperties):
         has_mask = any(l.type.is_mask for l in region_layer.child_layers)
         if not region_layer.is_root and has_layers and not has_mask:
             layer_bounds = region_layer.bounds
-            if behavior is ApplyBehavior.transparency_mask:
+            if behavior is ApplyRegionBehavior.transparency_mask:
                 mask = region_layer.get_mask(layer_bounds)
                 self.layers.create_mask("Transparency Mask", mask, layer_bounds, region_layer)
             else:
                 layer_image = region_layer.get_pixels(region_bounds)
                 layer_image.draw_image(region_image, keep_alpha=True)
                 region_image = layer_image
-                if behavior is ApplyBehavior.layer_hide_below and not params.has_mask:
+                if not (behavior is ApplyRegionBehavior.no_hide or params.has_mask):
                     for layer in region_layer.child_layers:
                         layer.is_visible = False
 
@@ -645,13 +659,16 @@ class Model(QObject, ObservableProperties):
             self.apply_animation(job)
         else:
             self.apply_result(
-                job.results[index], job.params, settings.apply_behavior, "[Generated] "
+                job.results[index],
+                job.params,
+                settings.apply_behavior,
+                settings.apply_region_behavior,
+                "[Generated] ",
             )
-
         if self._layer:
             self._layer.remove()
             self._layer = None
-        self.jobs.selection = None
+        self.jobs.selection = []
         self.jobs.notify_used(job_id, index)
 
     def apply_animation(self, job: Job):
@@ -685,7 +702,13 @@ class Model(QObject, ObservableProperties):
         if self._layer:
             self._layer.remove()
             self._layer = None
-        self.apply_result(job.results[0], job.params, settings.apply_behavior, "[Upscale] ")
+        self.apply_result(
+            job.results[0],
+            job.params,
+            settings.apply_behavior,
+            settings.apply_region_behavior,
+            "[Upscale] ",
+        )
 
     def set_workspace(self, workspace: Workspace):
         if self.workspace is Workspace.live:
@@ -1026,8 +1049,12 @@ class LiveWorkspace(QObject, ObservableProperties):
             if region := next((r for r in params.regions if r.layer_id == active), None):
                 params.regions = [region]
 
-        behavior = ApplyBehavior.layer_group if layer_only else settings.apply_behavior_live
-        self._model.apply_result(self.result, params, behavior)
+        behavior = settings.apply_behavior_live
+        region_behavior = settings.apply_region_behavior_live
+        if layer_only:
+            behavior = ApplyBehavior.layer
+            region_behavior = ApplyRegionBehavior.layer_group
+        self._model.apply_result(self.result, params, behavior, region_behavior)
 
         if settings.new_seed_after_apply:
             self._model.generate_seed()

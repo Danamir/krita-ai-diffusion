@@ -419,9 +419,19 @@ class ComfyWorkflow:
                 "PolyexponentialScheduler",
                 output_count=1,
                 steps=steps,
-                sigma_max=14.61,
-                sigma_min=0.03,
+                sigma_max=14.614642,
+                sigma_min=0.0291675,
                 rho=1.0,
+            )
+        elif scheduler == "laplace":
+            return self.add(
+                "LaplaceScheduler",
+                output_count=1,
+                steps=steps,
+                sigma_max=14.614642,
+                sigma_min=0.0291675,
+                mu=0.0,
+                beta=0.5,
             )
         else:
             return self.add(
@@ -698,6 +708,9 @@ class ComfyWorkflow:
             end=range[1],
         )
 
+    def conditioning_zero_out(self, conditioning: Output):
+        return self.add("ConditioningZeroOut", 1, conditioning=conditioning)
+
     def instruct_pix_to_pix_conditioning(
         self, positive: Output, negative: Output, vae: Output, pixels: Output
     ):
@@ -878,8 +891,10 @@ class ComfyWorkflow:
     def apply_self_attention_guidance(self, model: Output):
         return self.add("SelfAttentionGuidance", 1, model=model, scale=0.5, blur_sigma=2.0)
 
-    def inpaint_preprocessor(self, image: Output, mask: Output):
-        return self.add("InpaintPreprocessor", 1, image=image, mask=mask)
+    def inpaint_preprocessor(self, image: Output, mask: Output, fill_black=False):
+        return self.add(
+            "InpaintPreprocessor", 1, image=image, mask=mask, black_pixel_for_xinsir_cn=fill_black
+        )
 
     def apply_fooocus_inpaint(self, model: Output, patch: Output, latent: Output):
         return self.add("INPAINT_ApplyFooocusInpaint", 1, model=model, patch=patch, latent=latent)
@@ -913,12 +928,20 @@ class ComfyWorkflow:
     def vae_encode_inpaint(self, vae: Output, image: Output, mask: Output):
         return self.add("VAEEncodeForInpaint", 1, vae=vae, pixels=image, mask=mask, grow_mask_by=0)
 
+    def vae_encode_tiled(self, vae: Output, image: Output):
+        return self.add("VAEEncodeTiled", 1, vae=vae, pixels=image, tile_size=512, overlap=64)
+
     def vae_decode(self, vae: Output, latent_image: Output, tiled=False, tile_size=1536, fast=False):
         if tiled:
             vae = self.override_vae_device(vae, "cuda:0")
             return self.add("VAEDecodeTiled_TiledDiffusion", 1, samples=latent_image, vae=vae, tile_size=tile_size, fast=fast)
         else:
             return self.add("VAEDecode", 1, vae=vae, samples=latent_image)
+
+    def vae_decode_tiled(self, vae: Output, latent_image: Output):
+        return self.add(
+            "VAEDecodeTiled", 1, vae=vae, samples=latent_image, tile_size=512, overlap=64
+        )
 
     def set_latent_noise_mask(self, latent: Output, mask: Output):
         return self.add("SetLatentNoiseMask", 1, samples=latent, mask=mask)

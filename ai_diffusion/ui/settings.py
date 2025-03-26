@@ -186,6 +186,8 @@ class CloudWidget(QWidget):
             can_connect = state in [ConnectionState.disconnected, ConnectionState.error]
             self.connect_button.setEnabled(can_connect)
             self.connect_button.setText(_("Connect") if can_connect else _("Connected"))
+            self._connection_status.setText(_("Disconnected"))
+            self._connection_status.setStyleSheet(f"color: {grey}; font-style:italic")
 
         if state in [ConnectionState.error, ConnectionState.auth_error]:
             error = root.connection.error or "Unknown error"
@@ -279,6 +281,7 @@ class ConnectionSettings(SettingsTab):
         self._layout.addWidget(self._server_stack)
 
         root.connection.state_changed.connect(self.update_server_status)
+        root.connection.error_changed.connect(self.update_server_status)
         self.update_server_status()
 
     @property
@@ -302,6 +305,7 @@ class ConnectionSettings(SettingsTab):
             ServerMode.cloud: self._cloud_widget,
             ServerMode.managed: self._server_widget,
             ServerMode.external: self._connection_widget,
+            ServerMode.undefined: self._connection_widget,
         }[mode]
         self._server_stack.setCurrentWidget(widget)
 
@@ -458,6 +462,7 @@ class InterfaceSettings(SettingsTab):
             "show_negative_prompt",
             SwitchSetting(S._show_negative_prompt, (_("Show"), _("Hide")), self),
         )
+        self.add("show_steps", SwitchSetting(S._show_steps, parent=self))
 
         self.add("tag_files", FileListSetting(S._tag_files, files=self._tag_files(), parent=self))
         self._layout.addWidget(self._widgets["tag_files"].list_widget)
@@ -472,14 +477,26 @@ class InterfaceSettings(SettingsTab):
             self._open_tag_folder,
         )
 
-        self.add("auto_preview", SwitchSetting(S._auto_preview, parent=self))
-        self.add("show_steps", SwitchSetting(S._show_steps, parent=self))
+        self.add(
+            "generation_finished_action",
+            ComboBoxSetting(S._generation_finished_action, parent=self),
+        )
+        self.add("apply_behavior", ComboBoxSetting(S._apply_behavior, parent=self))
+        self.add("apply_region_behavior", ComboBoxSetting(S._apply_region_behavior, parent=self))
+        self.add("apply_behavior_live", ComboBoxSetting(S._apply_behavior_live, parent=self))
+        self.add(
+            "apply_region_behavior_live",
+            ComboBoxSetting(S._apply_region_behavior_live, parent=self),
+        )
         self.add("new_seed_after_apply", SwitchSetting(S._new_seed_after_apply, parent=self))
         self.add("debug_dump_workflow", SwitchSetting(S._debug_dump_workflow, parent=self))
 
         languages = [(lang.name, lang.id) for lang in Localization.available]
         self._widgets["language"].set_items(languages)
         self.update_translation(root.connection.client_if_connected)
+
+        for w in ["apply_region_behavior", "apply_region_behavior_live"]:
+            self._widgets[w].show_label = False
 
         self._layout.addStretch()
 
@@ -597,6 +614,12 @@ class PerformanceSettings(SettingsTab):
         self._max_pixel_count.value_changed.connect(self.write)
         advanced_layout.addWidget(self._max_pixel_count)
 
+        self._tiled_vae = SwitchSetting(
+            Settings._tiled_vae, text=(_("Always"), _("Automatic")), parent=self._advanced
+        )
+        self._tiled_vae.value_changed.connect(self.write)
+        advanced_layout.addWidget(self._tiled_vae)
+
         self._dynamic_caching = SwitchSetting(Settings._dynamic_caching, parent=self)
         self._dynamic_caching.value_changed.connect(self.write)
         self._layout.addWidget(self._dynamic_caching)
@@ -640,6 +663,7 @@ class PerformanceSettings(SettingsTab):
         )
         self._resolution_multiplier.value = settings.resolution_multiplier
         self._max_pixel_count.value = settings.max_pixel_count
+        self._tiled_vae.value = settings.tiled_vae
         self._dynamic_caching.value = settings.dynamic_caching
         self.update_client_info()
 
@@ -649,6 +673,7 @@ class PerformanceSettings(SettingsTab):
         settings.batch_size = int(self._batch_size.value)
         settings.resolution_multiplier = self._resolution_multiplier.value
         settings.max_pixel_count = self._max_pixel_count.value
+        settings.tiled_vae = self._tiled_vae.value
         settings.performance_preset = list(PerformancePreset)[
             self._performance_preset.currentIndex()
         ]
