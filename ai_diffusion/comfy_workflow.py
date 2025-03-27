@@ -6,7 +6,6 @@ from typing import NamedTuple, Tuple, Literal, TypeVar, overload, Any
 from uuid import uuid4
 import json
 
-from .client import ModelDict
 from .image import Bounds, Extent, Image, ImageCollection
 from .resources import Arch, ControlMode
 from .util import base_type_match, client_logger as log
@@ -638,8 +637,8 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str | Output, models: ModelDict | None = None, split_conditioning=False):
-        if models and models.arch in (Arch.sdxl, Arch.illu, Arch.illu_v, Arch.flux):
+    def clip_text_encode(self, clip: Output, text: str | Output, arch: Arch | None = None, split_conditioning=False):
+        if arch in (Arch.sdxl, Arch.illu, Arch.illu_v, Arch.flux):
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
                     text_g, text_l = text.split(" . ")
@@ -658,7 +657,7 @@ class ComfyWorkflow:
                 text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
                 text_l = text_g
 
-            if models.arch == Arch.flux:
+            if arch == Arch.flux:
                 return self.add("CLIPTextEncodeFlux", 1, clip=clip, clip_l=text_l, t5xxl=text_g, guidance=3.5)
             else:
                 return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
