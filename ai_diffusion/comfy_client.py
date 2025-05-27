@@ -95,8 +95,8 @@ class ComfyClient(Client):
         self._active: Optional[JobInfo] = None
         self._features: ClientFeatures = ClientFeatures()
         self._supported_archs: dict[Arch, list[ResourceId]] = {}
-        self._messages = asyncio.Queue()
-        self._queue = asyncio.Queue()
+        self._messages: asyncio.Queue[ClientMessage] = asyncio.Queue()
+        self._queue: asyncio.Queue[JobInfo] = asyncio.Queue()
         self._jobs: deque[JobInfo] = deque()
         self._is_connected = False
 
@@ -118,6 +118,7 @@ class ComfyClient(Client):
             raise Exception(msg)
 
         # Check custom nodes
+        log.info("Checking for required custom nodes...")
         nodes = await client._get("object_info")
         missing = _check_for_missing_nodes(nodes)
         if len(missing) > 0:
@@ -128,6 +129,7 @@ class ComfyClient(Client):
             translation=True,
             languages=await _list_languages(client),
             wave_speed="ApplyFBCacheOnModel" in nodes,
+            gguf="UnetLoaderGGUF" in nodes,
         )
 
         # Check for required and optional model resources
@@ -237,6 +239,13 @@ class ComfyClient(Client):
                 self._jobs.popleft()
             raise e
 
+    async def _finish_enqueue_requests(self):
+        # Make sure all /prompt requests at the time of calling have returned (remote_id is set)
+        # Note: further jobs may be added to the queue while waiting
+        jobs_so_far = list(self._jobs)
+        for job in jobs_so_far:
+            await job.get_remote_id()
+
     async def _listen(self):
         url = websocket_url(self.url)
         async for websocket in websockets.connect(
@@ -317,7 +326,7 @@ class ComfyClient(Client):
                             ClientEvent.progress, self._active.local_id, progress.value
                         )
                     else:
-                        log.error(f"Received message {msg} but there is no active job")
+                        log.warning(f"Received message {msg} but there is no active job")
 
                 if msg["type"] == "executed":
                     if job := self._get_active_job(msg["data"]["prompt_id"]):
@@ -357,15 +366,16 @@ class ComfyClient(Client):
         await self._post("interrupt", {})
 
     async def clear_queue(self):
+        # Make sure changes to all queues are processed before suspending this
+        # function, otherwise it may interfere with subsequent calls to enqueue.
+        tasks = [self._post("queue", {"clear": True})]
         while not self._queue.empty():
             try:
                 job = self._queue.get_nowait()
-                await self._report(ClientEvent.interrupted, job.local_id)
+                tasks.append(self._report(ClientEvent.interrupted, job.local_id))
             except asyncio.QueueEmpty:
                 break
-
-        await self._post("queue", {"clear": True})
-        self._jobs.clear()
+        await asyncio.gather(*tasks)
 
     async def disconnect(self):
         if self._is_connected:
@@ -379,6 +389,8 @@ class ComfyClient(Client):
             )
 
     async def try_inspect(self, folder_name: str) -> dict[str, Any]:
+        if "gguf" in folder_name and not self.features.gguf:
+            return {}
         try:
             return await self._get(f"api/etn/model_info/{folder_name}", timeout=90)
         except NetworkError as e:
@@ -502,10 +514,7 @@ class ComfyClient(Client):
         if len(self._jobs) == 0:
             log.warning(f"Received unknown job {remote_id}")
             return None
-        active = next((j for j in self._jobs if j.remote_id == remote_id), None)
-        if active is not None:
-            return active
-        return None
+        return next((j for j in self._jobs if j.remote_id == remote_id), None)
 
     async def _start_job(self, remote_id: str):
         if self._active is not None:
@@ -514,15 +523,18 @@ class ComfyClient(Client):
             log.warning(f"Received unknown job {remote_id}")
             return None
 
-        if await self._jobs[0].get_remote_id() == remote_id:
+        await self._finish_enqueue_requests()
+        if self._jobs[0].remote_id == remote_id:
             return self._jobs.popleft()
 
         log.warning(f"Started job {remote_id}, but {self._jobs[0]} was expected")
-        for job in self._jobs:
-            if await job.get_remote_id() == remote_id:
-                self._jobs.remove(job)
-                return job
-        return None
+        job = next((j for j in self._jobs if j.remote_id == remote_id), None)
+        # Clear earlier jobs, they've likely been cancelled.
+        if job is not None:
+            while self._jobs[0] != job:
+                self._jobs.popleft()
+            assert self._jobs.popleft() == job
+        return job
 
     def _clear_job(self, job_remote_id: str | asyncio.Future | None):
         if self._active is not None and self._active.remote_id == job_remote_id:

@@ -8,7 +8,8 @@ import shutil
 from ai_diffusion import network, server, resources
 from ai_diffusion.style import Arch
 from ai_diffusion.server import Server, ServerState, ServerBackend, InstallationProgress
-from .config import server_dir
+from ai_diffusion.resources import VerificationState
+from .config import test_dir, server_dir
 
 workload_sd15 = [p.name for p in resources.required_models if p.arch is Arch.sd15]
 workload_sd15 += [resources.default_checkpoints[0].name]
@@ -19,7 +20,7 @@ def test_download(qtapp, mode):
     async def main():
         net = QNetworkAccessManager()
         with TemporaryDirectory() as tmp:
-            url = "https://github.com/Acly/krita-ai-diffusion/archive/refs/tags/v0.1.0.zip"
+            url = "https://files.interstice.cloud/plugin/krita_ai_diffusion-1.25.0.zip"
             path = Path(tmp) / "test.zip"
             if mode == "resume":
                 part = Path(tmp) / "test.zip.part"
@@ -68,10 +69,9 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
     def handle_progress(report: InstallationProgress):
         nonlocal last_stage
         assert (
-            report.progress is None
+            not isinstance(report.progress, network.DownloadProgress)
             or report.progress.value == -1
-            or report.progress.value >= 0
-            and report.progress.value <= 1
+            or (report.progress.value >= 0 and report.progress.value <= 1)
         )
         assert report.stage != ""
         if report.progress is None and report.stage != last_stage:
@@ -123,6 +123,72 @@ def test_run_external(qtapp, pytestconfig):
 
         await server.stop()
         assert server.state is ServerState.stopped
+
+    qtapp.run(main())
+
+
+def test_verify_and_fix(qtapp, pytestconfig, local_download_server):
+    if not pytestconfig.getoption("--test-install"):
+        pytest.skip("Only runs with --test-install")
+
+    server = Server(str(server_dir))
+    server.backend = ServerBackend.cpu
+    # Requires test_install_and_run to setup the server
+    assert server.state in [ServerState.stopped]
+
+    model_file = resources.required_models[0]
+    model_path = server_dir / model_file.files[0].path
+    assert model_path.exists()
+
+    # Break the model file
+    with model_path.open("w", encoding="utf-8") as f:
+        f.write("test")
+
+    def handle_progress(report: InstallationProgress):
+        print(report.stage, report.message)
+
+    async def main():
+        verify_result = await server.verify(handle_progress)
+        assert len(verify_result) == 1
+        mismatch = verify_result[0]
+        assert mismatch.state is VerificationState.mismatch
+        assert mismatch.file.path == model_file.files[0].path
+        assert server.state is ServerState.stopped
+
+        await server.fix_models(verify_result, handle_progress)
+        fixed_result = await server.verify(handle_progress)
+        assert len(fixed_result) == 0
+        assert server.state is ServerState.stopped
+
+    qtapp.run(main())
+
+
+def test_uninstall(qtapp, pytestconfig, local_download_server):
+    if not pytestconfig.getoption("--test-install"):
+        pytest.skip("Only runs with --test-install")
+
+    temp_server_dir = test_dir / "temp_server"
+    if temp_server_dir.exists():
+        shutil.rmtree(temp_server_dir, ignore_errors=True)
+    server = Server(str(temp_server_dir))
+    server.backend = ServerBackend.cpu
+    assert server.state is ServerState.not_installed
+
+    def handle_progress(report: InstallationProgress):
+        print(report.stage, report.message)
+
+    async def main():
+        await server.install(handle_progress)
+        await server.download_required(handle_progress)
+        await server.uninstall(handle_progress)
+        assert server.state is ServerState.not_installed
+        assert (temp_server_dir / "models").exists()
+        assert server.comfy_dir is None
+
+        server.state = ServerState.stopped
+        await server.uninstall(handle_progress, delete_models=True)
+        assert server.state is ServerState.not_installed
+        assert not temp_server_dir.exists()
 
     qtapp.run(main())
 

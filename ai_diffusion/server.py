@@ -6,12 +6,14 @@ from pathlib import Path
 import shutil
 import re
 import os
+import time
 from typing import Callable, NamedTuple, Optional, Union
 from PyQt5.QtNetwork import QNetworkAccessManager
 
 from .settings import settings, ServerBackend
 from . import eventloop, resources
 from .resources import CustomNode, ModelResource, ModelRequirements, Arch
+from .resources import VerificationStatus, VerificationState
 from .network import download, DownloadProgress
 from .localization import translate as _
 from .util import ZipFile, is_windows, create_process, decode_pipe_bytes, determine_system_encoding
@@ -28,11 +30,13 @@ class ServerState(Enum):
     stopped = 4
     starting = 5
     running = 6
+    verifying = 7
+    uninstalling = 8
 
 
 class InstallationProgress(NamedTuple):
     stage: str
-    progress: Optional[DownloadProgress] = None
+    progress: DownloadProgress | tuple[int, int] | None = None
     message: str = ""
 
 
@@ -195,14 +199,21 @@ class Server:
         script_path = self._cache_dir / f"install_uv{script_ext}"
         await _download_cached("Python", network, url, script_path, cb)
 
+        env = {"UV_INSTALL_DIR": str(self.path / "uv")}
         if is_windows:
             if "PSModulePath" in os.environ:
                 del os.environ["PSModulePath"]  # Don't inherit this from parent process
             cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+            try:
+                await _execute_process("Python", cmd, self.path, cb, env=env)
+            except FileNotFoundError:
+                sysroot = os.environ.get("SYSTEMROOT", "C:\\Windows")
+                cmd[0] = f"{sysroot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+                log.warning(f"powershell command not found, trying to find it at {cmd[0]}")
+                await _execute_process("Python", cmd, self.path, cb, env=env)
         else:
             cmd = ["/bin/sh", str(script_path)]
-        env = {"UV_INSTALL_DIR": str(self.path / "uv")}
-        await _execute_process("Python", cmd, self.path, cb, env=env)
+            await _execute_process("Python", cmd, self.path, cb, env=env)
 
         self._uv_cmd = self.path / "uv" / ("uv" + _exe)
         cb("Installing Python", f"Installed uv at {self._uv_cmd}")
@@ -233,28 +244,17 @@ class Server:
         elif self.backend is ServerBackend.directml:
             torch_args = ["numpy<2", "torch-directml"]
         elif self.backend is ServerBackend.xpu:
-            torch_args = [
-                "torch==2.6.0",
-                "torchvision==0.21.0",
-                "torchaudio==2.6.0",
-                "--index-url",
-                "https://download.pytorch.org/whl/xpu",
-            ]
+            torch_args = ["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"]
+            torch_args += ["--index-url", "https://download.pytorch.org/whl/xpu"]
         await self._pip_install("PyTorch", torch_args, cb)
 
         requirements_txt = Path(__file__).parent / "server_requirements.txt"
         await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
 
         if self.backend is ServerBackend.xpu:
-            await self._pip_install(
-                "Ipex",
-                [
-                    "intel-extension-for-pytorch==2.6.10+xpu",
-                    "--extra-index-url",
-                    "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/",
-                ],
-                cb,
-            )
+            idx_url = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
+            cmd = ["intel-extension-for-pytorch==2.6.10+xpu", "--extra-index-url", idx_url]
+            await self._pip_install("Ipex", cmd, cb)
 
         requirements_txt = temp_comfy_dir / "requirements.txt"
         await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
@@ -537,6 +537,144 @@ class Server:
             print(e)
             pass
 
+    async def verify(self, callback: Callback):
+        assert self.state in [ServerState.stopped, ServerState.missing_resources]
+
+        self.state = ServerState.verifying
+        try:
+            loop = asyncio.get_running_loop()
+            result = await asyncio.to_thread(self._verify, callback, loop)
+            for status in result:
+                log.warning(f"File verification failed for {status.file.path}: {status.state.name}")
+                if status.state is VerificationState.mismatch:
+                    log.info(f"-- expected sha256: {status.file.sha256} but got: {status.info}")
+            return result
+        except Exception as e:
+            log.exception(f"Error during server verification: {str(e)}")
+            raise e
+        finally:
+            self.state = ServerState.stopped
+
+    def _verify(self, callback: Callback, loop: asyncio.AbstractEventLoop):
+        assert self.comfy_dir is not None
+        errors: list[VerificationStatus] = []
+        total = sum(
+            len(m.files)
+            for m in resources.all_models()
+            if m.exists_in(self.path) or m.exists_in(self.comfy_dir)
+        )
+        verified = 0
+
+        for status in resources.verify_model_integrity(self.path):
+            if status.state is VerificationState.in_progress:
+                loop.call_soon_threadsafe(
+                    callback,
+                    InstallationProgress(
+                        "Verifying model files",
+                        message=status.file.name,
+                        progress=(verified, total),
+                    ),
+                )
+                verified += 1
+            elif status.state in [VerificationState.mismatch, VerificationState.error]:
+                errors.append(status)
+
+        loop.call_soon_threadsafe(
+            callback,
+            InstallationProgress("Verification finished", message="", progress=(total, total)),
+        )
+        return errors
+
+    async def fix_models(self, bad_models: list[VerificationStatus], callback: Callback):
+        network = QNetworkAccessManager()
+        prev_state = self.state
+        self.state = ServerState.installing
+
+        def cb(stage: str, message: str | DownloadProgress):
+            if isinstance(message, str):
+                log.info(message)
+            progress = message if isinstance(message, DownloadProgress) else None
+            callback(InstallationProgress(stage, progress))
+
+        cb("Replacing files", "Trying to remove and re-download corrupted model files")
+        try:
+            for status in bad_models:
+                if status.state is VerificationState.mismatch:
+                    filepath = self.path / status.file.path
+                    log.info(f"Removing {filepath}")
+                    remove_file(filepath)
+                    await _download_cached(status.file.name, network, status.file.url, filepath, cb)
+        except Exception as e:
+            log.exception(str(e))
+            raise e
+        finally:
+            self.state = prev_state
+            self.check_install()
+
+    async def uninstall(self, callback: Callback, delete_models=False):
+        log.info(f"Uninstalling server at {self.path}")
+        assert self.state in [ServerState.stopped, ServerState.missing_resources]
+
+        self.state = ServerState.uninstalling
+        try:
+            loop = asyncio.get_running_loop()
+            await asyncio.to_thread(self._uninstall, callback, delete_models, loop)
+        except Exception as e:
+            log.exception(f"Error during server uninstall: {str(e)}")
+            raise e
+        finally:
+            self.state = ServerState.stopped
+            self.check_install()
+
+    def _uninstall(self, callback: Callback, delete_models: bool, loop: asyncio.AbstractEventLoop):
+        assert self.state is ServerState.uninstalling
+
+        def cb(msg: str):
+            loop.call_soon_threadsafe(callback, InstallationProgress("Uninstalling", message=msg))
+
+        try:
+            if self.comfy_dir and self.comfy_dir.exists():
+                cb("Removing ComfyUI")
+                if not delete_models:
+                    try:
+                        safe_remove_dir(self.comfy_dir / "models")
+                    except Exception as e:
+                        raise Exception(
+                            str(e)
+                            + f"\n\nPlease move model files located in\n{self.comfy_dir / 'models'}"
+                            + f"\nto\n{self.path / 'models'}\nand try again."
+                        )
+                remove_subdir(self.comfy_dir, origin=self.path)
+
+            venv_dir = self.path / "venv"
+            if venv_dir.exists():
+                cb("Removing Python venv")
+                remove_subdir(venv_dir, origin=self.path)
+
+            if self._cache_dir.exists():
+                cb("Removing cache")
+                remove_subdir(self._cache_dir, origin=self.path)
+
+            uv_dir = self.path / "uv"
+            if uv_dir.exists():
+                cb("Removing uv")
+                remove_subdir(uv_dir, origin=self.path)
+
+            self._version_file.write_text("incomplete")
+
+            if delete_models:
+                model_dir = self.path / "models"
+                if model_dir.exists():
+                    cb("Removing models")
+                    remove_subdir(model_dir, origin=self.path)
+
+                remove_subdir(self.path, origin=self.path)
+
+            cb("Finished uninstalling")
+        except Exception as e:
+            log.exception(f"Error during server uninstall: {str(e)}")
+            raise e
+
     @property
     def has_python(self):
         return self._python_cmd is not None
@@ -562,12 +700,12 @@ class Server:
 
     @property
     def upgrade_required(self):
+        gpu_backends = [ServerBackend.cuda, ServerBackend.directml, ServerBackend.xpu]
         backend_mismatch = (
             self._installed_backend is not None
             and self._installed_backend != self.backend
-            and self.backend in [ServerBackend.cuda, ServerBackend.directml]
-            and self._installed_backend
-            in [ServerBackend.cuda, ServerBackend.directml, ServerBackend.cpu]
+            and self.backend in gpu_backends
+            and self._installed_backend in (gpu_backends + [ServerBackend.cpu])
         )
         return (
             self.state is not ServerState.not_installed
@@ -690,10 +828,49 @@ def safe_remove_dir(path: Path, max_size=12 * 1024 * 1024):
         for p in path.rglob("*"):
             if p.is_file():
                 if p.stat().st_size > max_size:
-                    raise Exception(f"Failed to remove {path}: found remaining large file {p}")
+                    raise Exception(
+                        f"Failed to remove {path}: found remaining large file {p.relative_to(path)}"
+                    )
                 if p.suffix == ".safetensors":
-                    raise Exception(f"Failed to remove {path}: found remaining model {p}")
+                    raise Exception(
+                        f"Failed to remove {path}: found remaining model {p.relative_to(path)}"
+                    )
         shutil.rmtree(path, ignore_errors=True)
+
+
+def remove_subdir(path: Path, *, origin: Path):
+    assert path.is_dir() and path.is_relative_to(origin)
+    errors = []
+
+    def handle_error(func, path, excinfo):
+        type, value, traceback = excinfo
+        if type is FileNotFoundError:
+            return
+        log.warning(f"Failed to remove {path}: [{type}] {value}")
+        errors.append(value)
+
+    for i in range(3):
+        shutil.rmtree(path, onerror=handle_error)
+        if len(errors) == 0:
+            return
+        elif i == 2:
+            raise errors[0]
+        time.sleep(0.1)
+        errors.clear()
+
+
+def remove_file(path: Path):
+    if path.is_file():
+        try:
+            path.unlink()
+            for i in range(3):
+                if not path.exists():
+                    return
+                time.sleep(0.1)
+            raise Exception(f"Failed to remove {path}: file still exists")
+        except Exception as e:
+            log.warning(f"Failed to remove {path}: {str(e)}")
+            raise e
 
 
 async def get_python_version_string(python_cmd: Path, *args: str):
