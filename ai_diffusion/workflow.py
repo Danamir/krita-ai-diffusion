@@ -16,7 +16,7 @@ from .files import FileLibrary, FileFormat
 from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, TileLayout, get_inpaint_reference
 from .resources import ControlMode, Arch, UpscalerName, ResourceKind, ResourceId
-from .settings import PerformanceSettings
+from .settings import PerformanceSettings, ServerBackend
 from .text import merge_prompt, extract_loras
 from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Input, Output, ComfyNode
 from .localization import translate as _
@@ -116,7 +116,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
                     clip = w.load_triple_clip(te["clip_l"], te["clip_g"], te["t5"])
                 else:
                     clip = w.load_dual_clip(te["clip_g"], te["clip_l"], type="sd3")
-            case Arch.flux:
+            case Arch.flux | Arch.flux_k:
                 clip = w.load_dual_clip(te["clip_l"], te["t5"], type="flux")
             case _:
                 raise RuntimeError(f"No text encoder for model architecture {arch.name}")
@@ -542,7 +542,7 @@ def apply_ip_adapter(
     models: ModelDict,
     mask: Output | None = None,
 ):
-    if models.arch is Arch.flux:
+    if models.arch.is_flux_like:
         return model  # No IP-adapter for Flux, using Style model instead
 
     models = models.ip_adapter
@@ -610,6 +610,29 @@ def apply_regional_ip_adapter(
     return model
 
 
+def apply_edit_conditioning(
+    w: ComfyWorkflow,
+    cond: Output,
+    input_image: Output,
+    input_latent: Output,
+    control_layers: list[Control],
+    vae: Output,
+    arch: Arch,
+    tiled_vae: bool,
+):
+    if not arch.is_edit:
+        return cond
+
+    extra_input = [c.image for c in control_layers if c.mode.is_ip_adapter]
+    if len(extra_input) == 0:
+        return w.reference_latent(cond, input_latent)
+
+    input = w.image_stitch([input_image] + [i.load(w) for i in extra_input])
+    latent = vae_encode(w, vae, input, tiled_vae)
+    cond = w.reference_latent(cond, latent)
+    return cond
+
+
 def scale(
     extent: Extent,
     target: Extent,
@@ -667,8 +690,7 @@ def scale_refine_and_decode(
     If it is a substantial upscale, runs a high-res SD refinement pass.
     Takes latent as input and returns a decoded image."""
 
-    tiled_vae = tiled_vae or extent.desired.width * extent.desired.height > 3e6
-
+    arch = models.arch
     mode = extent.refinement_scaling
     if mode in [ScaleMode.none, ScaleMode.resize, ScaleMode.upscale_fast]:
         decoded = vae_decode(w, vae, latent, tiled_vae)
@@ -683,6 +705,14 @@ def scale_refine_and_decode(
         assert mode is ScaleMode.upscale_quality
         upscaler = models.upscale[UpscalerName.default]
 
+    # if an canvas deviates both sizes from 1024 huge performance penalty tiled vae decreases it this is intel only
+    if (
+        extent.desired.width > 1536
+        or extent.desired.height > 1536
+        and settings.server_backend is ServerBackend.xpu
+    ):
+        tiled_vae = True
+
     upscale_model = w.load_upscale_model(upscaler)
     decoded = vae_decode(w, vae, latent, tiled_vae)
     upscale = w.upscale_image(upscale_model, decoded)
@@ -694,7 +724,8 @@ def scale_refine_and_decode(
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
-    result = w.sampler_custom_advanced(model, positive, negative, latent, models.arch, **params, two_pass=False)
+    positive = apply_edit_conditioning(w, positive, upscale, latent, [], vae, arch, tiled_vae)
+    result = w.sampler_custom_advanced(model, positive, negative, latent, arch, **params, two_pass=False)
     image = vae_decode(w, vae, result, tiled_vae)
     return image
 
@@ -783,6 +814,16 @@ def detect_inpaint(
 ):
     assert mode is not InpaintMode.automatic
     result = InpaintParams(mode, bounds)
+    result.fill = {
+        InpaintMode.fill: FillMode.blur,
+        InpaintMode.expand: FillMode.border,
+        InpaintMode.add_object: FillMode.neutral,
+        InpaintMode.remove_object: FillMode.inpaint,
+        InpaintMode.replace_background: FillMode.replace,
+    }[mode]
+
+    is_ref_mode = mode in [InpaintMode.fill, InpaintMode.expand]
+    result.use_reference = is_ref_mode and prompt == ""
 
     if sd_ver is Arch.sd15:
         result.use_inpaint_model = strength > 0.5
@@ -795,17 +836,9 @@ def detect_inpaint(
         result.use_inpaint_model = strength > 0.8
     elif sd_ver is Arch.flux:
         result.use_inpaint_model = strength == 1.0
-
-    is_ref_mode = mode in [InpaintMode.fill, InpaintMode.expand]
-    result.use_reference = is_ref_mode and prompt == ""
-
-    result.fill = {
-        InpaintMode.fill: FillMode.blur,
-        InpaintMode.expand: FillMode.border,
-        InpaintMode.add_object: FillMode.neutral,
-        InpaintMode.remove_object: FillMode.inpaint,
-        InpaintMode.replace_background: FillMode.replace,
-    }[mode]
+    elif sd_ver is Arch.flux_k:
+        result.mode = InpaintMode.custom
+        result.fill = FillMode.none
     return result
 
 
@@ -980,16 +1013,19 @@ def refine(
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
-    latent = w.batch_latent(latent, misc.batch_count)
+    latent_batch = w.batch_latent(latent, misc.batch_count)
     positive, negative = encode_text_prompt(w, cond, clip, regions)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
+    )
+    positive = apply_edit_conditioning(
+        w, positive, in_image, latent, cond.all_control, vae, models.arch, checkpoint.tiled_vae
     )
     sampler = w.sampler_custom_advanced(
         model,
         positive,
         negative,
-        latent,
+        latent_batch,
         models.arch,
         two_pass=settings.use_refiner_pass,
         first_pass_sampler=settings.first_pass_sampler,
@@ -1048,6 +1084,9 @@ def refine_region(
         inpaint_model = model
     else:
         latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
+        positive = apply_edit_conditioning(
+            w, positive, in_image, latent, cond.all_control, vae, models.arch, checkpoint.tiled_vae
+        )
         latent = w.set_latent_noise_mask(latent, initial_mask)
         inpaint_model = model
 

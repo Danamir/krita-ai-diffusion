@@ -8,10 +8,10 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.35.0"
+version = "1.36.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "5a87757ef96f807cf1cf5b41c55a0a84c9551f20"
+comfy_version = "e18f53cca9062cc6b165e16712772437b80333f2"
 
 
 class CustomNode(NamedTuple):
@@ -41,7 +41,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "ca2b59248ece910579b55a1512b0a846928259ea",
+        "5ef2fddc1ba5fc2dc38286a29f97268be4e25343",
         ["ETN_LoadImageBase64", "ETN_LoadMaskBase64", "ETN_SendImageWebSocket", "ETN_Translate"],
     ),
     CustomNode(
@@ -78,6 +78,7 @@ class Arch(Enum):
     sdxl = "SD XL"
     sd3 = "SD 3"
     flux = "Flux"
+    flux_k = "Flux Kontext"
     illu = "Illustrious"
     illu_v = "Illustrious v-prediction"
 
@@ -85,7 +86,7 @@ class Arch(Enum):
     all = "All"
 
     @staticmethod
-    def from_string(string: str, model_type: str = "eps"):
+    def from_string(string: str, model_type: str = "eps", filename: str | None = None):
         if string == "sd15":
             return Arch.sd15
         if string == "sdxl" and model_type == "v-prediction":
@@ -94,6 +95,8 @@ class Arch(Enum):
             return Arch.sdxl
         if string == "sd3":
             return Arch.sd3
+        if string == "flux" and filename and "kontext" in filename.lower():
+            return Arch.flux_k
         if string == "flux" or string == "flux-schnell":
             return Arch.flux
         if string == "illu":
@@ -141,9 +144,17 @@ class Arch(Enum):
         return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v]
 
     @property
+    def is_edit(self):  # edit models make changes to input images
+        return self is Arch.flux_k
+
+    @property
     def is_sdxl_like(self):
         # illustrious technically uses sdxl architecture, but has a separate ecosystem
         return self in [Arch.sdxl, Arch.illu, Arch.illu_v]
+
+    @property
+    def is_flux_like(self):
+        return self in [Arch.flux, Arch.flux_k]
 
     @property
     def text_encoders(self):
@@ -154,17 +165,13 @@ class Arch(Enum):
                 return ["clip_l", "clip_g"]
             case Arch.sd3:
                 return ["clip_l", "clip_g"]
-            case Arch.flux:
+            case Arch.flux | Arch.flux_k:
                 return ["clip_l", "t5"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
     def list():
-        return [Arch.sd15, Arch.sdxl, Arch.sd3, Arch.flux, Arch.illu, Arch.illu_v]
-
-    @staticmethod
-    def list_strings():
-        return ["sd15", "sdxl", "sd3", "flux", "flux-schnell"]
+        return [Arch.sd15, Arch.sdxl, Arch.sd3, Arch.flux, Arch.flux_k, Arch.illu, Arch.illu_v]
 
 
 class ResourceKind(Enum):
@@ -265,7 +272,7 @@ class ControlMode(Enum):
 
     def can_substitute_universal(self, arch: Arch):
         """True if this control mode is covered by univeral control-net."""
-        if arch == Arch.sdxl:
+        if arch.is_sdxl_like:
             return self in [
                 ControlMode.inpaint,
                 ControlMode.scribble,
@@ -555,6 +562,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.inpaint): ["flux.1-dev-controlnet-inpaint"],
     resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.inpaint): ["noobaiinpainting"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.universal): ["union-sdxl", "xinsirunion"],
+    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.universal): ["union-sdxl", "xinsirunion"],
+    resource_id(ResourceKind.controlnet, Arch.illu_v, ControlMode.universal): ["union-sdxl", "xinsirunion"],
     resource_id(ResourceKind.controlnet, Arch.flux, ControlMode.universal): ["flux.1-dev-controlnet-union-pro-2.0", "flux.1-dev-controlnet-union-pro", "flux.1-dev-controlnet-union", "flux1devcontrolnetunion"],
     resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble): ["control_v11p_sd15_scribble", "control_lora_rank128_v11p_sd15_scribble"],
     resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.scribble): ["xinsirscribble", "scribble-sdxl", "mistoline_fp16", "mistoline_rank", "control-lora-sketch-rank", "sai_xl_sketch_"],
@@ -624,6 +633,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.illu_v, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.sd3, "default"): ["sd3"],
     resource_id(ResourceKind.vae, Arch.flux, "default"): ["flux", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.flux_k, "default"): ["flux", "ae.s"],
 }
 # fmt: on
 

@@ -164,7 +164,9 @@ class Model(QObject, ObservableProperties):
         eventloop.run(_report_errors(self, jobs))
 
     def _prepare_workflow(self, dryrun=False):
-        workflow_kind = WorkflowKind.generate if self.strength == 1.0 else WorkflowKind.refine
+        workflow_kind = WorkflowKind.generate
+        if self.strength < 1.0 or self.arch.is_edit:
+            workflow_kind = WorkflowKind.refine
         client = self._connection.client
         image = None
         inpaint_mode = InpaintMode.fill
@@ -194,7 +196,7 @@ class Model(QObject, ObservableProperties):
         else:
             conditioning, job_regions = ConditioningInput("", ""), []
 
-        if mask is not None or self.strength < 1.0:
+        if mask is not None or workflow_kind is WorkflowKind.refine:
             image = self._get_current_image(bounds) if not dryrun else DummyImage(bounds.extent)
 
         if mask is not None:
@@ -257,6 +259,8 @@ class Model(QObject, ObservableProperties):
         job.id = await client.enqueue(input, self.queue_front)
 
     def _prepare_upscale_image(self, dryrun=False):
+        assert not self.arch.is_edit, "Edit models do not support upscaling"
+
         client = self._connection.client
         extent = self._doc.extent
         image = self._doc.get_image(Bounds(0, 0, *extent)) if not dryrun else DummyImage(extent)
@@ -336,7 +340,9 @@ class Model(QObject, ObservableProperties):
 
     def _prepare_live_workflow(self):
         strength = self.live.strength
-        workflow_kind = WorkflowKind.generate if strength == 1.0 else WorkflowKind.refine
+        workflow_kind = WorkflowKind.generate
+        if strength < 1.0 or self.arch.is_edit:
+            workflow_kind = WorkflowKind.refine
         client = self._connection.client
         min_mask_size = 512 if self.arch is Arch.sd15 else 800
         extent = self._doc.extent
@@ -362,7 +368,7 @@ class Model(QObject, ObservableProperties):
         if mask is not None:
             workflow_kind = WorkflowKind.refine_region
             bounds, mask.bounds = compute_relative_bounds(mask.bounds, mask.bounds)
-        if mask is not None or self.live.strength < 1.0:
+        if mask is not None or workflow_kind is WorkflowKind.refine:
             image = self._get_current_image(bounds)
 
         conditioning, job_regions = process_regions(self.regions, bounds)
@@ -435,13 +441,20 @@ class Model(QObject, ObservableProperties):
             return False
 
     def _get_current_image(self, bounds: Bounds):
-        exclude = None
+        exclude = []
         if self.workspace is not Workspace.live:
             exclude = [  # exclude control layers from projection
                 c.layer for c in self.regions.control if not c.mode.is_part_of_image
             ]
             if self._layer:  # exclude preview layer
                 exclude.append(self._layer)
+
+        if not any(l.is_visible and l not in exclude for l in self.layers.images):
+            warning = _(
+                "Tried to capture the current image, but there are no visible layers! Preview and control layers are not considered to be part of the input image."
+            )
+            raise ValueError(warning)
+
         return self._doc.get_image(bounds, exclude_layers=exclude)
 
     def generate_control_layer(self, control: ControlLayer):
@@ -1176,6 +1189,8 @@ class AnimationWorkspace(QObject, ObservableProperties):
 
     def _prepare_input(self, canvas: Image | Extent, seed: int, time: int):
         m = self._model
+        assert not m.arch.is_edit, "Cannot generate animation frames with an edit model"
+
         bounds = Bounds(0, 0, *m.document.extent)
         conditioning, _ = process_regions(m.regions, bounds, self._model.layers.root, time=time)
         conditioning.language = m.prompt_translation_language
