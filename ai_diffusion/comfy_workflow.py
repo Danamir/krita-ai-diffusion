@@ -342,7 +342,7 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
         first_pass_steps = round(steps*0.6)
 
-        if two_pass and first_pass_steps > start_at_step and arch not in (Arch.flux, Arch.sd3):
+        if two_pass and first_pass_steps > start_at_step and arch.supports_split_rendering:
             first_pass_sampler = first_pass_sampler or sampler
             sigmas = self.scheduler_sigmas(model, scheduler, steps, arch)
 
