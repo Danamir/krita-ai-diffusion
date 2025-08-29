@@ -47,6 +47,10 @@ def stop():
         pass
 
 
+def run_until_complete(future: asyncio.Future):
+    return _loop.run_until_complete(future)
+
+
 async def wait_until(condition: Callable[[], bool], iterations=10, no_error=False):
     while not condition() and iterations > 0:
         iterations -= 1

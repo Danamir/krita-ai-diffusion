@@ -225,7 +225,6 @@
     "Prompt Line Count": "Количество строк для подсказок",
     "Prompt Translation": "Перевод подсказок",
     "Prompt translation is active! Click to disable and switch to original input.": "Перевод подсказок включен! Нажмите, чтобы отключить и переключиться на исходный ввод.",
-    "Python not found. Please install python3, python3-venv via your package manager and restart.": "Python не найден. Пожалуйста, установите python3, python3-venv через ваш менеджер пакетов и перезапустите.",
     "Quality": "Качество",
     "Quality Preset (generate and upscale)": "Качество (генерация и масштабирование)",
     "Queued": "Очередь",
@@ -273,7 +272,6 @@
     "Server Management": "Управление сервером",
     "Server Path": "Путь к серверу",
     "Server URL": "URL-адрес сервера",
-    "Server execution error": "Ошибка выполнения сервера",
     "Server is missing required components": "На сервере отсутствуют необходимые компоненты",
     "Server is not installed": "Сервер не установлен",
     "Server is not installed or not running. Click below to start.": "Сервер не установлен или не запущен. Нажмите ниже, чтобы запустить.",
@@ -500,6 +498,15 @@
     "Would you like to delete and re-download these files?": "Хотите удалить и загрузить эти файлы заново?",
     "Tried to capture the current image, but there are no visible layers! Preview and control layers are not considered to be part of the input image.": null,
     "Edit (Custom)": null,
-    "Edit": null
+    "Edit": null,
+    "Replace Queue": null,
+    "Generation took too long and was cancelled (timeout)": null,
+    "Server error": null,
+    "Perform certain plugin operations in background threads": null,
+    "Flux models": null,
+    "Not supported": null,
+    "History Format": null,
+    "File format for saving generated images in history": null,
+    "Multi-Threading": null
   }
 }

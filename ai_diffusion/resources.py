@@ -8,10 +8,11 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.36.0"
+version = "1.38.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "e18f53cca9062cc6b165e16712772437b80333f2"
+comfy_version = "7139d6d93fc7b5481a69b687080bd36f7b531c46"
+nunchaku_version = "1.0.0.dev20250816"
 
 
 class CustomNode(NamedTuple):
@@ -41,7 +42,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "5ef2fddc1ba5fc2dc38286a29f97268be4e25343",
+        "fa46b933297ef8bc8fd760674af27330b24dccd9",
         ["ETN_LoadImageBase64", "ETN_LoadMaskBase64", "ETN_SendImageWebSocket", "ETN_Translate"],
     ),
     CustomNode(
@@ -58,15 +59,22 @@ optional_custom_nodes = [
         "GGUF",
         "ComfyUI-GGUF",
         "https://github.com/city96/ComfyUI-GGUF",
-        "a2b75978fd50c0227a58316619b79d525b88e570",
+        "cf0573351ac260d629d460d97f09b09ac17d3726",
         ["UnetLoaderGGUF", "DualCLIPLoaderGGUF"],
     ),
     CustomNode(
         "WaveSpeed",
         "Comfy-WaveSpeed",
         "https://github.com/chengzeyi/Comfy-WaveSpeed",
-        "16ec6f344f8cecbbf006d374043f85af22b7a51d",
+        "8253745127785d820cff0a9621d1537a5aae5424",
         ["ApplyFBCacheOnModel"],
+    ),
+    CustomNode(
+        "Nunchaku",
+        "ComfyUI-nunchaku",
+        "https://github.com/nunchaku-tech/ComfyUI-nunchaku",
+        "ca9e26422a5452b3306012ba2ed305e712a3f7e3",
+        ["NunchakuFluxDiTLoader"],
     ),
 ]
 
@@ -81,6 +89,7 @@ class Arch(Enum):
     flux_k = "Flux Kontext"
     illu = "Illustrious"
     illu_v = "Illustrious v-prediction"
+    chroma = "Chroma"
 
     auto = "Automatic"
     all = "All"
@@ -103,6 +112,8 @@ class Arch(Enum):
             return Arch.illu
         if string == "illu_v":
             return Arch.illu_v
+        if string == "chroma":
+            return Arch.chroma
         return None
 
     @staticmethod
@@ -171,11 +182,22 @@ class Arch(Enum):
                 return ["clip_l", "clip_g"]
             case Arch.flux | Arch.flux_k:
                 return ["clip_l", "t5"]
+            case Arch.chroma:
+                return ["t5"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
     def list():
-        return [Arch.sd15, Arch.sdxl, Arch.sd3, Arch.flux, Arch.flux_k, Arch.illu, Arch.illu_v]
+        return [
+            Arch.sd15,
+            Arch.sdxl,
+            Arch.sd3,
+            Arch.flux,
+            Arch.flux_k,
+            Arch.illu,
+            Arch.illu_v,
+            Arch.chroma,
+        ]
 
 
 class ResourceKind(Enum):
@@ -352,6 +374,7 @@ class VerificationStatus(NamedTuple):
 class ModelRequirements(Enum):
     none = 0
     insightface = 1
+    cuda = 2
 
 
 class ModelFile(NamedTuple):
@@ -617,6 +640,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.sdxl, "lightning"): ["sdxl_lightning_8step_lora"],
     resource_id(ResourceKind.lora, Arch.sd15, "hyper"): ["Hyper-SD15-8steps-CFG-lora"],
     resource_id(ResourceKind.lora, Arch.sdxl, "hyper"): ["Hyper-SDXL-8steps-CFG-lora"],
+    resource_id(ResourceKind.lora, Arch.flux, "turbo"): ["flux.1-turbo"],
+    resource_id(ResourceKind.lora, Arch.flux_k, "turbo"): ["flux.1-turbo"],
     resource_id(ResourceKind.lora, Arch.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15_lora", "ip-adapter-faceid-plus_sd15_lora"],
     resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
@@ -630,7 +655,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.inpaint, Arch.all, "default"): ["MAT_Places512_G_fp16", "Places_512_FullData_G", "big-lama.pt"],
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_l"): ["clip_l"],
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_g"): ["clip_g"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5xxl_fp16", "t5xxl_fp8_e4m3fn", "t5xxl_fp8_e4m3fn_scaled", "t5-v1_1-xxl", "t5"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -638,6 +663,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.sd3, "default"): ["sd3"],
     resource_id(ResourceKind.vae, Arch.flux, "default"): ["flux", "ae.s"],
     resource_id(ResourceKind.vae, Arch.flux_k, "default"): ["flux", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.chroma, "default"): ["flux", "ae.s"],
 }
 # fmt: on
 

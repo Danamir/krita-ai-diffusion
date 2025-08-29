@@ -30,7 +30,9 @@ av
 importlib_metadata
 huggingface_hub
 scipy
-opencv-python>=4.7.0.72
+# Version fixed because later versions require numpy>2 which conflicts with mediapipe
+opencv-python==4.11.0.86
+protobuf>=4.25.3,<5
 filelock
 Pillow
 einops
@@ -54,3 +56,12 @@ gguf
 
 # comfyui-tooling-nodes
 argostranslate
+# Version fixed because argostranslate requires it
+sentencepiece==0.2.0
+
+# Nunchaku
+diffusers>=0.34
+accelerate
+huggingface_hub
+tomli
+peft>=0.15

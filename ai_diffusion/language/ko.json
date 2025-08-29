@@ -225,7 +225,6 @@
     "Prompt Line Count": "프롬프트 라인 수",
     "Prompt Translation": "프롬프트 번역",
     "Prompt translation is active! Click to disable and switch to original input.": "프롬프트 번역이 활성화되었습니다! 비활성화하고 원래 입력으로 전환하려면 클릭하세요.",
-    "Python not found. Please install python3, python3-venv via your package manager and restart.": "Python을 찾을 수 없습니다. 패키지 관리자를 통해 python3, python3-venv를 설치하고 다시 시작하세요.",
     "Quality": "품질",
     "Quality Preset (generate and upscale)": "품질 프리셋(생성 및 업스케일)",
     "Queued": "대기 중",
@@ -273,7 +272,6 @@
     "Server Management": "서버 관리",
     "Server Path": "서버 경로",
     "Server URL": "서버 URL",
-    "Server execution error": "서버 실행 오류",
     "Server is missing required components": "서버에 필요한 구성 요소가 누락되었습니다",
     "Server is not installed": "서버가 설치되지 않았습니다",
     "Server is not installed or not running. Click below to start.": "서버가 설치되지 않았거나 실행되지 않습니다. 시작하려면 아래를 클릭",
@@ -500,6 +498,15 @@
     "Would you like to delete and re-download these files?": null,
     "Tried to capture the current image, but there are no visible layers! Preview and control layers are not considered to be part of the input image.": null,
     "Edit (Custom)": null,
-    "Edit": null
+    "Edit": null,
+    "Replace Queue": null,
+    "Generation took too long and was cancelled (timeout)": null,
+    "Server error": null,
+    "Perform certain plugin operations in background threads": null,
+    "Flux models": null,
+    "Not supported": null,
+    "History Format": null,
+    "File format for saving generated images in history": null,
+    "Multi-Threading": null
   }
 }

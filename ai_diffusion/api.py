@@ -5,8 +5,9 @@ from types import GenericAlias, UnionType
 from typing import Any, get_args, get_origin
 import math
 
-from .image import Bounds, Extent, Image, ImageCollection, ImageFileFormat
+from .image import Bounds, Extent, Image, ImageCollection
 from .resources import ControlMode, Arch
+from .settings import ImageFileFormat
 from .util import ensure, clamp
 
 
@@ -233,7 +234,7 @@ def _base_cost(arch: Arch):
         return 1
     if arch.is_sdxl_like:
         return 2
-    if arch.is_flux_like:
+    if arch.is_flux_like or arch is Arch.chroma:
         return 4
     return 1
 

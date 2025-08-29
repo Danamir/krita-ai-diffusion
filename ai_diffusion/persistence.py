@@ -1,8 +1,10 @@
 from __future__ import annotations
+import asyncio
 import json
 from dataclasses import dataclass, asdict, field
 from enum import Enum
 from typing import Any
+from time import time
 from PyQt5.QtCore import QObject, QByteArray
 from PyQt5.QtGui import QImageReader
 from PyQt5.QtWidgets import QMessageBox
@@ -19,6 +21,7 @@ from .properties import serialize, deserialize
 from .settings import settings
 from .localization import translate as _
 from .util import client_logger as log, encode_json
+from . import eventloop
 
 # Version of the persistence format, increment when there are breaking changes
 version = 1
@@ -111,15 +114,14 @@ class _HistoryResult:
 class ModelSync:
     """Synchronizes the model with the document's annotations."""
 
-    _model: Model
-    _history: list[_HistoryResult]
-    _memory_used: dict[int, int]  # slot -> memory used for images in bytes
-    _slot_index = 0
-
     def __init__(self, model: Model):
         self._model = model
-        self._history = []
-        self._memory_used = {}
+        self._history: list[_HistoryResult] = []
+        self._memory_used: dict[int, int] = {}  # slot -> memory used for images in bytes
+        self._slot_index = 0
+        self._last_change = 0
+        self._save_task: asyncio.Task | None = None
+        self._image_task: asyncio.Future | None = None
         if state_bytes := _find_annotation(model.document, "ui.json"):
             try:
                 self._load(model, state_bytes.data())
@@ -128,6 +130,13 @@ class ModelSync:
                 log.exception(msg)
                 QMessageBox.warning(None, "AI Diffusion Plugin", msg)
         self._track(model)
+
+    def __del__(self):
+        try:
+            if self._image_task is not None and not self._image_task.done():
+                eventloop.run_until_complete(self._image_task)
+        except Exception as e:
+            log.warning(f"Persistence: failed to wait for image task completion: {e}")
 
     def _save(self):
         model = self._model
@@ -181,17 +190,17 @@ class ModelSync:
                 self._slot_index = max(self._slot_index, item.slot + 1)
 
     def _track(self, model: Model):
-        model.modified.connect(self._save)
-        model.inpaint.modified.connect(self._save)
-        model.upscale.modified.connect(self._save)
-        model.live.modified.connect(self._save)
-        model.animation.modified.connect(self._save)
-        model.custom.modified.connect(self._save)
+        model.modified.connect(self._save_later)
+        model.inpaint.modified.connect(self._save_later)
+        model.upscale.modified.connect(self._save_later)
+        model.live.modified.connect(self._save_later)
+        model.animation.modified.connect(self._save_later)
+        model.custom.modified.connect(self._save_later)
         model.jobs.job_finished.connect(self._save_results)
         model.jobs.job_discarded.connect(self._remove_results)
         model.jobs.result_discarded.connect(self._remove_image)
-        model.jobs.result_used.connect(self._save)
-        model.jobs.selection_changed.connect(self._save)
+        model.jobs.result_used.connect(self._save_later)
+        model.jobs.selection_changed.connect(self._save_later)
         self._track_regions(model.regions)
 
     def _track_control(self, control: ControlLayer):
@@ -220,14 +229,28 @@ class ModelSync:
         if job.kind in [JobKind.diffusion, JobKind.animation] and len(job.results) > 0:
             slot = self._slot_index
             self._slot_index += 1
-            image_data, image_offsets = job.results.to_bytes()
-            self._model.document.annotate(f"result{slot}.webp", image_data)
-            self._history.append(
-                _HistoryResult(job.id or "", slot, image_offsets, job.params, job.kind, job.in_use)
+            self._image_task = eventloop.run(self._save_result_images(job, slot, self._image_task))
+
+    async def _save_result_images(
+        self, job: Job, slot: int, prev_task: asyncio.Future | None = None
+    ):
+        if prev_task is not None:
+            await prev_task
+        if settings.multi_threading:
+            loop = asyncio.get_running_loop()
+            image_data, image_offsets = await loop.run_in_executor(
+                None, job.results.to_bytes, settings.history_format
             )
-            self._memory_used[slot] = image_data.size()
-            self._prune()
-            self._save()
+        else:
+            image_data, image_offsets = job.results.to_bytes(settings.history_format)
+
+        self._model.document.annotate(f"result{slot}.webp", image_data)
+        self._history.append(
+            _HistoryResult(job.id or "", slot, image_offsets, job.params, job.kind, job.in_use)
+        )
+        self._memory_used[slot] = image_data.size()
+        self._prune()
+        self._save()
 
     def _remove_results(self, job: Job):
         index = next((i for i, h in enumerate(self._history) if h.id == job.id), None)
@@ -244,6 +267,16 @@ class ModelSync:
                 self._model.document.annotate(f"result{history.slot}.webp", image_data)
                 self._memory_used[history.slot] = image_data.size()
                 self._save()
+
+    def _save_later(self):
+        self._last_change = time()
+        if self._save_task is None or self._save_task.done():
+            self._save_task = eventloop.run(self._delayed_save())
+
+    async def _delayed_save(self):
+        while time() - self._last_change < 0.5:
+            await asyncio.sleep(0.5)
+            self._save()
 
     @property
     def memory_used(self):

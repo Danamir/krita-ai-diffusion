@@ -12,7 +12,7 @@ from typing import Any, Optional, Sequence
 from .api import WorkflowInput
 from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
 from .client import SharedWorkflow, TranslationPackage, ClientFeatures, TextOutput
-from .client import MissingResources, filter_supported_styles, loras_to_upload
+from .client import Quantization, MissingResources, filter_supported_styles, loras_to_upload
 from .files import FileFormat
 from .image import Image, ImageCollection
 from .network import RequestManager, NetworkError
@@ -35,24 +35,18 @@ if util.is_macos:
 
 @dataclass
 class JobInfo:
-    local_id: str
+    id: str
     work: WorkflowInput
     front: bool = False
-    remote_id: str | asyncio.Future[str] | None = None
     node_count: int = 0
     sample_count: int = 0
 
     def __str__(self):
-        return f"Job[local={self.local_id}, remote={self.remote_id}]"
+        return f"Job[id={self.id}]"
 
     @staticmethod
     def create(work: WorkflowInput, front: bool = False):
         return JobInfo(str(uuid.uuid4()), work, front)
-
-    async def get_remote_id(self):
-        if isinstance(self.remote_id, asyncio.Future):
-            self.remote_id = await self.remote_id
-        return self.remote_id
 
 
 class Progress:
@@ -65,7 +59,7 @@ class Progress:
 
     def handle(self, msg: dict):
         id = msg["data"].get("prompt_id", None)
-        if id is not None and id != self._info.remote_id:
+        if id is not None and id != self._info.id:
             return
         if msg["type"] == "executing":
             self._nodes += 1
@@ -201,7 +195,7 @@ class ComfyClient(Client):
     async def enqueue(self, work: WorkflowInput, front: bool = False):
         job = JobInfo.create(work, front=front)
         await self._queue.put(job)
-        return job.local_id
+        return job.id
 
     async def _report(self, event: ClientEvent, job_id: str, value: float = 0, **kwargs):
         await self._messages.put(ClientMessage(event, job_id, value, **kwargs))
@@ -215,36 +209,34 @@ class ComfyClient(Client):
                     await self._run_job(job)
                 except Exception as e:
                     log.exception(f"Unhandled exception while processing {job}")
-                    await self._report(ClientEvent.error, job.local_id, error=str(e))
+                    await self._report(ClientEvent.error, job.id, error=str(e))
         except asyncio.CancelledError:
             pass
 
     async def _run_job(self, job: JobInfo):
-        await self.upload_loras(job.work, job.local_id)
+        await self.upload_loras(job.work, job.id)
         workflow = create_workflow(job.work, self.models)
         job.node_count = workflow.node_count
         job.sample_count = workflow.sample_count
         if settings.debug_dump_workflow:
             workflow.dump(util.log_dir)
 
-        data = {"prompt": workflow.root, "client_id": self._id, "front": job.front}
-        job.remote_id = asyncio.get_running_loop().create_future()
+        data = {
+            "prompt": workflow.root,
+            "client_id": self._id,
+            "front": job.front,
+            "prompt_id": job.id,
+        }
         self._jobs.append(job)
         try:
             result = await self._post("prompt", data)
-            job.remote_id.set_result(result["prompt_id"])
+            if result["prompt_id"] != job.id:
+                log.error(f"Prompt ID mismatch: {result['prompt_id']} != {job.id}")
+                raise ValueError("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!")
         except Exception as e:
-            job.remote_id.set_result("ERROR")
-            if self._jobs[0] == job:
-                self._jobs.popleft()
+            if job in self._jobs:
+                self._jobs.remove(job)
             raise e
-
-    async def _finish_enqueue_requests(self):
-        # Make sure all /prompt requests at the time of calling have returned (remote_id is set)
-        # Note: further jobs may be added to the queue while waiting
-        jobs_so_far = list(self._jobs)
-        for job in jobs_so_far:
-            await job.get_remote_id()
 
     async def _listen(self):
         url = websocket_url(self.url)
@@ -290,7 +282,7 @@ class ComfyClient(Client):
 
                 if msg["type"] == "execution_start":
                     id = msg["data"]["prompt_id"]
-                    self._active = await self._start_job(id)
+                    self._active = self._start_job(id)
                     if self._active is not None:
                         progress = Progress(self._active)
                         images = ImageCollection()
@@ -299,12 +291,12 @@ class ComfyClient(Client):
                 if msg["type"] == "execution_interrupted":
                     job = self._get_active_job(msg["data"]["prompt_id"])
                     if job:
-                        self._clear_job(job.remote_id)
-                        await self._report(ClientEvent.interrupted, job.local_id)
+                        self._clear_job(job.id)
+                        await self._report(ClientEvent.interrupted, job.id)
 
                 if msg["type"] == "executing" and msg["data"]["node"] is None:
                     job_id = msg["data"]["prompt_id"]
-                    if local_id := self._clear_job(job_id):
+                    if self._clear_job(job_id):
                         if len(images) == 0:
                             # It may happen if the entire execution is cached and no images are sent.
                             images = last_images
@@ -312,25 +304,23 @@ class ComfyClient(Client):
                             # Still no images. Potential scenario: execution cached, but previous
                             # generation happened before the client was connected.
                             err = "No new images were generated because the inputs did not change."
-                            await self._report(ClientEvent.error, local_id, error=err)
+                            await self._report(ClientEvent.error, job_id, error=err)
                         else:
                             last_images = images
                             await self._report(
-                                ClientEvent.finished, local_id, 1, images=images, result=result
+                                ClientEvent.finished, job_id, 1, images=images, result=result
                             )
 
                 elif msg["type"] in ("execution_cached", "executing", "progress"):
                     if self._active is not None and progress is not None:
                         progress.handle(msg)
-                        await self._report(
-                            ClientEvent.progress, self._active.local_id, progress.value
-                        )
+                        await self._report(ClientEvent.progress, self._active.id, progress.value)
                     else:
                         log.warning(f"Received message {msg} but there is no active job")
 
                 if msg["type"] == "executed":
                     if job := self._get_active_job(msg["data"]["prompt_id"]):
-                        text_output = _extract_text_output(job.local_id, msg)
+                        text_output = _extract_text_output(job.id, msg)
                         if text_output is not None:
                             await self._messages.put(text_output)
                         pose_json = _extract_pose_json(msg)
@@ -343,8 +333,8 @@ class ComfyClient(Client):
                         error = msg["data"].get("exception_message", "execution_error")
                         traceback = msg["data"].get("traceback", "no traceback")
                         log.error(f"Job {job} failed: {error}\n{traceback}")
-                        self._clear_job(job.remote_id)
-                        await self._report(ClientEvent.error, job.local_id, error=error)
+                        self._clear_job(job.id)
+                        await self._report(ClientEvent.error, job.id, error=error)
 
                 if msg["type"] == "etn_workflow_published":
                     name = f"{msg['data']['publisher']['name']} ({msg['data']['publisher']['id']})"
@@ -372,7 +362,7 @@ class ComfyClient(Client):
         while not self._queue.empty():
             try:
                 job = self._queue.get_nowait()
-                tasks.append(self._report(ClientEvent.interrupted, job.local_id))
+                tasks.append(self._report(ClientEvent.interrupted, job.id))
             except asyncio.QueueEmpty:
                 break
         await asyncio.gather(*tasks)
@@ -423,14 +413,15 @@ class ComfyClient(Client):
                 (
                     filename,
                     Arch.from_string(info["base_model"], info.get("type", "eps"), filename),
+                    Quantization.from_string(info.get("quant", "none")),
                     info.get("is_inpaint", False),
                     info.get("is_refiner", False),
                 )
                 for filename, info in models.items()
             )
             return {
-                filename: CheckpointInfo(filename, arch, model_format)
-                for filename, arch, is_inpaint, is_refiner in parsed
+                filename: CheckpointInfo(filename, arch, model_format, quant)
+                for filename, arch, quant, is_inpaint, is_refiner in parsed
                 if not (arch is None or (is_inpaint and arch is not Arch.flux) or is_refiner)
             }
 
@@ -506,42 +497,40 @@ class ComfyClient(Client):
             except Exception as e:
                 raise Exception(_("Error during upload of LoRA model") + f" {file.path}: {str(e)}")
 
-    def _get_active_job(self, remote_id: str) -> Optional[JobInfo]:
-        if self._active and self._active.remote_id == remote_id:
+    def _get_active_job(self, job_id: str) -> Optional[JobInfo]:
+        if self._active and self._active.id == job_id:
             return self._active
         elif self._active:
-            log.warning(f"Received message for job {remote_id}, but job {self._active} is active")
+            log.warning(f"Received message for job {job_id}, but job {self._active} is active")
         if len(self._jobs) == 0:
-            log.warning(f"Received unknown job {remote_id}")
+            log.warning(f"Received unknown job {job_id}")
             return None
-        return next((j for j in self._jobs if j.remote_id == remote_id), None)
+        return next((j for j in self._jobs if j.id == job_id), None)
 
-    async def _start_job(self, remote_id: str):
+    def _start_job(self, job_id: str):
         if self._active is not None:
-            log.warning(f"Started job {remote_id}, but {self._active} was never finished")
+            log.warning(f"Started job {job_id}, but {self._active} was never finished")
         if len(self._jobs) == 0:
-            log.warning(f"Received unknown job {remote_id}")
+            log.warning(f"Received unknown job {job_id}")
             return None
 
-        await self._finish_enqueue_requests()
-        if self._jobs[0].remote_id == remote_id:
+        if self._jobs[0].id == job_id:
             return self._jobs.popleft()
 
-        log.warning(f"Started job {remote_id}, but {self._jobs[0]} was expected")
-        job = next((j for j in self._jobs if j.remote_id == remote_id), None)
-        # Clear earlier jobs, they've likely been cancelled.
+        job = next((j for j in self._jobs if j.id == job_id), None)
         if job is not None:
-            while self._jobs[0] != job:
-                self._jobs.popleft()
-            assert self._jobs.popleft() == job
+            self._jobs.remove(job)
+            if not job.front:
+                log.warning(f"Started job {job_id}, but {self._jobs[0]} was expected")
+        else:
+            log.warning(f"Cannot start job {job_id}: not found")
         return job
 
-    def _clear_job(self, job_remote_id: str | asyncio.Future | None):
-        if self._active is not None and self._active.remote_id == job_remote_id:
-            result = self._active.local_id
+    def _clear_job(self, job_id: str):
+        if self._active is not None and self._active.id == job_id:
             self._active = None
-            return result
-        return None
+            return True
+        return False
 
     def _check_workload(self, sdver: Arch) -> list[ResourceId]:
         models = self.models
@@ -598,15 +587,18 @@ def _find_model(
     def sanitize(p):
         return p.replace("\\", "/").lower()
 
-    def match(filename: str, pattern: str):
-        filename = sanitize(filename)
-        pattern = pattern.lower()
-        return all(p in filename for p in pattern.split("*"))
+    matches: list[tuple[str, int]] = []
+    for i, pattern in enumerate(search_paths):
+        for filename in model_list:
+            name = sanitize(filename)
+            pattern = pattern.lower()
+            if all(p in name for p in pattern.split("*")):
+                # prioritize names with "krita" in the path, then earlier matches
+                prio = 0 if "krita" in name else i * 100 + len(name)
+                matches.append((filename, prio))
 
-    matches = (m for p in search_paths for m in model_list if match(m, p))
-    # if there are multiple matches, prefer the one with "krita" in the path
-    prio = sorted(matches, key=lambda m: 0 if "krita" in m else len(m))
-    found = next(iter(prio), None)
+    matches = sorted(matches, key=lambda m: m[1])
+    found, _ = next(iter(matches), (None, -1))
     model_id = identifier.name if isinstance(identifier, Enum) else identifier
     model_name = f"{kind.value} {model_id}"
 
@@ -687,10 +679,15 @@ def _find_loras(model_list: Sequence[str]):
     kind = ResourceKind.lora
     common_loras = list(product(["hyper", "lcm", "face"], [Arch.sd15, Arch.sdxl]))
     sdxl_loras = [("lightning", Arch.sdxl)]
-    flux_loras = [(ControlMode.depth, Arch.flux), (ControlMode.canny_edge, Arch.flux)]
+    flux_loras = [
+        ("turbo", Arch.flux),
+        (ControlMode.depth, Arch.flux),
+        (ControlMode.canny_edge, Arch.flux),
+    ]
+    flux_k_loras = [("turbo", Arch.flux_k)]
     return {
         resource_id(kind, arch, name): _find_model(model_list, kind, arch, name)
-        for name, arch in chain(common_loras, sdxl_loras, flux_loras)
+        for name, arch in chain(common_loras, sdxl_loras, flux_loras, flux_k_loras)
     }
 
 

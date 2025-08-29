@@ -16,8 +16,8 @@ from .resources import CustomNode, ModelResource, ModelRequirements, Arch
 from .resources import VerificationStatus, VerificationState
 from .network import download, DownloadProgress
 from .localization import translate as _
-from .util import ZipFile, is_windows, create_process, decode_pipe_bytes, determine_system_encoding
-from .util import client_logger as log, server_logger as server_log
+from .util import ZipFile, create_process, decode_pipe_bytes, determine_system_encoding
+from .util import client_logger as log, server_logger as server_log, is_windows, is_macos
 
 
 _exe = ".exe" if is_windows else ""
@@ -32,6 +32,7 @@ class ServerState(Enum):
     running = 6
     verifying = 7
     uninstalling = 8
+    update_required = 9
 
 
 class InstallationProgress(NamedTuple):
@@ -61,11 +62,11 @@ class Server:
     _task: Optional[asyncio.Task] = None
     _installed_backend: Optional[ServerBackend] = None
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: str | None = None, backend: ServerBackend | None = None):
         self.path = Path(path or settings.server_path)
         if not self.path.is_absolute():
             self.path = Path(__file__).parent / self.path
-        self.backend = settings.server_backend
+        self.backend = backend or settings.server_backend
         self.check_install()
 
     def check_install(self):
@@ -95,20 +96,28 @@ class Server:
 
         python_pkg = ["python.exe"] if is_windows else ["python3"]
         python_search_paths = [
-            self.path / "python",
             self.path / "venv" / "bin",
             self.path / "venv" / "Scripts",
         ]
         python_path = _find_component(python_pkg, python_search_paths)
-        if python_path is None:
-            if not is_windows:
-                self._python_cmd = _find_program(
-                    "python3.12", "python3.11", "python3.10", "python3", "python"
-                )
-        else:
+        if python_path is not None:
             self._python_cmd = python_path / f"python{_exe}"
 
-        if not (self.has_comfy and self.has_python):
+        gpu_backends = [ServerBackend.cuda, ServerBackend.directml, ServerBackend.xpu]
+        backend_mismatch = (
+            self._installed_backend is not None
+            and self._installed_backend != self.backend
+            and self.backend in gpu_backends
+            and self._installed_backend in (gpu_backends + [ServerBackend.cpu])
+        )
+        update_required = (
+            self.has_comfy
+            and self.version is not None
+            and self.version != "incomplete"
+            and (self.version != resources.version or backend_mismatch or not self.has_python)
+        )
+
+        if not self.has_comfy or not (self.has_python or update_required):
             self.state = ServerState.not_installed
             self.missing_resources = resources.all_resources
             return
@@ -127,11 +136,16 @@ class Server:
         self.missing_resources += find_missing(model_folders, resources.required_models, Arch.all)
         missing_sd15 = find_missing(model_folders, resources.required_models, Arch.sd15)
         missing_sdxl = find_missing(model_folders, resources.required_models, Arch.sdxl)
-        if len(self.missing_resources) > 0 or (len(missing_sd15) > 0 and len(missing_sdxl) > 0):
+        missing_flux = find_missing(model_folders, resources.required_models, Arch.flux)
+        if len(self.missing_resources) > 0 or (
+            len(missing_sd15) > 0 and len(missing_sdxl) > 0 and len(missing_flux) > 0
+        ):
             self.state = ServerState.missing_resources
+        elif update_required:
+            self.state = ServerState.update_required
         else:
             self.state = ServerState.stopped
-        self.missing_resources += missing_sd15 + missing_sdxl
+        self.missing_resources += missing_sd15 + missing_sdxl + missing_flux
 
         # Optional resources
         self.missing_resources += find_missing(model_folders, resources.default_checkpoints)
@@ -148,12 +162,11 @@ class Server:
         self._version_file.write_text("incomplete")
 
         has_venv = (self.path / "venv").exists()
-        has_embedded_python = (self.path / "python").exists()
         has_uv = self._uv_cmd is not None
-        if not any((has_venv, has_embedded_python, has_uv)):
+        if not any((has_venv, has_uv)):
             await try_install(self.path / "uv", self._install_uv, network, cb)
 
-        if self.comfy_dir is None or not (has_venv or has_embedded_python):
+        if self.comfy_dir is None or not has_venv:
             python_dir = self.path / "venv"
             await install_if_missing(python_dir, self._create_venv, cb)
         assert self._python_cmd is not None
@@ -195,7 +208,7 @@ class Server:
 
     async def _install_uv(self, network: QNetworkAccessManager, cb: InternalCB):
         script_ext = ".ps1" if is_windows else ".sh"
-        url = f"https://astral.sh/uv/0.6.10/install{script_ext}"
+        url = f"https://astral.sh/uv/0.8.12/install{script_ext}"
         script_path = self._cache_dir / f"install_uv{script_ext}"
         await _download_cached("Python", network, url, script_path, cb)
 
@@ -236,30 +249,27 @@ class Server:
         await _extract_archive("ComfyUI", archive_path, comfy_dir.parent, cb)
         temp_comfy_dir = comfy_dir.parent / f"ComfyUI-{resources.comfy_version}"
 
-        torch_args = ["torch~=2.7.0", "torchvision~=0.22.0", "torchaudio~=2.7.0"]
-        if self.backend is ServerBackend.cpu:
+        torch_args = ["torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0"]
+        if is_macos:  # specific versions sometimes don't work (?)
+            torch_args = ["torch", "torchvision", "torchaudio"]
+        elif self.backend is ServerBackend.cpu:
             torch_args += ["--index-url", "https://download.pytorch.org/whl/cpu"]
         elif self.backend is ServerBackend.cuda:
             torch_args += ["--index-url", "https://download.pytorch.org/whl/cu128"]
         elif self.backend is ServerBackend.directml:
             torch_args = ["numpy<2", "torch-directml", "torchvision", "torchaudio"]
         elif self.backend is ServerBackend.xpu:
-            torch_args = ["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"]
             torch_args += ["--index-url", "https://download.pytorch.org/whl/xpu"]
-        await self._pip_install("PyTorch", torch_args, cb)
+        await self._pip_install("PyTorch", ["-U"] + torch_args, cb)
 
         requirements_txt = Path(__file__).parent / "server_requirements.txt"
         await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
-
-        if self.backend is ServerBackend.xpu:
-            idx_url = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
-            cmd = ["intel-extension-for-pytorch==2.6.10+xpu", "--extra-index-url", idx_url]
-            await self._pip_install("Ipex", cmd, cb)
 
         requirements_txt = temp_comfy_dir / "requirements.txt"
         await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
 
         _configure_extra_model_paths(temp_comfy_dir)
+        _create_extra_model_dirs(self.path / "models")
         await rename_extracted_folder("ComfyUI", comfy_dir, resources.comfy_version)
         self.comfy_dir = comfy_dir
         cb("Installing ComfyUI", "Finished installing ComfyUI")
@@ -267,7 +277,12 @@ class Server:
     async def _install_custom_node(
         self, pkg: CustomNode, network: QNetworkAccessManager, cb: InternalCB
     ):
+        if pkg.name == "Nunchaku" and self.backend is not ServerBackend.cuda:
+            return
+        elif pkg.name == "Nunchaku":
+            await self._install_nunchaku(network, cb)
         assert self.comfy_dir is not None
+
         folder = self.comfy_dir / "custom_nodes" / pkg.folder
         resource_url = pkg.url
         if not resource_url.endswith(".zip"):  # git repo URL
@@ -296,6 +311,17 @@ class Server:
         else:
             await self._pip_install("FaceID", ["insightface"], cb)
 
+    async def _install_nunchaku(self, network: QNetworkAccessManager, cb: InternalCB):
+        assert self.comfy_dir is not None and self._python_cmd is not None
+        assert self.backend is ServerBackend.cuda, "Nunchaku only supports CUDA backend"
+        pyver = await get_python_version_string(self._python_cmd)
+        assert "3.12" in pyver, "Nunchaku requires Python 3.12"
+
+        platform = "win_amd64" if is_windows else "linux_x86_64"
+        ver = resources.nunchaku_version  # TODO: replace nightly version string
+        whl_url = f"https://github.com/nunchaku-tech/nunchaku/releases/download/v1.0.0dev20250816/nunchaku-{ver}+torch2.8-cp312-cp312-{platform}.whl"
+        await self._pip_install("Nunchaku", [whl_url], cb)
+
     async def _install_requirements(
         self, requirements: ModelRequirements, network: QNetworkAccessManager, cb: InternalCB
     ):
@@ -303,16 +329,11 @@ class Server:
             await self._install_insightface(network, cb)
 
     async def install(self, callback: Callback):
-        assert self.state in [ServerState.not_installed, ServerState.missing_resources] or (
-            self.state is ServerState.stopped and self.upgrade_required
-        )
-
-        if not is_windows and self._python_cmd is None:
-            raise Exception(
-                _(
-                    "Python not found. Please install python3, python3-venv via your package manager and restart."
-                )
-            )
+        assert self.state in [
+            ServerState.not_installed,
+            ServerState.missing_resources,
+            ServerState.update_required,
+        ]
 
         def cb(stage: str, message: str | DownloadProgress):
             out_message = ""
@@ -374,7 +395,7 @@ class Server:
             self.check_install()
 
     async def upgrade(self, callback: Callback):
-        assert self.upgrade_required and self.comfy_dir is not None
+        assert self.state is ServerState.update_required and self.comfy_dir is not None
 
         def info(message: str):
             log.info(message)
@@ -399,7 +420,9 @@ class Server:
         upgrade_comfy_dir.parent.mkdir(exist_ok=True)
         shutil.move(comfy_dir, upgrade_comfy_dir)
         self.comfy_dir = None
+
         try:
+            _clean_embedded_python(self.path, callback)
             await self.install(callback)
         except Exception as e:
             if upgrade_comfy_dir.exists():
@@ -444,8 +467,6 @@ class Server:
             env = {}
             if self.backend is ServerBackend.cpu:
                 args.append("--cpu")
-                if self._installed_backend is ServerBackend.xpu:
-                    env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"  # see #1813
             elif self.backend is ServerBackend.directml:
                 args.append("--directml")
             if settings.server_arguments:
@@ -648,6 +669,12 @@ class Server:
                         )
                 remove_subdir(self.comfy_dir, origin=self.path)
 
+            # Embedded Python might be left-over from older versions, remove it
+            python_dir = self.path / "python"
+            if python_dir.exists():
+                cb("Removing embedded Python")
+                remove_subdir(python_dir, origin=self.path)
+
             venv_dir = self.path / "venv"
             if venv_dir.exists():
                 cb("Removing Python venv")
@@ -699,22 +726,6 @@ class Server:
         if self.path.is_dir():
             return self.version == "incomplete" or not any(self.path.iterdir())
         return False
-
-    @property
-    def upgrade_required(self):
-        gpu_backends = [ServerBackend.cuda, ServerBackend.directml, ServerBackend.xpu]
-        backend_mismatch = (
-            self._installed_backend is not None
-            and self._installed_backend != self.backend
-            and self.backend in gpu_backends
-            and self._installed_backend in (gpu_backends + [ServerBackend.cpu])
-        )
-        return (
-            self.state is not ServerState.not_installed
-            and self.version is not None
-            and self.version != "incomplete"
-            and (self.version != resources.version or backend_mismatch)
-        )
 
 
 def _find_component(files: list[str], search_paths: list[Path]):
@@ -958,6 +969,26 @@ def _configure_extra_model_paths(comfy_dir: Path):
         path.write_text(contents + _extra_model_paths_yaml)
 
 
+model_dirs = [
+    "checkpoints",
+    "clip_vision",
+    "controlnet",
+    "diffusion_models",
+    "inpaint",
+    "ipadapter",
+    "loras",
+    "style_models",
+    "text_encoders",
+    "upscale_models",
+    "vae",
+]
+
+
+def _create_extra_model_dirs(models_dir: Path):
+    for path in model_dirs:
+        (models_dir / path).mkdir(parents=True, exist_ok=True)
+
+
 def _upgrade_extra_model_paths(src_dir: Path, dst_dir: Path):
     src = src_dir / "extra_model_paths.yaml"
     dst = dst_dir / "extra_model_paths.yaml"
@@ -975,3 +1006,14 @@ def _upgrade_models_dir(src_dir: Path, dst_dir: Path):
             shutil.move(src_dir, dst_dir)
         except Exception as e:
             log.error(f"Could not move model folder to new location: {str(e)}")
+
+
+def _clean_embedded_python(server_dir: Path, cb: Callback):
+    emb_path = server_dir / "python"
+    if is_windows and emb_path.exists():
+        cb(InstallationProgress("Upgrading", message="Removing old embedded Python..."))
+        log.info(f"Found old embedded Python at {emb_path}, removing...")
+        try:
+            remove_subdir(emb_path, origin=server_dir)
+        except Exception as e:
+            log.error(f"Could not remove embedded Python at {emb_path}: {str(e)}")
