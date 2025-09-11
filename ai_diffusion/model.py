@@ -3,6 +3,7 @@ import asyncio
 from copy import copy
 from collections import deque
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from enum import Enum
 from tempfile import TemporaryDirectory
@@ -17,7 +18,13 @@ from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput, S
 from .api import InpaintMode, InpaintParams, FillMode, ImageInput, CustomWorkflowInput, UpscaleInput
 from .localization import translate as _
 from .util import clamp, ensure, trim_text, client_logger as log
-from .settings import ApplyBehavior, ApplyRegionBehavior, GenerationFinishedAction, settings
+from .settings import (
+    ApplyBehavior,
+    ApplyRegionBehavior,
+    GenerationFinishedAction,
+    ImageFileFormat,
+    settings,
+)
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds, DummyImage
 from .client import Client, ClientMessage, ClientEvent, ClientOutput
@@ -439,8 +446,6 @@ class Model(QObject, ObservableProperties):
                 mask, _ = self._doc.create_mask_from_selection()
                 if mask:
                     img_input.hires_mask = mask.to_image(bounds.extent)
-                else:
-                    img_input.hires_mask = Mask.transparent(bounds).to_image()
 
             params = self.custom.collect_parameters(self.layers, bounds, is_anim)
             input = WorkflowInput(
@@ -614,9 +619,13 @@ class Model(QObject, ObservableProperties):
             self._layer = self.layers.create(name, image, bounds, make_active=False)
             self._layer.is_locked = True
 
-    def hide_preview(self):
+    def hide_preview(self, delete_layer=False):
         if self._layer is not None:
-            self._layer.hide()
+            if delete_layer:
+                self._layer.remove()
+                self._layer = None
+            else:
+                self._layer.hide()
 
     def apply_result(
         self,
@@ -1218,13 +1227,15 @@ class AnimationWorkspace(QObject, ObservableProperties):
 
     def _prepare_input(self, canvas: Image | Extent, seed: int, time: int):
         m = self._model
-        assert not m.arch.is_edit, "Cannot generate animation frames with an edit model"
 
+        kind = WorkflowKind.generate
+        if m.strength < 1.0 or m.arch.is_edit:
+            kind = WorkflowKind.refine
         bounds = Bounds(0, 0, *m.document.extent)
         conditioning, _ = process_regions(m.regions, bounds, self._model.layers.root, time=time)
         conditioning.language = m.prompt_translation_language
         return workflow.prepare(
-            WorkflowKind.generate if m.strength == 1.0 else WorkflowKind.refine,
+            kind,
             canvas,
             conditioning,
             style=m.style,
@@ -1238,17 +1249,20 @@ class AnimationWorkspace(QObject, ObservableProperties):
 
     async def _generate_frame(self):
         m = self._model
+        requires_image = m.strength < 1.0 or m.arch.is_edit
         bounds = Bounds(0, 0, *m.document.extent)
-        canvas = m._get_current_image(bounds) if m.strength < 1.0 else bounds.extent
+        canvas = m._get_current_image(bounds) if requires_image else bounds.extent
         seed = m.seed if m.fixed_seed else workflow.generate_seed()
         inputs = self._prepare_input(canvas, seed, m.document.current_time)
         params = JobParams(bounds, m.regions.positive, frame=(m.document.current_time, 0, 0))
         await m.enqueue_jobs(inputs, JobKind.animation_frame, params)
 
     def generate_batch(self):
-        doc = self._model.document
-        if self._model.strength < 1.0 and not self._model.layers.active.is_animated:
-            self._model.report_error(_("The active layer does not contain an animation."))
+        m = self._model
+        doc = m.document
+        requires_image = m.strength < 1.0 or m.arch.is_edit
+        if requires_image and not m.layers.active.is_animated:
+            m.report_error(_("The active layer does not contain an animation."))
             return
 
         if doc.filename:
@@ -1257,26 +1271,26 @@ class AnimationWorkspace(QObject, ObservableProperties):
             folder.mkdir(exist_ok=True)
             self._keyframes_folder = folder
         else:
-            self._model.report_error(_("Document must be saved before generating an animation."))
+            m.report_error(_("Document must be saved before generating an animation."))
             return
 
-        self._model.clear_error()
-        eventloop.run(_report_errors(self._model, self._generate_batch()))
+        m.clear_error()
+        eventloop.run(_report_errors(m, self._generate_batch()))
 
     async def _generate_batch(self):
-        doc = self._model.document
-        layer = self._model.layers.active
+        m = self._model
+        doc = m.document
+        layer = m.layers.active
         start_frame, end_frame = doc.playback_time_range
         extent = doc.extent
         bounds = Bounds(0, 0, *extent)
-        strength = self._model.strength
-        seed = self._model.seed if self._model.fixed_seed else workflow.generate_seed()
+        seed = m.seed if m.fixed_seed else workflow.generate_seed()
         animation_id = str(uuid.uuid4())
 
         for frame in range(start_frame, end_frame + 1):
-            if layer.node.hasKeyframeAtTime(frame) or strength == 1.0:
+            if layer.node.hasKeyframeAtTime(frame) or m.strength == 1.0:
                 canvas: Image | Extent = extent
-                if strength < 1.0:
+                if m.strength < 1.0 or m.arch.is_edit:
                     canvas = layer.get_pixels(time=frame)
 
                 inputs = self._prepare_input(canvas, seed, frame)
@@ -1385,16 +1399,41 @@ def _save_job_result(model: Model, job: Job | None, index: int):
     assert len(job.results) > index, "Cannot save result, invalid result index"
     assert model.document.filename, "Cannot save result, document is not saved"
     timestamp = job.timestamp.strftime("%Y%m%d-%H%M%S")
+    cur_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     prompt = util.sanitize_prompt(job.params.name)
     path = Path(model.document.filename)
-    path = path.parent / f"{path.stem}-generated-{timestamp}-{index}-{prompt}.png"
+    name_template = (
+        settings.save_image_file_name_format
+        or "{document_name}-generated-{job_timestamp}-{job_index}-{prompt}"
+    )
+    try:
+        image_name = name_template.format(
+            document_name=path.stem,
+            job_timestamp=timestamp,
+            current_timestamp=cur_timestamp,
+            job_index=index,
+            prompt=prompt,
+        )
+    except Exception:
+        image_name = f"{path.stem}-generated-{timestamp}-{index}-{prompt}"
+
+    ext = "." + settings.save_image_format.extension
+    path = path.parent / f"{image_name}{ext}"
     path = util.find_unused_path(path)
     base_image = model._get_current_image(Bounds(0, 0, *model.document.extent))
     result_image = job.results[index]
     base_image.draw_image(result_image, job.params.bounds.offset)
 
-    if settings.save_image_metadata:
+    if settings.save_image_metadata and ext == ".png":
         metadata_text = create_img_metadata(job.params)
-        base_image.save_png_with_metadata(filepath=path, metadata_text=metadata_text)
+        base_image.save_png_with_metadata(
+            filepath=path, metadata_text=metadata_text, format=settings.save_image_format
+        )
     else:
-        base_image.save(path)
+        quality = None
+        if settings.save_image_format is ImageFileFormat.webp:
+            quality = settings.save_image_quality_webp
+        elif settings.save_image_format is ImageFileFormat.jpeg:
+            quality = settings.save_image_quality_jpeg
+
+        base_image.save(path, settings.save_image_format, quality)

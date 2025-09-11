@@ -26,7 +26,7 @@ from PyQt5.QtGui import QDesktopServices, QGuiApplication, QCursor, QFontMetrics
 from ..client import Client, User, MissingResources
 from ..cloud_client import CloudClient
 from ..resources import Arch, ResourceId
-from ..settings import Settings, ServerMode, PerformancePreset, settings
+from ..settings import Settings, ServerMode, PerformancePreset, settings, ImageFileFormat
 from ..server import Server
 from ..style import Style
 from ..root import root
@@ -362,7 +362,7 @@ class ConnectionSettings(SettingsTab):
                     return f"{res.name} ({', '.join(f.name for f in res.files)})"
                 return res.name
             if isinstance(id.identifier, str):
-                return id.identifier
+                return f"{id.kind.value} {id.identifier}"
             return f"{id.kind.value} {id.identifier.value}"
 
         text = ""
@@ -489,8 +489,11 @@ class InterfaceSettings(SettingsTab):
             ComboBoxSetting(S._apply_region_behavior_live, parent=self),
         )
         self.add("new_seed_after_apply", SwitchSetting(S._new_seed_after_apply, parent=self))
-        self.add("debug_dump_workflow", SwitchSetting(S._debug_dump_workflow, parent=self))
+        self.add("save_image_format", ComboBoxSetting(S._save_image_format, parent=self))
         self.add("save_image_metadata", SwitchSetting(S._save_image_metadata, parent=self))
+        self.add("debug_dump_workflow", SwitchSetting(S._debug_dump_workflow, parent=self))
+
+        self._widgets["save_image_format"].value_changed.connect(self._update_image_format_widgets)
 
         languages = [(lang.name, lang.id) for lang in Localization.available]
         self._widgets["language"].set_items(languages)
@@ -500,6 +503,10 @@ class InterfaceSettings(SettingsTab):
             self._widgets[w].show_label = False
 
         self._layout.addStretch()
+
+    def read(self):
+        super().read()
+        self._update_image_format_widgets()
 
     def _tag_files(self) -> list[str]:
         plugin_tags_path = util.plugin_dir / "tags"
@@ -528,6 +535,10 @@ class InterfaceSettings(SettingsTab):
         translation.enabled = client is not None
         translation.set_items(languages)
         self.read()
+
+    def _update_image_format_widgets(self):
+        fmt: ImageFileFormat = self._widgets["save_image_format"].value
+        self._widgets["save_image_metadata"].enabled = fmt.extension == "png"
 
 
 class HistorySizeWidget(QWidget):
@@ -649,12 +660,6 @@ class PerformanceSettings(SettingsTab):
             self._device_info.setText(
                 _("Device")
                 + f": [{client.device_info.type.upper()}] {client.device_info.name} ({client.device_info.vram} GB)"
-            )
-            self._dynamic_caching.enabled = client.features.wave_speed
-            self._dynamic_caching.setToolTip(
-                _("The {node_name} node is not installed.").format(node_name="Comfy-WaveSpeed")
-                if not client.features.wave_speed
-                else ""
             )
 
     def _read(self):
@@ -828,7 +833,7 @@ class AboutSettings(SettingsTab):
 
 _links_text = """
 <a href='https://www.interstice.cloud'>Website</a><br><br>
-<a href='https://docs.interstice.cloud'>Handbook: Guides and Tips</a><br>
+<a href='https://docs.interstice.cloud'>Handbook: Guides and Tips</a><br><br>
 <a href='https://github.com/Acly/krita-ai-diffusion'>GitHub</a><br><br>
 """
 

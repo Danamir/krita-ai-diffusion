@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import NamedTuple, Optional, Any
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from .util import is_macos, is_windows, user_data_dir, client_logger as log
-from .util import encode_json, read_json_with_comments
+from .platform import is_macos, is_windows
+from .util import encode_json, read_json_with_comments, user_data_dir, client_logger as log
 from .localization import translate as _
 
 
@@ -69,11 +69,11 @@ class PerformancePreset(Enum):
 
 
 class ImageFileFormat(Enum):
-    png = ("png", 85)  # fast, large files
-    png_small = ("png", 50)  # slow, smaller files
-    webp = ("webp", 80)
-    webp_lossless = ("webp", 100)
-    jpeg = ("jpeg", 85)
+    png = "PNG (fast)"  # fast, large files
+    png_small = "PNG"  # slow, smaller files
+    webp = "WebP"
+    webp_lossless = "WebP (lossless)"
+    jpeg = "JPEG"
 
     @staticmethod
     def from_extension(filepath: str | Path):
@@ -82,9 +82,33 @@ class ImageFileFormat(Enum):
             return ImageFileFormat.png_small
         if extension == ".webp":
             return ImageFileFormat.webp
-        if extension == ".jpg":
+        if extension == ".jpg" or extension == ".jpeg":
             return ImageFileFormat.jpeg
         raise Exception(f"Unsupported image extension: {extension}")
+
+    @property
+    def extension(self):
+        if self in [ImageFileFormat.png, ImageFileFormat.png_small]:
+            return "png"
+        elif self in [ImageFileFormat.webp, ImageFileFormat.webp_lossless]:
+            return "webp"
+        else:
+            return "jpg"
+
+    @property
+    def quality(self):
+        if self in [ImageFileFormat.png]:
+            return 85
+        elif self in [ImageFileFormat.png_small]:
+            return 50
+        elif self in [ImageFileFormat.webp]:
+            return 80
+        elif self in [ImageFileFormat.webp_lossless]:
+            return 100
+        elif self in [ImageFileFormat.jpeg]:
+            return 85
+        else:
+            return 85
 
     @property
     def no_webp_fallback(self):
@@ -181,6 +205,9 @@ class Settings(QObject):
         _("Server Arguments"), "", _("Additional command line arguments passed to the server")
     )
 
+    check_server_resources: bool
+    _check_server_resources = Setting("Refuse connection if nodes or models are missing", True)
+
     selection_grow: int
     _selection_grow = Setting(
         _("Selection Grow"), 5, _("Selection area is expanded by a fraction of its size")
@@ -229,6 +256,36 @@ class Settings(QObject):
         _("Save Image Metadata"),
         False,
         _("When saving generated images from thumbnails, include metadata in the PNG"),
+    )
+
+    save_image_format: ImageFileFormat
+    _save_image_format = Setting(
+        _("Save Image Format"),
+        ImageFileFormat.png_small,
+        _("File format for saved images from thumbnails."),
+    )
+
+    save_image_quality_webp: int
+    _save_image_quality_webp = Setting(
+        "Save Image Quality (WebP)",
+        80,
+        "Quality for WebP encoding (0-100)",
+    )
+
+    save_image_quality_jpeg: int
+    _save_image_quality_jpeg = Setting(
+        "Save Image Quality (JPEG)",
+        85,
+        "Quality for JPEG encoding (0-100)",
+    )
+
+    save_image_file_name_format: str
+    _save_image_file_name_format = Setting(
+        _("Save Image File Name Template"),
+        "{document_name}-generated-{job_timestamp}-{job_index}-{prompt}",
+        "Template for naming saved images (without extension). Available keys: {keys}.".format(
+            keys="{document_name}, {job_timestamp}, {current_timestamp}, {job_index}, {prompt}"
+        ),
     )
 
     prompt_line_count: int

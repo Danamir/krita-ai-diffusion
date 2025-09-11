@@ -24,6 +24,7 @@ def copy_scripts():
     repo_dir = docker_dir / "krita-ai-diffusion"
     for source_file, target_dir in [
         (root_dir / "ai_diffusion" / "resources.py", repo_dir / "ai_diffusion"),
+        (root_dir / "ai_diffusion" / "platform.py", repo_dir / "ai_diffusion"),
         (
             root_dir / "ai_diffusion" / "presets" / "models.json",
             repo_dir / "ai_diffusion" / "presets",
@@ -68,6 +69,7 @@ def upgrade_python_dependencies():
         "ComfyUI/custom_nodes/comfyui-tooling-nodes/requirements.txt",
         "ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt",
         "ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt",
+        "ComfyUI/custom_nodes/ComfyUI-nunchaku/requirements.txt",
         "--no-deps",
         "--upgrade",
         "-o",

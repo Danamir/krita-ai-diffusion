@@ -24,9 +24,9 @@ from .settings import PerformanceSettings, settings
 from .localization import translate as _
 from .util import client_logger as log
 from .workflow import create as create_workflow
-from . import resources, util
+from . import resources, platform, util
 
-if util.is_macos:
+if platform.is_macos:
     import os
 
     if "SSL_CERT_FILE" not in os.environ:
@@ -115,14 +115,13 @@ class ComfyClient(Client):
         log.info("Checking for required custom nodes...")
         nodes = await client._get("object_info")
         missing = _check_for_missing_nodes(nodes)
-        if len(missing) > 0:
+        if len(missing) > 0 and settings.check_server_resources:
             raise MissingResources(missing)
 
         client._features = ClientFeatures(
             ip_adapter=True,
             translation=True,
             languages=await _list_languages(client),
-            wave_speed="ApplyFBCacheOnModel" in nodes,
             gguf="UnetLoaderGGUF" in nodes,
         )
 
@@ -173,7 +172,7 @@ class ComfyClient(Client):
             arch for arch, miss in client._supported_archs.items() if len(miss) == 0
         ]
         log.info("Supported workloads: " + ", ".join(arch.value for arch in supported_workloads))
-        if len(supported_workloads) == 0:
+        if len(supported_workloads) == 0 and settings.check_server_resources:
             raise MissingResources(client._supported_archs)
 
         # Workarounds for DirectML
@@ -479,7 +478,7 @@ class ComfyClient(Client):
             resolution_multiplier=settings.resolution_multiplier,
             max_pixel_count=settings.max_pixel_count,
             tiled_vae=settings.tiled_vae,
-            dynamic_caching=settings.dynamic_caching and self.features.wave_speed,
+            dynamic_caching=settings.dynamic_caching,
         )
 
     async def upload_loras(self, work: WorkflowInput, local_job_id: str):
@@ -541,8 +540,10 @@ class ComfyClient(Client):
             if models.find(id) is None:
                 missing.append(id)
         has_checkpoint = any(cp.arch is sdver for cp in models.checkpoints.values())
-        if not has_checkpoint and sdver not in [Arch.illu, Arch.illu_v]:
-            missing.append(ResourceId(ResourceKind.checkpoint, sdver, "Diffusion model checkpoint"))
+        if not has_checkpoint and sdver is Arch.illu:  # Illu checkpoints are detected as SDXL
+            has_checkpoint = any(cp.arch is Arch.sdxl for cp in models.checkpoints.values())
+        if not has_checkpoint:
+            missing.append(ResourceId(ResourceKind.checkpoint, sdver, "model"))
         if len(missing) > 0:
             log.info(f"{sdver.value}: missing {len(missing)} models")
         return missing
@@ -647,12 +648,13 @@ def _find_ip_adapters(model_list: Sequence[str]):
 
 
 def _find_clip_vision_model(model_list: Sequence[str]):
-    clip_vision_sd = ResourceId(ResourceKind.clip_vision, Arch.all, "ip_adapter")
-    model = find_model(model_list, clip_vision_sd)
+    clip_vision_sd15 = ResourceId(ResourceKind.clip_vision, Arch.sd15, "ip_adapter")
+    clip_vision_sdxl = ResourceId(ResourceKind.clip_vision, Arch.sdxl, "ip_adapter")
     clip_vision_flux = ResourceId(ResourceKind.clip_vision, Arch.flux, "redux")
     clip_vision_illu = ResourceId(ResourceKind.clip_vision, Arch.illu, "ip_adapter")
     return {
-        clip_vision_sd.string: model,
+        clip_vision_sd15.string: find_model(model_list, clip_vision_sd15),
+        clip_vision_sdxl.string: find_model(model_list, clip_vision_sdxl),
         clip_vision_flux.string: find_model(model_list, clip_vision_flux),
         clip_vision_illu.string: find_model(model_list, clip_vision_illu),
     }

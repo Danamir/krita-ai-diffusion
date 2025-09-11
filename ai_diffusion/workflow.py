@@ -16,8 +16,8 @@ from .files import FileLibrary, FileFormat
 from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, TileLayout, get_inpaint_reference
 from .resources import ControlMode, Arch, UpscalerName, ResourceKind, ResourceId
-from .settings import PerformanceSettings, ServerBackend
-from .text import merge_prompt, extract_loras
+from .settings import PerformanceSettings
+from .text import merge_prompt, extract_loras, strip_prompt_comments
 from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Input, Output, ComfyNode
 from .localization import translate as _
 from .settings import settings
@@ -137,7 +137,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
 
     support_fbc = arch in [Arch.flux, Arch.sd3] or arch.is_sdxl_like
     if checkpoint.dynamic_caching and support_fbc and model_info.quantization is Quantization.none:
-        model = w.apply_first_block_cache(model, arch)
+        model = w.easy_cache(model, arch)
 
     for lora in checkpoint.loras:
         if model_info.quantization is Quantization.svdq:
@@ -488,19 +488,6 @@ def apply_control(
         if control.mode.is_lines:  # ControlNet expects white lines on black background
             image = w.invert_image(image)
 
-        if lora := models.lora.find(control.mode):
-            if control_lora is not None:
-                raise Exception(
-                    _("The following control layers cannot be used together:")
-                    + f" {control_lora.text}, {control.mode.text}"
-                )
-            control_lora = control.mode
-            model = w.load_lora_model(model, lora, control.strength)
-            positive, negative, __ = w.instruct_pix_to_pix_conditioning(
-                positive, negative, vae, image
-            )
-            continue
-
         if cn_model := models.find(control.mode):
             controlnet = w.load_controlnet(cn_model)
         elif cn_model := models.find(ControlMode.universal):
@@ -519,6 +506,19 @@ def apply_control(
             positive, negative = w.apply_controlnet(
                 positive, negative, controlnet, image, vae, control.strength, control.range
             )
+
+        if not cn_model:  # flux depth/canny control lora (low priority, to be removed?)
+            if lora := models.lora.find(control.mode):
+                if control_lora is not None:
+                    raise Exception(
+                        _("The following control layers cannot be used together:")
+                        + f" {control_lora.text}, {control.mode.text}"
+                    )
+                control_lora = control.mode
+                model = w.load_lora_model(model, lora, control.strength)
+                positive, negative, __ = w.instruct_pix_to_pix_conditioning(
+                    positive, negative, vae, image
+                )
 
     positive = apply_style_models(w, positive, control_layers, models)
 
@@ -714,14 +714,6 @@ def scale_refine_and_decode(
     else:
         assert mode is ScaleMode.upscale_quality
         upscaler = models.upscale[UpscalerName.default]
-
-    # if an canvas deviates both sizes from 1024 huge performance penalty tiled vae decreases it this is intel only
-    if (
-        extent.desired.width > 1536
-        or extent.desired.height > 1536
-        and settings.server_backend is ServerBackend.xpu
-    ):
-        tiled_vae = True
 
     upscale_model = w.load_upscale_model(upscaler)
     decoded = vae_decode(w, vae, latent, tiled_vae)
@@ -1323,7 +1315,12 @@ def expand_custom(
                 outputs[node.output(2)] = image.height
                 outputs[node.output(3)] = seed
             case "ETN_KritaSelection":
-                outputs[node.output(0)] = w.load_mask(ensure(images.hires_mask))
+                if images.hires_mask:
+                    outputs[node.output(0)] = w.load_mask(images.hires_mask)
+                else:  # fully opaque mask
+                    image = ensure(images.initial_image)
+                    outputs[node.output(0)] = w.solid_mask(image.extent, 1.0)
+                outputs[node.output(1)] = images.hires_mask is not None
             case "ETN_Parameter":
                 outputs[node.output(0)] = get_param(node)
             case "ETN_KritaImageLayer":
@@ -1381,11 +1378,15 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, files.loras)
-    i.conditioning.negative = merge_prompt(cond.negative, style.negative_prompt, cond.language)
     i.conditioning.style = style.style_prompt
+    i.conditioning.positive = strip_prompt_comments(cond.positive)
+    i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, files.loras)
+    i.conditioning.negative = merge_prompt(
+        strip_prompt_comments(cond.negative), style.negative_prompt, cond.language
+    )
     for idx, region in enumerate(i.conditioning.regions):
         assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
+        region.positive = strip_prompt_comments(region.positive)
         region.positive, region.loras = extract_loras(region.positive, files.loras)
         region.loras = [l for l in region.loras if l not in extra_loras]
     i.sampling = _sampling_from_style(style, strength, is_live)

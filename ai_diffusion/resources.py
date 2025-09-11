@@ -12,7 +12,7 @@ version = "1.38.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
 comfy_version = "7139d6d93fc7b5481a69b687080bd36f7b531c46"
-nunchaku_version = "1.0.0.dev20250816"
+nunchaku_version = "1.0.0"
 
 
 class CustomNode(NamedTuple):
@@ -63,17 +63,10 @@ optional_custom_nodes = [
         ["UnetLoaderGGUF", "DualCLIPLoaderGGUF"],
     ),
     CustomNode(
-        "WaveSpeed",
-        "Comfy-WaveSpeed",
-        "https://github.com/chengzeyi/Comfy-WaveSpeed",
-        "8253745127785d820cff0a9621d1537a5aae5424",
-        ["ApplyFBCacheOnModel"],
-    ),
-    CustomNode(
         "Nunchaku",
         "ComfyUI-nunchaku",
         "https://github.com/nunchaku-tech/ComfyUI-nunchaku",
-        "ca9e26422a5452b3306012ba2ed305e712a3f7e3",
+        "90fb8ccf455a4bffa5fb832b84e54951d1e2949d",
         ["NunchakuFluxDiTLoader"],
     ),
 ]
@@ -153,6 +146,10 @@ class Arch(Enum):
     @property
     def supports_attention_guidance(self):
         return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v]
+
+    @property
+    def supports_cfg(self):
+        return self not in [Arch.flux, Arch.flux_k]
 
     @property
     def supports_split_rendering(self):
@@ -374,7 +371,9 @@ class VerificationStatus(NamedTuple):
 class ModelRequirements(Enum):
     none = 0
     insightface = 1
-    cuda = 2
+    cuda = 2  # requires CUDA (NVIDIA only)
+    cuda_fp4 = 3  # requires FP4 support (Blackwell)
+    no_cuda = 4  # model alternative for hardware without CUDA support
 
 
 class ModelFile(NamedTuple):
@@ -456,12 +455,22 @@ class ModelResource(NamedTuple):
     def arch(self):
         return self.id.arch
 
+    @property
+    def file_id(self):
+        return self.files[0].url  # unique identifier for the file(s)
+
     def __hash__(self):
         return hash(self.id)
 
-    def as_dict(self):
+    def as_dict(self, ids: list[ResourceId] | None = None):
+        if ids is None:
+            id = self.id.string
+        elif len(ids) == 1:
+            id = ids[0].string
+        else:
+            id = [id.string for id in ids]
         result = {
-            "id": self.id.string,
+            "id": id,
             "name": self.name,
             "files": [f.as_dict(len(self.files) > 1) for f in self.files],
         }
@@ -472,20 +481,40 @@ class ModelResource(NamedTuple):
         return result
 
     @staticmethod
+    def as_list(models: Sequence[ModelResource]):
+        result = []
+        i = 0
+        while i < len(models):
+            m = models[i]
+            ids = [m.id]
+            for j in range(i + 1, len(models)):
+                if m.name == models[j].name:
+                    ids.append(models[j].id)
+                else:
+                    break
+            result.append(m.as_dict(ids))
+            i += len(ids)
+        return result
+
+    @staticmethod
     def from_dict(data: dict[str, Any]):
-        id = ResourceId.parse(data["id"])
-        files = [ModelFile.parse(f, id) for f in data["files"]]
-        alternatives = [Path(p) for p in data.get("alternatives", [])]
-        requirements = (
-            ModelRequirements[data["requirements"]]
-            if "requirements" in data
-            else ModelRequirements.none
-        )
-        return ModelResource(data["name"], id, files, alternatives, requirements)
+        id_list = data["id"]
+        if not isinstance(id_list, list):
+            id_list = [id_list]
+        for id_str in id_list:
+            id = ResourceId.parse(id_str)
+            files = [ModelFile.parse(f, id) for f in data["files"]]
+            alternatives = [Path(p) for p in data.get("alternatives", [])]
+            requirements = (
+                ModelRequirements[data["requirements"]]
+                if "requirements" in data
+                else ModelRequirements.none
+            )
+            yield ModelResource(data["name"], id, files, alternatives, requirements)
 
     @staticmethod
     def from_list(data: list[dict[str, Any]]):
-        return [ModelResource.from_dict(d) for d in data]
+        return [m for d in data for m in ModelResource.from_dict(d)]
 
     def verify(self, base_dir: Path):
         for file in self.files:
@@ -571,8 +600,11 @@ def verify_model_integrity(base_dir: Path | None = None):
     if base_dir is None:
         base_dir = Path(__file__).parent.parent.parent
 
+    verified = set()
     for model in all_models():
-        yield from model.verify(base_dir)
+        if model.file_id not in verified:
+            yield from model.verify(base_dir)
+            verified.add(model.file_id)
 
 
 def search_path(kind: ResourceKind, arch: Arch, identifier: ControlMode | UpscalerName | str):
@@ -632,7 +664,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.ip_adapter, Arch.illu, ControlMode.reference): ["noobipa"],
     resource_id(ResourceKind.ip_adapter, Arch.sd15, ControlMode.face): ["ip-adapter-faceid-plusv2_sd15", "ip-adapter-faceid-plus_sd15"],
     resource_id(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl", "ip-adapter-faceid_sdxl"],
-    resource_id(ResourceKind.clip_vision, Arch.all, "ip_adapter"): ["sd1.5/pytorch_model.bin", "sd1.5/model.safetensors", "clip-vision_vit-h.safetensors", "clip-vit-h-14-laion2b-s32b-b79k"],
+    resource_id(ResourceKind.clip_vision, Arch.sd15, "ip_adapter"): ["sd1.5/pytorch_model.bin", "sd1.5/model.safetensors", "clip-vision_vit-h.safetensors", "clip-vit-h-14-laion2b-s32b-b79k"],
+    resource_id(ResourceKind.clip_vision, Arch.sdxl, "ip_adapter"): ["sd1.5/pytorch_model.bin", "sd1.5/model.safetensors", "clip-vision_vit-h.safetensors", "clip-vit-h-14-laion2b-s32b-b79k"],
     resource_id(ResourceKind.clip_vision, Arch.flux, "redux"): ["sigclip_vision_patch14_384"],
     resource_id(ResourceKind.clip_vision, Arch.illu, "ip_adapter"): ["clip-vit-bigg", "clip_vision_g", "clip-vision_vit-g"],
     resource_id(ResourceKind.lora, Arch.sd15, "lcm"): ["lcm-lora-sdv1-5.safetensors", "lcm/sd1.5/pytorch_lora_weights.safetensors"],
@@ -674,7 +707,8 @@ required_resource_ids = set([
     ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.blur),
     ResourceId(ResourceKind.ip_adapter, Arch.sd15, ControlMode.reference),
     ResourceId(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.reference),
-    ResourceId(ResourceKind.clip_vision, Arch.all, "ip_adapter"),
+    ResourceId(ResourceKind.clip_vision, Arch.sd15, "ip_adapter"),
+    ResourceId(ResourceKind.clip_vision, Arch.sdxl, "ip_adapter"),
     ResourceId(ResourceKind.lora, Arch.sd15, "hyper"),
     ResourceId(ResourceKind.lora, Arch.sdxl, "hyper"),
     ResourceId(ResourceKind.upscaler, Arch.all, UpscalerName.default),
