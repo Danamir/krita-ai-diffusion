@@ -9,7 +9,7 @@ from enum import Enum
 from tempfile import TemporaryDirectory
 import time
 from typing import Any, NamedTuple
-from PyQt5.QtCore import QObject, QUuid, pyqtSignal, Qt
+from PyQt5.QtCore import QObject, QMetaObject, QUuid, pyqtSignal, Qt
 from PyQt5.QtGui import QPainter, QColor, QBrush
 import uuid
 
@@ -18,16 +18,11 @@ from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput, S
 from .api import InpaintMode, InpaintParams, FillMode, ImageInput, CustomWorkflowInput, UpscaleInput
 from .localization import translate as _
 from .util import clamp, ensure, trim_text, client_logger as log
-from .settings import (
-    ApplyBehavior,
-    ApplyRegionBehavior,
-    GenerationFinishedAction,
-    ImageFileFormat,
-    settings,
-)
+from .settings import ApplyBehavior, ApplyRegionBehavior, GenerationFinishedAction, ImageFileFormat
+from .settings import settings
 from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds, DummyImage
-from .client import Client, ClientMessage, ClientEvent, ClientOutput
+from .client import Client, ClientMessage, ClientEvent, ClientOutput, is_style_supported
 from .client import filter_supported_styles, resolve_arch
 from .custom_workflow import CustomWorkspace, WorkflowCollection, CustomGenerationMode
 from .document import Document, KritaDocument
@@ -101,10 +96,10 @@ class Model(QObject, ObservableProperties):
     """
 
     workspace = Property(Workspace.generation, setter="set_workspace", persist=True)
-    regions: "RootRegion"
     style = Property(Styles.list().default, setter="set_style", persist=True)
     strength = Property(1.0, persist=True)
     region_only = Property(False, persist=True)
+    edit_mode = Property(False, persist=True)
     batch_count = Property(1, persist=True)
     seed = Property(0, persist=True)
     fixed_seed = Property(False, persist=True)
@@ -119,6 +114,7 @@ class Model(QObject, ObservableProperties):
     style_changed = pyqtSignal(Style)
     strength_changed = pyqtSignal(float)
     region_only_changed = pyqtSignal(bool)
+    edit_mode_changed = pyqtSignal(bool)
     batch_count_changed = pyqtSignal(int)
     seed_changed = pyqtSignal(int)
     fixed_seed_changed = pyqtSignal(bool)
@@ -138,11 +134,13 @@ class Model(QObject, ObservableProperties):
         self.generate_seed()
         self.jobs = JobQueue()
         self.regions = RootRegion(self)
+        self.edit_regions = RootRegion(self)
         self.inpaint = CustomInpaint()
         self.upscale = UpscaleWorkspace(self)
         self.live = LiveWorkspace(self)
         self.animation = AnimationWorkspace(self)
         self.custom = CustomWorkspace(workflows, self._generate_custom, self.jobs)
+        self._style_connection: QMetaObject.Connection | None = None
 
         self.jobs.selection_changed.connect(self.update_preview)
         connection.state_changed.connect(self._init_on_connect)
@@ -186,14 +184,16 @@ class Model(QObject, ObservableProperties):
         eventloop.run(_report_errors(self, jobs))
 
     def _prepare_workflow(self, dryrun=False):
+        is_edit = self.arch.is_edit or (self.edit_mode and self.edit_style is not None)
         workflow_kind = WorkflowKind.generate
-        if self.strength < 1.0 or self.arch.is_edit:
+        if self.strength < 1.0 or is_edit:
             workflow_kind = WorkflowKind.refine
         client = self._connection.client
         image = None
         inpaint_mode = InpaintMode.fill
         inpaint = None
         extent = self._doc.extent
+        regions = self.active_regions
         region_layer = None
 
         selection_mod = get_selection_modifiers(self.inpaint.mode, self.strength)
@@ -202,7 +202,7 @@ class Model(QObject, ObservableProperties):
         )
         bounds = Bounds(0, 0, *extent)
         if mask is None:  # Check for region inpaint
-            region_layer = self.regions.get_active_region_layer(use_parent=not self.region_only)
+            region_layer = regions.get_active_region_layer(use_parent=not self.region_only)
             if not region_layer.is_root:
                 mask = get_region_inpaint_mask(region_layer, extent)
                 bounds = mask.bounds
@@ -213,7 +213,7 @@ class Model(QObject, ObservableProperties):
             inpaint_mode = self.resolve_inpaint_mode()
 
         if not dryrun:
-            conditioning, job_regions = process_regions(self.regions, bounds, region_layer)
+            conditioning, job_regions = process_regions(regions, bounds, region_layer)
             conditioning.language = self.prompt_translation_language
         else:
             conditioning, job_regions = ConditioningInput("", ""), []
@@ -243,7 +243,7 @@ class Model(QObject, ObservableProperties):
             workflow_kind,
             image or extent,
             conditioning,
-            self.style,
+            self.active_style,
             self.seed if self.fixed_seed else workflow.generate_seed(),
             client.models,
             FileLibrary.instance(),
@@ -253,9 +253,9 @@ class Model(QObject, ObservableProperties):
             inpaint=inpaint,
         )
         job_params = JobParams(bounds, prompt, regions=job_regions)
-        job_params.set_style(self.style, ensure(input.models).checkpoint)
+        job_params.set_style(self.active_style, ensure(input.models).checkpoint)
         job_params.metadata["prompt"] = prompt
-        job_params.metadata["negative_prompt"] = self.regions.negative
+        job_params.metadata["negative_prompt"] = regions.negative
         job_params.metadata["strength"] = self.strength
         if len(job_regions) == 1:
             job_params.metadata["prompt"] = job_params.name = job_regions[0].prompt
@@ -790,9 +790,17 @@ class Model(QObject, ObservableProperties):
                 styles = filter_supported_styles(Styles.list().filtered(), client)
                 if style not in styles:
                     return
+            if self._style_connection:
+                QObject.disconnect(self._style_connection)
             self._style = style
+            self._style_connection = style.changed.connect(self._handle_style_changed)
             self.style_changed.emit(style)
             self.modified.emit(self, "style")
+            self.edit_mode = self.edit_mode and self.edit_style is not None
+
+    def _handle_style_changed(self):
+        self.style_changed.emit(self.style)
+        self.edit_mode = self.edit_mode and self.edit_style is not None
 
     def generate_seed(self):
         self.seed = workflow.generate_seed()
@@ -820,6 +828,17 @@ class Model(QObject, ObservableProperties):
             except Exception:
                 log.warning(f"Failed to set preview layer {uid}")
                 self._layer = None
+
+    @property
+    def active_regions(self):
+        is_edit = self.workspace is Workspace.generation and self.edit_mode
+        return self.edit_regions if is_edit else self.regions
+
+    @property
+    def active_style(self):
+        if self.workspace is Workspace.generation and self.edit_mode and self.edit_style:
+            return self.edit_style
+        return self.style
 
     @property
     def preview_layer_id(self):
@@ -863,6 +882,16 @@ class Model(QObject, ObservableProperties):
     @property
     def name(self):
         return Path(self._doc.filename).stem
+
+    @property
+    def edit_style(self) -> Style | None:
+        if self.arch.is_edit:
+            return self.style
+        if style_id := self.style.linked_edit_style:
+            if style := Styles.list().find(style_id):
+                if is_style_supported(style, self._connection.client_if_connected):
+                    return style
+        return None
 
 
 class InpaintContext(Enum):
