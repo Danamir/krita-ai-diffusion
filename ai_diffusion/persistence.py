@@ -383,7 +383,7 @@ def import_prompt_from_file(model: Model):
 
 
 _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]
-
+_comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler"]
 
 def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     if node := workflow.get(node_key):
@@ -451,6 +451,21 @@ def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=
             else:
                 return input
 
+        elif node["class_type"] == "ImpactConditionalBranch":
+            input_tt = node.get("inputs", {}).get("tt_value", "")
+            if isinstance(input_tt, list):
+                input_tt = _find_text_prompt_custom(workflow, input_tt[0], extended)
+                
+            input_ff = node.get("inputs", {}).get("ff_value", "")
+            if isinstance(input_ff, list):
+                input_ff = _find_text_prompt_custom(workflow, input_ff[0], extended)
+
+            return input_tt + "\n" + input_ff
+
+        elif node["class_type"] in _comfy_ignore_nodes:
+            return ""
+
+        # Fallback
         for input in node.get("inputs", {}).values():
             if isinstance(input, list):
                 return _find_text_prompt_custom(workflow, input[0], extended)
