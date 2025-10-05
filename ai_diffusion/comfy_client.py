@@ -24,9 +24,9 @@ from .settings import PerformanceSettings, settings
 from .localization import translate as _
 from .util import client_logger as log
 from .workflow import create as create_workflow
-from . import resources, platform, util
+from . import platform_tools, resources, util
 
-if platform.is_macos:
+if platform_tools.is_macos:
     import os
 
     if "SSL_CERT_FILE" not in os.environ:
@@ -85,7 +85,7 @@ class ComfyClient(Client):
         self.url = url
         self.models = ClientModels()
         self._requests = RequestManager()
-        self._id = str(uuid.uuid4())
+        self._id = settings.comfyui_client_id
         self._active: Optional[JobInfo] = None
         self._features: ClientFeatures = ClientFeatures()
         self._supported_archs: dict[Arch, list[ResourceId]] = {}
@@ -412,7 +412,7 @@ class ComfyClient(Client):
                 (
                     filename,
                     Arch.from_string(info["base_model"], info.get("type", "eps"), filename),
-                    Quantization.from_string(info.get("quant", "none")),
+                    Quantization.from_string(info.get("quant", "none"), filename),
                     info.get("is_inpaint", False),
                     info.get("is_refiner", False),
                 )
@@ -625,7 +625,7 @@ def _find_text_encoder_models(model_list: Sequence[str]):
     kind = ResourceKind.text_encoder
     return {
         resource_id(kind, Arch.all, te): _find_model(model_list, kind, Arch.all, te)
-        for te in ["clip_l", "clip_g", "t5"]
+        for te in ["clip_l", "clip_g", "t5", "qwen"]
     }
 
 

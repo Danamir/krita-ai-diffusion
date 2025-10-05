@@ -100,8 +100,23 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         case (FileFormat.diffusion, Quantization.none):
             model = w.load_diffusion_model(model_info.filename)
         case (FileFormat.diffusion, Quantization.svdq):
-            cache = 0.12 if checkpoint.dynamic_caching else 0.0
-            model = w.nunchaku_load_diffusion_model(model_info.filename, cache_threshold=cache)
+            if model_info.arch.is_flux_like:
+                cache = 0.12 if checkpoint.dynamic_caching else 0.0
+                model = w.nunchaku_load_flux_diffusion_model(
+                    model_info.filename, cache_threshold=cache
+                )
+            elif model_info.arch.is_qwen_like:
+                # WIP #2072 replace by customizable parameters
+                model = w.nunchaku_load_qwen_diffusion_model(
+                    model_info.filename,
+                    cpu_offload="enable",
+                    num_blocks_on_gpu=16,
+                    use_pin_memory="disable",
+                )
+            else:
+                raise RuntimeError(
+                    f"Style checkpoint {checkpoint.checkpoint} has an unsupported quantized format {model_info.format.name}"
+                )
         case _:
             raise RuntimeError(
                 f"Style checkpoint {checkpoint.checkpoint} has an unsupported format {model_info.format.name}"
@@ -124,6 +139,8 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
             case Arch.chroma:
                 clip = w.load_clip(te["t5"], type="chroma")
                 clip = w.t5_tokenizer_options(clip, min_padding=1, min_length=0)
+            case Arch.qwen | Arch.qwen_e | Arch.qwen_e_p:
+                clip = w.load_clip(te["qwen"], type="qwen_image")
             case _:
                 raise RuntimeError(f"No text encoder for model architecture {arch.name}")
 
@@ -141,7 +158,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
 
     for lora in checkpoint.loras:
         if model_info.quantization is Quantization.svdq:
-            model = w.nunchaku_load_lora(model, lora.name, lora.strength)
+            model = w.nunchaku_load_flux_lora(model, lora.name, lora.strength)
         else:
             model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
 
@@ -552,8 +569,8 @@ def apply_ip_adapter(
     models: ModelDict,
     mask: Output | None = None,
 ):
-    if models.arch.is_flux_like:
-        return model  # No IP-adapter for Flux, using Style model instead
+    if models.arch.is_flux_like or models.arch.is_qwen_like:
+        return model  # No IP-adapter for Flux or Qwen, using Style model instead
 
     models = models.ip_adapter
 
@@ -627,6 +644,8 @@ def apply_edit_conditioning(
     input_latent: Output,
     control_layers: list[Control],
     vae: Output,
+    clip: Output,
+    positive: str,
     arch: Arch,
     tiled_vae: bool,
 ):
@@ -635,12 +654,28 @@ def apply_edit_conditioning(
 
     extra_input = [c.image for c in control_layers if c.mode.is_ip_adapter]
     if len(extra_input) == 0:
+        if arch == Arch.qwen_e_p:
+            return w.text_encode_qwen_image_edit_plus(clip, vae, [input_image], positive)
+        elif arch == Arch.qwen_e:
+            # Don't use VAE to force the reference latent
+            cond = w.text_encode_qwen_image_edit(clip, None, input_image, positive)
         return w.reference_latent(cond, input_latent)
 
-    input = w.image_stitch([input_image] + [i.load(w) for i in extra_input])
-    latent = vae_encode(w, vae, input, tiled_vae)
-    cond = w.reference_latent(cond, latent)
-    return cond
+    if arch == Arch.qwen_e_p:
+        return w.text_encode_qwen_image_edit_plus(
+            clip,
+            vae,
+            [input_image] + [i.load(w) for i in extra_input],
+            positive,
+        )
+    else:
+        input = w.image_stitch([input_image] + [i.load(w) for i in extra_input])
+        latent = vae_encode(w, vae, input, tiled_vae)
+        if arch == Arch.qwen_e:
+            # Don't use VAE to force the reference latent
+            cond = w.text_encode_qwen_image_edit(clip, None, input, positive)
+        cond = w.reference_latent(cond, latent)
+        return cond
 
 
 def scale(
@@ -726,7 +761,19 @@ def scale_refine_and_decode(
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
-    positive = apply_edit_conditioning(w, positive, upscale, latent, [], vae, arch, tiled_vae)
+    positive = apply_edit_conditioning(
+        w,
+        positive,
+        upscale,
+        latent,
+        [],
+        vae,
+        clip.model,
+        cond.positive.text,
+        arch,
+        tiled_vae,
+    )
+
     result = w.sampler_custom_advanced(model, positive, negative, latent, arch, **params, two_pass=False)
     image = vae_decode(w, vae, result, tiled_vae)
     return image
@@ -1021,7 +1068,16 @@ def refine(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
     positive = apply_edit_conditioning(
-        w, positive, in_image, latent, cond.all_control, vae, models.arch, checkpoint.tiled_vae
+        w,
+        positive,
+        in_image,
+        latent,
+        cond.all_control,
+        vae,
+        clip.model,
+        cond.positive.text,
+        models.arch,
+        checkpoint.tiled_vae,
     )
     sampler = w.sampler_custom_advanced(
         model,
@@ -1087,7 +1143,16 @@ def refine_region(
     else:
         latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
         positive = apply_edit_conditioning(
-            w, positive, in_image, latent, cond.all_control, vae, models.arch, checkpoint.tiled_vae
+            w,
+            positive,
+            in_image,
+            latent,
+            cond.all_control,
+            vae,
+            clip.model,
+            cond.positive.text,
+            models.arch,
+            checkpoint.tiled_vae,
         )
         latent = w.set_latent_noise_mask(latent, initial_mask)
         inpaint_model = model
