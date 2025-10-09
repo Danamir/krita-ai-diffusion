@@ -184,7 +184,7 @@ class Model(QObject, ObservableProperties):
         eventloop.run(_report_errors(self, jobs))
 
     def _prepare_workflow(self, dryrun=False):
-        is_edit = self.arch.is_edit or (self.edit_mode and self.edit_style is not None)
+        is_edit = self.arch.is_edit
         workflow_kind = WorkflowKind.generate
         if self.strength < 1.0 or is_edit:
             workflow_kind = WorkflowKind.refine
@@ -208,7 +208,7 @@ class Model(QObject, ObservableProperties):
                 bounds = mask.bounds
                 inpaint_mode = InpaintMode.add_object
         else:  # Selection inpaint
-            bounds = compute_bounds(extent, mask.bounds if mask else None, self.strength)
+            bounds = compute_bounds(extent, mask.bounds if mask else None, workflow_kind)
             bounds = self.inpaint.get_context(self, mask) or bounds
             inpaint_mode = self.resolve_inpaint_mode()
 
@@ -850,7 +850,7 @@ class Model(QObject, ObservableProperties):
 
     @property
     def arch(self):
-        return resolve_arch(self.style, self._connection.client_if_connected)
+        return resolve_arch(self.active_style, self._connection.client_if_connected)
 
     @property
     def history(self):
@@ -885,7 +885,8 @@ class Model(QObject, ObservableProperties):
 
     @property
     def edit_style(self) -> Style | None:
-        if self.arch.is_edit:
+        style_arch = resolve_arch(self.style, self._connection.client_if_connected)
+        if style_arch.is_edit:
             return self.style
         if style_id := self.style.linked_edit_style:
             if style := Styles.list().find(style_id):
