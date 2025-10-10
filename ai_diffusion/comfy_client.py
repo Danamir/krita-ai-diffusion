@@ -152,6 +152,8 @@ class ComfyClient(Client):
         available_resources.update(_find_style_models(style_models))
 
         models.upscalers = nodes["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
+        if models.upscalers == "COMBO":
+            models.upscalers = nodes["UpscaleModelLoader"]["input"]["required"]["model_name"][1]['options']
         available_resources.update(_find_upscalers(models.upscalers))
 
         inpaint_models = nodes["INPAINT_LoadInpaintModel"]["input"]["required"]["model_name"][0]
