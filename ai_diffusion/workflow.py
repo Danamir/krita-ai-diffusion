@@ -322,7 +322,7 @@ class TextPrompt:
             elif clip.arch is Arch.qwen_e_p and images:
                 self._output = w.text_encode_qwen_image_edit_plus(clip.model, None, images, text)
             else:
-                self._output = w.clip_text_encode(clip.model, text)
+                self._output = w.clip_text_encode(clip.model, text, arch=clip.arch, split_conditioning=settings.split_conditioning_sdxl)
 
             if text == "" and clip.arch is not Arch.sd15:
                 self._output = w.conditioning_zero_out(self._output)

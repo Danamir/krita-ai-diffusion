@@ -676,7 +676,7 @@ class ComfyWorkflow:
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
     def clip_text_encode(self, clip: Output, text: str | Output, arch: Arch | None = None, split_conditioning=False):
-        if arch in (Arch.sdxl, Arch.illu, Arch.illu_v, Arch.flux):
+        if arch.is_sdxl_like or arch.is_flux_like:
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
                     text_g, text_l = text.split(" . ")
