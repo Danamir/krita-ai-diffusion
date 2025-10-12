@@ -5,6 +5,7 @@ from typing import Any, AsyncGenerator, Iterable, NamedTuple
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .api import WorkflowInput
+from .comfy_workflow import ComfyObjectInfo
 from .image import ImageCollection
 from .properties import Property, ObservableProperties
 from .files import FileLibrary, FileFormat
@@ -104,10 +105,8 @@ class Quantization(Enum):
     svdq = 1
 
     @staticmethod
-    def from_string(s: str, filename: str | None = None):
+    def from_string(s: str):
         if s == "svdq":
-            return Quantization.svdq
-        elif filename and "qwen" in filename and "svdq" in filename:
             return Quantization.svdq
         else:
             return Quantization.none
@@ -136,10 +135,10 @@ class ClientModels:
     loras: list[str]
     upscalers: list[str]
     resources: dict[str, str | None]
-    node_inputs: dict[str, dict[str, list[str | list | dict]]]
+    node_inputs: ComfyObjectInfo
 
     def __init__(self) -> None:
-        self.node_inputs = {}
+        self.node_inputs = ComfyObjectInfo({})
         self.resources = {}
 
     def resource(
@@ -353,7 +352,6 @@ def resolve_arch(style: Style, client: Client | ClientModels | None = None):
         checkpoint = style.preferred_checkpoint(models.checkpoints.keys())
         if checkpoint != "not-found":
             arch = models.arch_of(checkpoint)
-
     elif style.checkpoints:
         arch = style.architecture.resolve(style.checkpoints[0])
 
