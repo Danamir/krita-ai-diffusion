@@ -662,7 +662,7 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str | Output, arch: Arch | None = None, split_conditioning=False):
+    def clip_text_encode(self, clip: Output, text: str | Output, arch: Arch | None = None, split_conditioning=False, seed : int | None = None):
         if arch.is_sdxl_like or arch.is_flux_like:
             if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
                 if " . " in text:
@@ -682,11 +682,18 @@ class ComfyWorkflow:
                 text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
                 text_l = text_g
 
+            if seed is not None and text_g is not None and "__" in text_g or "{{" in text_g:
+                text_g = self.add("ImpactWildcardProcessor", 1, wildcard_text=text_g, populated_text=text_g, mode="populate", seed=seed)
+                self.add("Debug Text _O", 1, text=text_g, prefix="ImpactWildcard processed text")
+
             if arch == Arch.flux:
                 return self.add("CLIPTextEncodeFlux", 1, clip=clip, clip_l=text_l, t5xxl=text_g, guidance=3.5)
             else:
                 return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
         else:
+            if seed is not None and text is not None and "__" in text or "{{" in text:
+                text = self.add("ImpactWildcardProcessor", 1, wildcard_text=text, populated_text=text, mode="populate", seed=seed)
+                self.add("Debug Text _O", 1, text=text, prefix="ImpactWildcard processed text")
             return self.add("CLIPTextEncode", 1, clip=clip, text=text)
 
     def conditioning_area(self, conditioning: Output, area: Bounds, strength=1.0):

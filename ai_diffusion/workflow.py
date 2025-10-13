@@ -293,6 +293,7 @@ class Clip(NamedTuple):
 class TextPrompt:
     text: str
     language: str
+    seed: int | None = None
     # Cached values to avoid re-encoding the same text for multiple regions and passes
     _output: Output | None = None
     _clip: Clip | None = None  # can be different due to Lora hooks
@@ -322,7 +323,7 @@ class TextPrompt:
             elif clip.arch is Arch.qwen_e_p and images:
                 self._output = w.text_encode_qwen_image_edit_plus(clip.model, None, images, text)
             else:
-                self._output = w.clip_text_encode(clip.model, text, arch=clip.arch, split_conditioning=settings.split_conditioning_sdxl)
+                self._output = w.clip_text_encode(clip.model, text, arch=clip.arch, split_conditioning=settings.split_conditioning_sdxl, seed=self.seed)
 
             if text == "" and clip.arch is not Arch.sd15:
                 self._output = w.conditioning_zero_out(self._output)
@@ -439,9 +440,13 @@ def encode_prompt(
     clip: Clip,
     regions: Output | None,
     image: Output | None = None,
+    sampling: SamplingInput | None = None,
 ):
     ref_images = [image] if image is not None else []
     ref_images += [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
+
+    if sampling is not None:
+        cond.positive.seed = sampling.seed
 
     if len(cond.regions) <= 1 or all(len(r.loras) == 0 for r in cond.regions):
         positive = cond.positive.encode(w, clip, cond.style_prompt, ref_images)
@@ -762,7 +767,7 @@ def scale_refine_and_decode(
     latent = vae_encode(w, vae, upscale, tiled_vae)
     params = _sampler_params(sampling, strength=0.4)
 
-    positive, negative = encode_prompt(w, cond, clip, regions)
+    positive, negative = encode_prompt(w, cond, clip, regions, sampling=sampling)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
@@ -801,7 +806,7 @@ def generate(
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, models.arch, misc.batch_count)
-    positive, negative = encode_prompt(w, cond, clip, regions)
+    positive, negative = encode_prompt(w, cond, clip, regions, sampling=sampling)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.initial, vae, models
     )
@@ -954,7 +959,7 @@ def inpaint(
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
-    positive, negative = encode_prompt(w, cond_base, clip, regions)
+    positive, negative = encode_prompt(w, cond_base, clip, regions, sampling=sampling)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond_base.all_control, extent.initial, vae, models
     )
@@ -1003,7 +1008,7 @@ def inpaint(
 
         model, regions = apply_attention_mask(w, model, cond_upscale, clip, shape)
         model = apply_regional_ip_adapter(w, model, cond_upscale.regions, shape, models)
-        positive_up, negative_up = encode_prompt(w, cond_upscale, clip, regions)
+        positive_up, negative_up = encode_prompt(w, cond_upscale, clip, regions, sampling=sampling)
 
         if params.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
             hires_image = ImageOutput(images.hires_image)
@@ -1056,7 +1061,7 @@ def refine(
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
     latent_batch = w.batch_latent(latent, misc.batch_count)
-    positive, negative = encode_prompt(w, cond, clip, regions, in_image)
+    positive, negative = encode_prompt(w, cond, clip, regions, in_image, sampling=sampling)
     model, positive, negative = apply_control(
         w, model, positive, negative, cond.all_control, extent.desired, vae, models
     )
@@ -1107,7 +1112,7 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    positive, negative = encode_prompt(w, cond, clip, regions, in_image)
+    positive, negative = encode_prompt(w, cond, clip, regions, in_image, sampling=sampling)
 
     if inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
@@ -1286,7 +1291,7 @@ def upscale_tiled(
         tile_cond.regions = [r for r in regions if r is not None]
         tile_model, regions = apply_attention_mask(w, model, tile_cond, clip, no_reshape)
         tile_model = apply_regional_ip_adapter(w, tile_model, tile_cond.regions, no_reshape, models)
-        positive, negative = encode_prompt(w, tile_cond, clip, regions)
+        positive, negative = encode_prompt(w, tile_cond, clip, regions, sampling=sampling)
 
         control = [tiled_control(c, i) for c in tile_cond.all_control]
         tile_model, positive, negative = apply_control(
