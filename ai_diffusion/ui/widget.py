@@ -581,8 +581,8 @@ class StrengthSnapping:
     def nearest_percent(self, value: int) -> int | None:
         _, max_steps = self.get_steps()
         steps, start_at_step = self.apply_strength(value)
-        is_live = self.model.workspace is Workspace.live
-        return snap_to_percent(steps, start_at_step, max_steps=max_steps if is_live else steps)  # live model workaround
+        is_live = self.model.workspace is Workspace.live  # used for live model workaround
+        return snap_to_percent(steps, start_at_step, max_steps=max_steps if is_live else steps)
 
     def apply_strength(self, value: int) -> tuple[int, int]:
         min_steps, max_steps = self.get_steps()

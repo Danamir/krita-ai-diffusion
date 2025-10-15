@@ -51,25 +51,27 @@ def _sampling_from_style(style: Style, strength: float, is_live: bool):
     return result
 
 
-def apply_strength_increase(strength: float, steps: int, min_steps: int = 0, steps_increase: int = 1) -> tuple[int, int]:
+def apply_strength_increase(
+    strength: float, steps: int, min_steps: int = 0, steps_increase: tuple = (0, 1)
+) -> tuple[int, int]:
     strengths = []
     start_at_step = round(steps * (1 - strength))
 
-    for i in range(steps_increase + 1):
+    for i in steps_increase:
         true_steps = steps + i
         start_at_step = round(true_steps * (1 - strength))
 
         if min_steps and true_steps - start_at_step < min_steps:
-            true_steps = min(math.floor(min_steps / strength) + i, steps + steps_increase)
+            true_steps = min(math.floor(min_steps / strength) + i, steps + steps_increase[-1])
             start_at_step = true_steps - min_steps
 
         real_strength = (true_steps - start_at_step) / true_steps
 
         strengths.append({
-            "steps": true_steps+0,
-            "start_at_step": start_at_step + 0,
-            "real_strength": real_strength + 0,
-            "delta_strength": abs(real_strength - strength)
+            "steps": true_steps,
+            "start_at_step": start_at_step,
+            "real_strength": real_strength,
+            "delta_strength": abs(real_strength - strength),
         })
 
     delta_strength = None
@@ -84,8 +86,15 @@ def apply_strength_increase(strength: float, steps: int, min_steps: int = 0, ste
 
 def apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
     if steps <= 4:
-        return apply_strength_increase(strength, steps, min_steps=min_steps, steps_increase=1)
-
+        return apply_strength_increase(strength, steps, min_steps=min_steps, steps_increase=(0, 1))
+    elif steps == 5:
+        return apply_strength_increase(
+            strength, steps, min_steps=min_steps, steps_increase=(-1, 0, 1)
+        )
+    elif steps <= 8:
+        return apply_strength_increase(
+            strength, steps, min_steps=min_steps, steps_increase=(-2, -1, 0)
+        )
     start_at_step = round(steps * (1 - strength))
 
     if min_steps and steps - start_at_step < min_steps:
@@ -359,7 +368,7 @@ class TextPrompt:
             else:
                 self._output = w.clip_text_encode(clip.model, text, arch=clip.arch, split_conditioning=settings.split_conditioning_sdxl, seed=self.seed)
 
-            if text == "" and clip.arch is not Arch.sd15:
+            if text == "" and not (clip.arch.is_qwen_like or clip.arch is Arch.sd15):
                 self._output = w.conditioning_zero_out(self._output)
             self._clip = clip
         return self._output
