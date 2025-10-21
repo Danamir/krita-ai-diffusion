@@ -95,6 +95,10 @@ class ComfyClient(Client):
         self._jobs: deque[JobInfo] = deque()
         self._is_connected = False
 
+        self._requests.add_header("ngrok-skip-browser-warning", "69420")
+        if settings.server_authorization:
+            self._requests.set_auth(settings.server_authorization)
+
     @staticmethod
     async def connect(url=default_url, access_token=""):
         client = ComfyClient(parse_url(url))
@@ -105,8 +109,9 @@ class ComfyClient(Client):
 
         # Try to establish websockets connection
         wsurl = websocket_url(client.url)
+        wsargs = websocket_args(access_token)
         try:
-            async with websockets.connect(f"{wsurl}/ws?clientId={client._id}"):
+            async with websockets.connect(f"{wsurl}/ws?clientId={client._id}", **wsargs):
                 pass
         except Exception as e:
             msg = _("Could not establish websocket connection at") + f" {wsurl}: {str(e)}"
@@ -132,11 +137,8 @@ class ComfyClient(Client):
         available_resources = client.models.resources = {}
 
         clip_models = nodes.options("DualCLIPLoader", "clip_name1")
+        clip_models += nodes.options("DualCLIPLoaderGGUF", "clip_name1")
         available_resources.update(_find_text_encoder_models(clip_models))
-        clip_gguf_models = nodes.options("DualCLIPLoaderGGUF", "clip_name1")
-        for k, v in _find_text_encoder_models(clip_gguf_models).items():
-            if available_resources.get(k) is None and v is not None:
-                available_resources[k] = v
 
         vae_models = nodes.options("VAELoader", "vae_name")
         available_resources.update(_find_vae_models(vae_models))
@@ -193,6 +195,9 @@ class ComfyClient(Client):
     async def _post(self, op: str, data: dict):
         return await self._requests.post(f"{self.url}/{op}", data)
 
+    async def _put(self, op: str, data: bytes):
+        return await self._requests.put(f"{self.url}/{op}", data)
+
     async def enqueue(self, work: WorkflowInput, front: bool = False):
         job = JobInfo.create(work, front=front)
         await self._queue.put(job)
@@ -215,13 +220,15 @@ class ComfyClient(Client):
             pass
 
     async def _run_job(self, job: JobInfo):
-        await self.upload_loras(job.work, job.id)
         workflow = create_workflow(job.work, self.models)
+        if settings.debug_dump_workflow:
+            workflow.embed_images().dump(util.log_dir)
+
+        await self.upload_images(workflow.images)
+        await self.upload_loras(job.work, job.id)
+
         job.node_count = workflow.node_count
         job.sample_count = workflow.sample_count
-        if settings.debug_dump_workflow:
-            workflow.dump(util.log_dir)
-
         data = {
             "prompt": workflow.root,
             "client_id": self._id,
@@ -241,9 +248,8 @@ class ComfyClient(Client):
 
     async def _listen(self):
         url = websocket_url(self.url)
-        async for websocket in websockets.connect(
-            f"{url}/ws?clientId={self._id}", max_size=2**30, ping_timeout=60
-        ):
+        args = websocket_args(settings.server_authorization)
+        async for websocket in websockets.connect(f"{url}/ws?clientId={self._id}", **args):
             try:
                 await self._subscribe_workflows()
                 await self._listen_websocket(websocket)
@@ -321,6 +327,7 @@ class ComfyClient(Client):
 
                 if msg["type"] == "executed":
                     if job := self._get_active_job(msg["data"]["prompt_id"]):
+                        images.append(await self._transfer_result_images(msg))
                         text_output = _extract_text_output(job.id, msg)
                         if text_output is not None:
                             await self._messages.put(text_output)
@@ -448,6 +455,35 @@ class ComfyClient(Client):
         else:
             log.info("GGUF support: node is not installed.")
 
+    async def _transfer_result_image(self, id: str):
+        try:
+            data = await self._requests.download(f"{self.url}/api/etn/image/{id}", timeout=300)
+            return Image.from_bytes(data)
+        except Exception as e:
+            log.error(f"Error transferring result image {self.url}/api/etn/image/{id}: {str(e)}")
+            raise e
+
+    async def upload_images(self, images: dict[str, Image]):
+        for id, image in images.items():
+            try:
+                data = image.to_bytes()
+                await self._put(f"api/etn/image/{id}", data)
+            except Exception as e:
+                log.error(f"Error uploading image {id}: {str(e)}")
+                raise RuntimeError(f"Error uploading input image to ComfyUI: {str(e)}") from e
+
+    async def _transfer_result_images(self, msg: dict) -> list[Image]:
+        output = msg["data"]["output"]
+        if output is not None and "images" in output:
+            transfers = []
+            for img in output["images"]:
+                source = img.get("source")
+                id = img.get("id")
+                if source == "http" and id is not None:
+                    transfers.append(self._transfer_result_image(id))
+            return await asyncio.gather(*transfers)
+        return []
+
     async def translate(self, text: str, lang: str):
         try:
             return await self._get(f"api/etn/translate/{lang}/{text}")
@@ -563,6 +599,13 @@ def parse_url(url: str):
 
 def websocket_url(url_http: str):
     return url_http.replace("http", "ws", 1)
+
+
+def websocket_args(auth_token: str):
+    args: dict[str, Any] = dict(max_size=2**30, ping_timeout=60)
+    if auth_token:
+        args["extra_headers"] = {"Authorization": f"Bearer {auth_token}"}
+    return args
 
 
 def _check_for_missing_nodes(nodes: ComfyObjectInfo):
