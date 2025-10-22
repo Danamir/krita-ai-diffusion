@@ -156,6 +156,9 @@ class HistoryWidget(QListWidget):
         "loras": _("LoRA"),
         "sampler": _("Sampler"),
         "seed": _("Seed"),
+        "steps": _("Sampler Steps"),
+        "guidance": _("Guidance Strength (CFG Scale)"),
+        "control": _("Control Layers"),
     }
 
     def _job_info(self, params: JobParams, tooltip_header: bool = True):
@@ -174,19 +177,28 @@ class HistoryWidget(QListWidget):
             if tooltip_header
             else []
         )
+        list_delimiter = " | " if tooltip_header else "\n  "
         for key, value in params.metadata.items():
             if key == "style" and style:
                 value = style.name
             if isinstance(value, list) and len(value) == 0:
                 continue
-            if isinstance(value, list) and isinstance(value[0], dict):
-                value = "\n  ".join(
+            if key == "loras" and isinstance(value, list) and isinstance(value[0], dict):
+                value = list_delimiter.join(
                     (
                         f"{v.get('name')} ({v.get('strength')})"
                         for v in value
                         if v.get("enabled", True)
                     )
                 )
+            if key == "control" and isinstance(value, list) and isinstance(value[0], dict):
+                control_text = [] if tooltip_header else [""]
+                for v in value:
+                    t = f"{v.get('mode')}: {v.get('image', '')[:30]} @{v.get('strength', '?')}"
+                    if not tooltip_header:
+                        t += f" [{v.get('start', 0)}->{v.get('end', 1)}]"
+                    control_text.append(t)
+                value = list_delimiter.join(control_text)
             s = f"{self._job_info_translations.get(key, key)}: {value}"
             if tooltip_header:
                 s = wrap_text(s, 80, subsequent_indent=" ")
@@ -347,7 +359,7 @@ class HistoryWidget(QListWidget):
         if e.type() == QEvent.Type.ShortcutOverride:
             assert isinstance(e, QKeyEvent)
             if e.matches(QKeySequence.StandardKey.Delete):
-                self._discard_image()
+                self._discard_image(confirm=False)
                 e.accept()
             elif e.key() == Qt.Key.Key_Space:
                 self._toggle_selection()
@@ -389,12 +401,11 @@ class HistoryWidget(QListWidget):
             menu.addSeparator()
             save_action = ensure(menu.addAction(_("Save Image"), self._save_image))
             if self._model.document.filename == "":
-                save_action.setEnabled(False)
-                save_action.setToolTip(
-                    _(
-                        "Save as separate image to the same folder as the document.\nMust save the document first!"
-                    )
+                tt = _(
+                    "Save as separate image to the same folder as the document.\nMust save the document first!"
                 )
+                save_action.setEnabled(False)
+                save_action.setToolTip(tt)
                 menu.setToolTipsVisible(True)
             menu.addAction(_("Discard Image"), self._discard_image)
             menu.addSeparator()
@@ -443,14 +454,24 @@ class HistoryWidget(QListWidget):
             job_id, image_index = self.item_info(item)
             self._model.save_result(job_id, image_index)
 
-    def _discard_image(self):
-        items = self.selectedItems()
-        next_item = self.row(items[0]) if len(items) > 0 else -1
-        for item in items:
-            job_id, image_index = self.item_info(item)
-            self._model.jobs.discard(job_id, image_index)
-        if next_item >= 0:
-            self.setCurrentRow(next_item, QItemSelectionModel.SelectionFlag.Current)
+    def _discard_image(self, confirm=True):
+        reply = QMessageBox.Yes
+        if confirm:
+            reply = QMessageBox.warning(
+                self,
+                _("Discard Image"),
+                _("Are you sure you want to discard the selected images?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.StandardButton.Yes,
+            )
+        if reply == QMessageBox.Yes:
+            items = self.selectedItems()
+            next_item = self.row(items[0]) if len(items) > 0 else -1
+            for item in items:
+                job_id, image_index = self.item_info(item)
+                self._model.jobs.discard(job_id, image_index)
+            if next_item >= 0:
+                self.setCurrentRow(next_item, QItemSelectionModel.SelectionFlag.Current)
 
     def _clear_all(self):
         reply = QMessageBox.warning(
