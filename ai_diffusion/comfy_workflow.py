@@ -712,7 +712,10 @@ class ComfyWorkflow:
                 text_l = text_g
 
             if seed is not None and text_g is not None and "__" in text_g or "{{" in text_g:
+                copy_to_l = text_g == text_l
                 text_g = self.add("ImpactWildcardProcessor", 1, wildcard_text=text_g, populated_text=text_g, mode="populate", seed=seed)
+                if copy_to_l:
+                    text_l = text_g
                 self.add("Debug Text _O", 1, text=text_g, prefix="ImpactWildcard processed text")
 
             if arch == Arch.flux:
