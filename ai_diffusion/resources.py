@@ -42,7 +42,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "fbf99f2a08368211513bcc3a3ab5b8bc62a476b1",
+        "a088a2dde2ca4a0db9193ac1c01ac77c8b31a70d",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
@@ -130,6 +130,15 @@ class Arch(Enum):
         if a is Arch.all or b is Arch.all:
             return True
         return a is b
+
+    @staticmethod
+    def is_compatible(a: Arch, b: Arch):
+        return (
+            a is b
+            or (a.is_sdxl_like and b.is_sdxl_like)
+            or (a.is_flux_like and b.is_flux_like)
+            or (a.is_qwen_like and b.is_qwen_like)
+        )
 
     def matches(self, checkpoint: str):
         # Fallback check if it can't be queried from the server

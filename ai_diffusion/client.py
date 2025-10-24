@@ -130,16 +130,13 @@ class CheckpointInfo(NamedTuple):
 class ClientModels:
     """Collects names of AI models the client has access to."""
 
-    checkpoints: dict[str, CheckpointInfo]
-    vae: list[str]
-    loras: list[str]
-    upscalers: list[str]
-    resources: dict[str, str | None]
-    node_inputs: ComfyObjectInfo
-
     def __init__(self) -> None:
+        self.checkpoints: dict[str, CheckpointInfo] = {}
+        self.vae: list[str] = []
+        self.loras: list[str] = []
+        self.upscalers: list[str] = []
         self.node_inputs = ComfyObjectInfo({})
-        self.resources = {}
+        self.resources: dict[str, str | None] = {}
 
     def resource(
         self, kind: ResourceKind, identifier: ControlMode | UpscalerName | str, arch: Arch
@@ -297,6 +294,14 @@ class Client(ABC):
     @abstractmethod
     async def connect(url: str, access_token: str = "") -> Client: ...
 
+    class DiscoverStatus(NamedTuple):
+        folder: str
+        current: int
+        total: int
+
+    def discover_models(self, refresh: bool) -> AsyncGenerator[DiscoverStatus, Any]:
+        raise NotImplementedError()
+
     @abstractmethod
     async def enqueue(self, work: WorkflowInput, front: bool = False) -> str: ...
 
@@ -355,7 +360,7 @@ def resolve_arch(style: Style, client: Client | ClientModels | None = None):
     elif style.checkpoints:
         arch = style.architecture.resolve(style.checkpoints[0])
 
-    if style.architecture.is_sdxl_like and arch.is_sdxl_like:
+    if Arch.is_compatible(style.architecture, arch):
         arch = style.architecture  # user override with compatible arch
 
     return arch
