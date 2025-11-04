@@ -1,4 +1,5 @@
 from __future__ import annotations
+import random
 import re
 from pathlib import Path
 from typing import Tuple, List, NamedTuple
@@ -58,6 +59,8 @@ def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
 
 
 _pattern_lora = re.compile(r"<lora:([^:<>]+)(?::(-?[^:<>]*))?>", re.IGNORECASE)
+_pattern_layer = re.compile(r"<layer:([^>]+)>", re.IGNORECASE)
+_pattern_wildcard = re.compile(r"(\{[^{}]+\|[^{}]+\})")
 
 
 def extract_loras(prompt: str, lora_files: FileCollection):
@@ -94,6 +97,38 @@ def extract_loras(prompt: str, lora_files: FileCollection):
 
     prompt = _pattern_lora.sub(replace, prompt)
     return prompt.strip(), loras
+
+
+def extract_layers(prompt: str, replacement="Picture {}", start_index=1):
+    layer_index = start_index
+    layer_names: list[str] = []
+
+    def replace(match: re.Match[str]):
+        nonlocal layer_index
+        replacement_text = replacement.format(layer_index)
+        layer_index += 1
+        layer_names.append(match[1])
+        return replacement_text
+
+    prompt = _pattern_layer.sub(replace, prompt)
+    return prompt.strip(), layer_names
+
+
+def eval_wildcards(text: str, seed: int):
+    rng = random.Random(seed)
+
+    def replace(match: re.Match[str]):
+        wildcard_name = match[1]
+        options = wildcard_name.split("|")
+        return rng.choice(options).strip("{} ")
+
+    for __ in range(10):
+        prev = text
+        text = _pattern_wildcard.sub(replace, text)
+        if text == prev:
+            break
+
+    return text
 
 
 def select_current_parenthesis_block(
@@ -250,8 +285,8 @@ def edit_attention(text: str, positive: bool) -> str:
 def create_img_metadata(params: JobParams):
     meta = params.metadata
 
-    prompt = meta.get("prompt", "")
-    neg_prompt = meta.get("negative_prompt", "")
+    prompt = meta.get("prompt_final", meta.get("prompt", ""))
+    neg_prompt = meta.get("negative_prompt_final", meta.get("negative_prompt", ""))
     sampler = meta.get("sampler", "")
     steps = meta.get("steps", 0)
     cfg_scale = meta.get("guidance", 0.0)

@@ -150,7 +150,7 @@ class PromptAutoComplete:
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setWidget(widget)
         self._popup = ensure(self._completer.popup())
-        self._lora_delegate = ensure(self._popup.itemDelegate())
+        self._item_delegate = ensure(self._popup.itemDelegate())
         self._completion_prefix = ""
         self._completion_suffix = ""
 
@@ -205,7 +205,7 @@ class PromptAutoComplete:
         _tag_model.setTags(unique_tags)
         _tag_files = tag_files
 
-    def _current_text(self, separators=" >\n") -> str:
+    def _current_text(self, separators=" ()>,|{\n") -> str:
         text = self._widget.toPlainText()
         start = pos = cursor_position(text, self._widget.textCursor())
         while pos > 0 and (text[pos - 1] not in separators or pos > 1 and text[pos - 2] == "\\"):
@@ -216,15 +216,26 @@ class PromptAutoComplete:
         prefix = self._current_text()
         name = prefix.removeprefix("<lora:")
         lora_mode = len(prefix) > len(name)
+        layer_mode = False
+        if not lora_mode:
+            name = prefix.removeprefix("<layer:")
+            layer_mode = len(prefix) > len(name)
 
         if lora_mode:
             self._completer.setModel(self._lora_model)
             self._completion_prefix = name
             self._completion_suffix = ">"
-            self._popup.setItemDelegate(self._lora_delegate)
+            self._popup.setItemDelegate(self._item_delegate)
+        elif layer_mode:
+            layers = root.active_model.document.layers
+            layer_model = QStringListModel([layer.name for layer in layers.images])
+            self._completer.setModel(layer_model)
+            self._completion_prefix = name
+            self._completion_suffix = ">"
+            self._popup.setItemDelegate(self._item_delegate)
         else:
             # fall through to tag search
-            self._completion_prefix = prefix = self._current_text(separators="()>,\n").lstrip()
+            self._completion_prefix = prefix = self._current_text(separators="()>,|{\n").lstrip()
             name = prefix.replace("\\(", "(").replace("\\)", ")")
             if not name.startswith("<") and len(name.rstrip()) > 2:
                 self._completer.setModel(_tag_model)
@@ -242,9 +253,12 @@ class PromptAutoComplete:
 
     def _insert_completion(self, completion):
         triggers = ""
-        if self._current_text().startswith("<lora:"):
+        prefix = self._current_text()
+        if prefix.startswith("<lora:"):
             if file := root.files.loras.find(f"{completion}.safetensors"):
                 triggers = " " + file.meta("lora_triggers", "")
+        elif prefix.startswith("<layer:"):
+            pass
         else:  # tag completion
             # escape () in tags so they won't be interpreted as prompt weights
             completion = completion.replace("(", "\\(").replace(")", "\\)")

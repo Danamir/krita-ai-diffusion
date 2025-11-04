@@ -17,7 +17,7 @@ from .style import Style, StyleSettings, SamplerPresets
 from .resolution import ScaledExtent, ScaleMode, TileLayout, get_inpaint_reference
 from .resources import ControlMode, Arch, UpscalerName, ResourceKind, ResourceId
 from .settings import PerformanceSettings
-from .text import merge_prompt, extract_loras, strip_prompt_comments
+from .text import eval_wildcards, extract_layers, merge_prompt, extract_loras, strip_prompt_comments
 from .comfy_workflow import ComfyWorkflow, ComfyRunMode, Input, Output, ComfyNode
 from .localization import translate as _
 from .settings import settings
@@ -1435,6 +1435,67 @@ def expand_custom(
 ###################################################################################################
 
 
+class PreparedPrompt(NamedTuple):
+    conditioning: ConditioningInput
+    loras: list[LoraInput]
+    layers: list[str]
+    region_layers: list[list[str]]
+    metadata: dict[str, Any]
+
+
+def prepare_prompts(
+    cond: ConditioningInput, style: Style, seed: int, arch: Arch, files: FileLibrary
+):
+    cond = copy(cond)
+    cond.regions = [copy(r) for r in cond.regions]
+    meta: dict[str, Any] = {
+        "prompt": cond.positive,
+        "negative_prompt": cond.negative,
+    }
+    models = style.get_models([])
+    layer_replace = "Picture {}" if arch is Arch.qwen_e_p else ""
+
+    cond.style = style.style_prompt
+    cond.positive = strip_prompt_comments(cond.positive)
+    cond.positive = eval_wildcards(cond.positive, seed)
+    if cond.positive != meta["prompt"]:
+        meta["prompt_eval"] = cond.positive
+    cond.positive, extra_loras = extract_loras(cond.positive, files.loras)
+    start_index = 2 + sum(1 for c in cond.control if c.mode.is_ip_adapter)
+    cond.positive, layers = extract_layers(cond.positive, layer_replace, start_index)
+    cond.positive += _collect_lora_triggers(models.loras, files)
+    meta["prompt_final"] = merge_prompt(cond.positive, cond.style, cond.language)
+
+    cond.negative = strip_prompt_comments(cond.negative)
+    cond.negative = eval_wildcards(cond.negative, seed)
+    if cond.negative != meta["negative_prompt"]:
+        meta["negative_prompt_eval"] = cond.negative
+    cond.negative = merge_prompt(cond.negative, style.negative_prompt, cond.language)
+    meta["negative_prompt_final"] = cond.negative
+
+    meta["regions"] = []
+    region_layers: list[list[str]] = []
+    for idx, region in enumerate(cond.regions):
+        assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
+        region_meta: dict[str, Any] = {"prompt": region.positive}
+
+        region.positive = strip_prompt_comments(region.positive)
+        region.positive = eval_wildcards(region.positive, seed)
+        if region.positive != region_meta["prompt"]:
+            region_meta["prompt_eval"] = region.positive
+        region.positive, region.loras = extract_loras(region.positive, files.loras)
+        region.loras = [l for l in region.loras if l not in extra_loras]
+        region_index = start_index + sum(1 for c in region.control if c.mode.is_ip_adapter)
+        region.positive, r_layers = extract_layers(region.positive, layer_replace, region_index)
+        region_layers.append(r_layers)
+        meta["regions"].append(region_meta)
+
+    if len(cond.regions) == 1:
+        meta["prompt"] = meta["regions"][0]["prompt"]
+
+    return PreparedPrompt(cond, extra_loras, layers, region_layers, meta)
+
+
 def prepare(
     kind: WorkflowKind,
     canvas: Image | Extent,
@@ -1446,6 +1507,7 @@ def prepare(
     perf: PerformanceSettings,
     mask: Mask | None = None,
     strength: float = 1.0,
+    loras: list[LoraInput] | None = None,
     inpaint: InpaintParams | None = None,
     upscale_factor: float = 1.0,
     upscale: UpscaleInput | None = None,
@@ -1457,22 +1519,10 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.conditioning.style = style.style_prompt
-    i.conditioning.positive = strip_prompt_comments(cond.positive)
-    i.conditioning.positive, extra_loras = extract_loras(i.conditioning.positive, files.loras)
-    i.conditioning.negative = merge_prompt(
-        strip_prompt_comments(cond.negative), style.negative_prompt, cond.language
-    )
-    for idx, region in enumerate(i.conditioning.regions):
-        assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
-        region.positive = strip_prompt_comments(region.positive)
-        region.positive, region.loras = extract_loras(region.positive, files.loras)
-        region.loras = [l for l in region.loras if l not in extra_loras]
     i.sampling = _sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models(models.checkpoints)
-    i.conditioning.positive += _collect_lora_triggers(i.models.loras, files)
-    i.models.loras = unique(i.models.loras + extra_loras, key=lambda l: l.name)
+    i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
     i.models.dynamic_caching = perf.dynamic_caching
     i.models.tiled_vae = perf.tiled_vae
     arch = i.models.version = resolve_arch(style, models)
@@ -1553,6 +1603,9 @@ def prepare(
     # if minfo := models.checkpoints.get(i.models.checkpoint):
     #     if minfo.arch.is_qwen_like and minfo.quantization is Quantization.svdq:
     #         i.batch_count = 1  # Nunchaku Qwen is broken with batch size > 1 #2114
+
+    if arch is Arch.sdxl and i.inpaint and i.inpaint.use_inpaint_model:
+        i.models.dynamic_caching = False  # inpaint model incompatible with dynamic caching
 
     i.batch_count = 1 if is_live else i.batch_count
     i.nsfw_filter = settings.nsfw_filter
