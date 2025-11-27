@@ -187,8 +187,8 @@ class Settings(QObject):
         _("Server Path"),
         str(user_data_dir / "server"),
         _(
-            "Directory where ComfyUI will be installed. At least 10GB of free disk space is required for a minimal installation."
-        ),
+            "Directory where ComfyUI will be installed. At least {size} GB of free disk space is required for a minimal installation."
+        ).format(size=16),
     )
 
     server_url: str
@@ -294,6 +294,9 @@ class Settings(QObject):
             keys="{document_name}, {job_timestamp}, {current_timestamp}, {job_index}, {prompt}"
         ),
     )
+
+    confirm_discard_image: bool
+    _confirm_discard_image = Setting("Ask for confirmation when discarding images", True)
 
     prompt_line_count: int
     _prompt_line_count = Setting(

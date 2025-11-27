@@ -28,11 +28,6 @@ class Root(QObject):
         model: Model
         sync: ModelSync | None = None
 
-    _server: Server
-    _connection: Connection
-    _models: list[PerDocument]
-    _recent: RecentlyUsedSync
-
     model_created = pyqtSignal(Model)
 
     def __init__(self):
@@ -43,7 +38,7 @@ class Root(QObject):
         self._connection = Connection()
         self._files = FileLibrary.load()
         self._workflows = WorkflowCollection(self._connection)
-        self._models = []
+        self._models: list[Root.PerDocument] = []
         self._null_model = Model(Document(), self._connection, self._workflows)
         self._recent = RecentlyUsedSync.from_settings()
         self._auto_update = AutoUpdate()
@@ -64,19 +59,22 @@ class Root(QObject):
         model_entry.sync = ModelSync(model)
         import_prompt_from_file(model)
         self.model_created.emit(model)
-        self.prune_models()
         return model
 
     def model_for_active_document(self) -> Model | None:
-        doc = KritaDocument.active()
-        if doc is None or not doc.is_valid:
-            return None
-        model = next((m.model for m in self._models if m.model.document == doc), None)
-        if model is None:
-            model = self.create_model(doc)
-        else:
-            model.document = doc
-        return model
+        self.prune_models()
+        if doc := KritaDocument.active():
+            model = next((m.model for m in self._models if m.model.document == doc), None)
+            if model is None:
+                model = self.create_model(doc)
+            else:
+                model.document = doc
+            return model
+        return None
+
+    @property
+    def models(self) -> list[Model]:
+        return [m.model for m in self._models]
 
     @property
     def connection(self) -> Connection:
@@ -131,7 +129,11 @@ class Root(QObject):
                     if connection.state is ConnectionState.connected:
                         settings.server_url = url
                         break
-                    elif connection.error_kind != "network" or urls[0] != settings.server_url:
+                    elif (
+                        connection.error_kind != "network"
+                        or urls[0] != settings.server_url
+                        or settings.server_mode not in [ServerMode.undefined, ServerMode.external]
+                    ):
                         break
                     await asyncio.sleep(5 * (retry + 1))
                 if settings.server_mode is ServerMode.undefined:

@@ -8,19 +8,18 @@ from base64 import b64encode
 from copy import copy
 from datetime import datetime
 from dataclasses import dataclass
-from itertools import chain
+from typing import Iterable
 
 from .api import WorkflowInput
-from .client import Client, ClientEvent, ClientMessage, ClientModels, DeviceInfo, CheckpointInfo
+from .client import Client, ClientEvent, ClientMessage, ClientModels, DeviceInfo
 from .client import ClientFeatures, TranslationPackage, User, loras_to_upload
 from .image import ImageCollection, qt_supports_webp
 from .network import RequestManager, NetworkError
 from .files import File
-from .resources import Arch, ResourceKind, ControlMode, UpscalerName, resource_id
 from .settings import PerformanceSettings, settings
 from .localization import translate as _
 from .util import clamp, ensure, client_logger as log
-from . import resources, __version__ as plugin_version
+from . import __version__ as plugin_version
 
 
 @dataclass
@@ -48,7 +47,7 @@ class CloudClient(Client):
 
     def __init__(self, url: str):
         self.url = url
-        self.models = models
+        self.models = ClientModels()
         self.device_info = DeviceInfo("Cloud", "Remote GPU", 24)
         self._requests = RequestManager()
         self._token: str = ""
@@ -106,6 +105,8 @@ class CloudClient(Client):
         self._user.images_generated = user_data["images_generated"]
         self._user.credits = user_data["credits"]
         self._features = enumerate_features(user_data)
+        model_data = await self._get("plugin/resources")
+        self.models = ClientModels.from_dict(model_data)
         log.info(f"Connected to {self.url}, user: {self._user.id}")
         return self._user
 
@@ -220,7 +221,7 @@ class CloudClient(Client):
                 response = await self._post(f"cancel/{job.worker_id}/{job.remote_id}", {})
                 log.info(f"Requested cancellation of {job}: {response}")
 
-    async def clear_queue(self):
+    async def cancel(self, job_ids: Iterable[str]):
         self._queue = asyncio.Queue()
 
     @property
@@ -371,81 +372,4 @@ def _base64_size(size: int):
     return math.ceil(size / 3) * 4
 
 
-def _checkpoint_info(id: str, arch: Arch):
-    models = chain(resources.default_checkpoints, resources.deprecated_models)
-    res = next(m for m in models if m.id.identifier == id and m.arch == arch)
-    return (res.filename, CheckpointInfo(res.filename, res.arch))
-
-
 _poll_interval = 0.5  # seconds
-
-models = ClientModels()
-models.checkpoints = {
-    filename: info
-    for filename, info in (
-        _checkpoint_info(name, arch)
-        for name, arch in [
-            ("dreamshaper", Arch.sd15),
-            ("realistic_vision", Arch.sd15),
-            ("serenity", Arch.sd15),
-            ("realvis", Arch.sdxl),
-            ("zavychroma", Arch.sdxl),
-            ("flux_schnell", Arch.flux),
-            ("noobai", Arch.illu_v),
-        ]
-    )
-}
-models.vae = []
-models.loras = [
-    "Hyper-SD15-8steps-CFG-lora.safetensors",
-    "Hyper-SDXL-8steps-CFG-lora.safetensors",
-    "ip-adapter-faceid-plusv2_sd15_lora.safetensors",
-    "ip-adapter-faceid-plusv2_sdxl_lora.safetensors",
-]
-models.upscalers = [
-    "4x_NMKD-Superscale-SP_178000_G.pth",
-    "HAT_SRx4_ImageNet-pretrain.pth",
-    "OmniSR_X2_DIV2K.safetensors",
-    "OmniSR_X3_DIV2K.safetensors",
-    "OmniSR_X4_DIV2K.safetensors",
-]
-# fmt: off
-models.resources = {
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.inpaint): "control_v11p_sd15_inpaint_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sdxl, ControlMode.universal): "xinsir-controlnet-union-sdxl-1.0-promax.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble): "control_lora_rank128_v11p_sd15_scribble_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.line_art): "control_v11p_sd15_lineart_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.soft_edge): "control_v11p_sd15_softedge_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.canny_edge): "control_v11p_sd15_canny_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.depth): "control_lora_rank128_v11f1p_sd15_depth_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.pose): "control_lora_rank128_v11p_sd15_openpose_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.blur):"control_lora_rank128_v11f1e_sd15_tile_fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.sd15, ControlMode.stencil): "control_v1p_sd15_qrcode_monster.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.scribble): "noob-sdxl-controlnet-scribble_pidinet.fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.line_art): "noob-sdxl-controlnet-lineart_anime.fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.canny_edge): "noob_sdxl_controlnet_canny.fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.depth): "noob-sdxl-controlnet-depth_midas-v1-1.fp16.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.pose): "noobaiXLControlnet_openposeModel.safetensors",
-    resource_id(ResourceKind.controlnet, Arch.illu, ControlMode.blur): "noob-sdxl-controlnet-tile.fp16.safetensors",
-    resource_id(ResourceKind.ip_adapter, Arch.sd15, ControlMode.reference): "ip-adapter_sd15.safetensors",
-    resource_id(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.reference): "ip-adapter_sdxl_vit-h.safetensors",
-    resource_id(ResourceKind.ip_adapter, Arch.illu, ControlMode.reference): "noobIPAMARK1_mark1.safetensors",
-    resource_id(ResourceKind.ip_adapter, Arch.sd15, ControlMode.face): "ip-adapter-faceid-plusv2_sd15.bin",
-    resource_id(ResourceKind.ip_adapter, Arch.sdxl, ControlMode.face): "ip-adapter-faceid-plusv2_sdxl.bin",
-    resource_id(ResourceKind.ip_adapter, Arch.flux, ControlMode.reference): "flux1-redux-dev.safetensors",
-    resource_id(ResourceKind.clip_vision, Arch.all, "ip_adapter"): "clip-vision_vit-h.safetensors",
-    resource_id(ResourceKind.clip_vision, Arch.illu, "ip_adapter"): "clip-vision_vit-g.safetensors",
-    resource_id(ResourceKind.clip_vision, Arch.flux, "redux"): "sigclip_vision_patch14_384.safetensors",
-    resource_id(ResourceKind.lora, Arch.sd15, "hyper"): "Hyper-SD15-8steps-CFG-lora.safetensors",
-    resource_id(ResourceKind.lora, Arch.sdxl, "hyper"): "Hyper-SDXL-8steps-CFG-lora.safetensors",
-    resource_id(ResourceKind.lora, Arch.sd15, ControlMode.face): "ip-adapter-faceid-plusv2_sd15_lora.safetensors",
-    resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): "ip-adapter-faceid-plusv2_sdxl_lora.safetensors",
-    resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.default): UpscalerName.default.value,
-    resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_2x): UpscalerName.fast_2x.value,
-    resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_3x): UpscalerName.fast_3x.value,
-    resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_4x): UpscalerName.fast_4x.value,
-    resource_id(ResourceKind.inpaint, Arch.sdxl, "fooocus_head"): "fooocus_inpaint_head.pth",
-    resource_id(ResourceKind.inpaint, Arch.sdxl, "fooocus_patch"): "inpaint_v26.fooocus.patch",
-    resource_id(ResourceKind.inpaint, Arch.all, "default"): "MAT_Places512_G_fp16.safetensors",
-}
-# fmt: on

@@ -135,12 +135,7 @@ class Server:
 
         model_folders = [self.path, self.comfy_dir]
         self.missing_resources += find_missing(model_folders, resources.required_models, Arch.all)
-        missing_sd15 = find_missing(model_folders, resources.required_models, Arch.sd15)
-        missing_sdxl = find_missing(model_folders, resources.required_models, Arch.sdxl)
-        missing_flux = find_missing(model_folders, resources.required_models, Arch.flux)
-        if len(self.missing_resources) > 0 or (
-            len(missing_sd15) > 0 and len(missing_sdxl) > 0 and len(missing_flux) > 0
-        ):
+        if len(self.missing_resources) > 0:
             self.state = ServerState.missing_resources
         elif update_required:
             self.state = ServerState.update_required
@@ -150,9 +145,8 @@ class Server:
             self.state = ServerState.update_required
         else:
             self.state = ServerState.stopped
-        self.missing_resources += missing_sd15 + missing_sdxl + missing_flux
 
-        # Optional resources
+        self.missing_resources += find_missing(model_folders, resources.required_models)
         self.missing_resources += find_missing(model_folders, resources.default_checkpoints)
         self.missing_resources += find_missing(model_folders, resources.upscale_models)
         self.missing_resources += find_missing(model_folders, resources.optional_models)
@@ -361,10 +355,6 @@ class Server:
             self.check_install()
             raise Exception(parse_common_errors(str(e)))
 
-    async def download_required(self, callback: Callback):
-        models = [m.name for m in resources.required_models if m.arch is Arch.all]
-        await self.download(models, callback)
-
     async def download(self, packages: list[str], callback: Callback):
         assert self.comfy_dir, "Must install ComfyUI before downloading models"
         network = QNetworkAccessManager()
@@ -384,7 +374,10 @@ class Server:
                 resources.upscale_models,
                 resources.optional_models,
             )
-            to_install = (r for r in all_models if r.name in packages)
+            to_install = [r for r in all_models if r.id.string in packages]
+            if len(to_install) != len(packages):
+                not_found = set(packages) - set(r.id.string for r in to_install)
+                raise Exception("Some requested models were not found: " + ", ".join(not_found))
             for resource in to_install:
                 if not resource.exists_in(self.path) and not resource.exists_in(self.comfy_dir):
                     await self._install_requirements(resource.requirements, network, cb)
@@ -720,8 +713,7 @@ class Server:
         return self.comfy_dir is not None
 
     def is_installed(self, package: str | ModelResource | CustomNode):
-        name = package if isinstance(package, str) else package.name
-        return name not in self.missing_resources
+        return _package_id(package) not in self.missing_resources
 
     def all_installed(self, packages: list[str] | list[ModelResource] | list[CustomNode]):
         return all(self.is_installed(p) for p in packages)
@@ -733,6 +725,14 @@ class Server:
         if self.path.is_dir():
             return self.version == "incomplete" or not any(self.path.iterdir())
         return False
+
+
+def _package_id(package: str | ModelResource | CustomNode) -> str:
+    if isinstance(package, ModelResource):
+        return package.id.string
+    elif isinstance(package, CustomNode):
+        return package.name
+    return package
 
 
 def _find_component(files: list[str], search_paths: list[Path]):
@@ -816,7 +816,7 @@ async def install_if_missing(path: Path, installer, *args):
 
 def find_missing(folders: list[Path], resources: list[ModelResource], ver: Arch | None = None):
     return [
-        res.name
+        res.id.string
         for res in resources
         if (not ver or res.arch is ver) and not any(res.exists_in(f) for f in folders)
     ]

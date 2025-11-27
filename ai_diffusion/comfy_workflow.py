@@ -137,6 +137,19 @@ class ComfyWorkflow:
                 node = deepcopy(node)
                 node["class_type"] = "PreviewImage"
                 del node["inputs"]["format"]
+            elif node["class_type"] == "ETN_InjectImage":
+                image = self.images[node["inputs"]["id"]]
+                node = deepcopy(node)
+                node["class_type"] = "ETN_LoadImageBase64"
+                node["inputs"]["image"] = image.to_base64()
+            elif node["class_type"] == "ETN_InjectMask":
+                image = self.images[node["inputs"]["id"]]
+                node = deepcopy(node)
+                node["class_type"] = "ETN_LoadMaskBase64"
+                node["inputs"]["mask"] = image.to_base64()
+            elif node["class_type"] == "ETN_ReturnImage":
+                node = deepcopy(node)
+                node["class_type"] = "PreviewImage"
             else:
                 # Masks are output 1 for LoadImageCache, but output 0 for LoadMaskBase64
                 inputs = node.get("inputs", {})
@@ -1529,6 +1542,8 @@ def _convert_ui_workflow(w: dict, node_inputs: ComfyObjectInfo):
                 widget_count += 1
                 if len(values) > widget_count and values[widget_count] in _control_after_generate:
                     widget_count += 1
+                if type == "ETN_Parameter" and widget_count >= len(values):
+                    break  # min/max widgets are not visible for non-numeric parameters
 
             for connection in node["inputs"]:
                 if connection["name"] == field_name and connection["link"] is not None:

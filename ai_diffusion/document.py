@@ -1,10 +1,11 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Literal, cast
+from uuid import uuid4
 from weakref import WeakValueDictionary
 import krita
 from krita import Krita
-from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QByteArray, QTimer, pyqtSignal
 
 from .image import Extent, Bounds, Mask, Image
 from .layer import Layer, LayerManager, LayerType
@@ -98,36 +99,63 @@ class KritaDocument(Document):
     Keeps track of selection and current time changes by polling at a fixed interval.
     """
 
-    _doc: krita.Document
-    _id: QUuid
-    _layers: LayerManager
-    _poller: QTimer
-    _selection_bounds: Bounds | None = None
-    _current_time: int = 0
     _instances: WeakValueDictionary[str, KritaDocument] = WeakValueDictionary()
 
-    def __init__(self, krita_document: krita.Document):
+    def __init__(self, krita_document: krita.Document, id: str | None):
         super().__init__()
         self._doc = krita_document
-        self._id = krita_document.rootNode().uniqueId()
+        self._id = id
+        if self._id is None:
+            self._id = str(uuid4())
+            krita_document.setAnnotation(
+                "ai_diffusion/document_id",
+                "document unique identifier",
+                QByteArray(self._id.encode("utf-8")),
+            )
+        self._instances[self._id] = self
+
         self._poller = QTimer()
         self._poller.setInterval(20)
         self._poller.timeout.connect(self._poll)
         self._poller.start()
-        self._instances[self._id.toString()] = self
         self._layers = LayerManager(krita_document)
+        self._selection_bounds: Bounds | None = None
+        self._current_time: int = 0
+
+    @staticmethod
+    def _id_from_annotation(doc: krita.Document) -> str | None:
+        id = doc.annotation("ai_diffusion/document_id")
+        if id and id.size() > 0:
+            return str(id.data(), "utf-8")
+        return None
 
     @classmethod
     def active(cls):
         if doc := Krita.instance().activeDocument():
-            if (
-                doc not in acquire_elements(Krita.instance().documents())
-                or doc.activeNode() is None
-            ):
+            if doc.activeNode() is None:
                 return None
-            id = doc.rootNode().uniqueId().toString()
-            return cls._instances.get(id) or KritaDocument(doc)
+            all_docs = acquire_elements(Krita.instance().documents())
+            if doc not in all_docs:
+                return None
+            id = cls._id_from_annotation(doc)
+            for other in all_docs:
+                other_id = cls._id_from_annotation(other)
+                if other != doc and id and other_id == id:
+                    id = None  # doc is a copy of other, give it a new ID (see #2164)
+                    break
+            if id and id in cls._instances:
+                cached = cls._instances[id]
+                if cached._doc in all_docs:  # don't reuse if the document was closed
+                    return cached
+            return KritaDocument(doc, id)
         return None
+
+    @classmethod
+    def active_instance(cls) -> KritaDocument | None:
+        if doc := Krita.instance().activeDocument():
+            id = cls._id_from_annotation(doc)
+            if id and id in cls._instances:
+                return cls._instances[id]
 
     @property
     def extent(self):
@@ -294,7 +322,7 @@ class PoseLayers:
         self._timer.start()
 
     def update(self):
-        doc = KritaDocument.active()
+        doc = KritaDocument.active_instance()
         if not doc:
             return
         try:
@@ -309,7 +337,7 @@ class PoseLayers:
         self._update(layer, acquire_elements(layer.shapes()), pose, doc.resolution)
 
     def add_character(self, layer: krita.VectorLayer):
-        doc = KritaDocument.active()
+        doc = KritaDocument.active_instance()
         assert doc is not None
         pose = self._layers.setdefault(layer.uniqueId(), Pose(doc.extent))
         svg = Pose.create_default(doc.extent, pose.people_count).to_svg()

@@ -15,6 +15,7 @@ from ..image import Bounds, Extent, Image
 from ..jobs import Job, JobQueue, JobState, JobKind, JobParams
 from ..model import Model, InpaintContext, RootRegion, ProgressKind, Workspace
 from ..style import Styles
+from ..settings import settings
 from ..root import root
 from ..workflow import InpaintMode, FillMode
 from ..localization import translate as _
@@ -186,7 +187,7 @@ class HistoryWidget(QListWidget):
             if key == "loras" and isinstance(value, list) and isinstance(value[0], dict):
                 value = " | ".join(
                     (
-                        f"{v.get('name')} ({v.get('strength')})"
+                        f"{v.get('name')} ({v.get('weight', v.get('strength', '?'))})"
                         for v in value
                         if v.get("enabled", True)
                     )
@@ -466,6 +467,7 @@ class HistoryWidget(QListWidget):
             self._model.save_result(job_id, image_index)
 
     def _discard_image(self, confirm=True):
+        confirm = confirm and settings.confirm_discard_image
         reply = QMessageBox.Yes
         if confirm:
             reply = QMessageBox.warning(

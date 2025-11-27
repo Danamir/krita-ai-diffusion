@@ -568,10 +568,10 @@ deprecated_models = ModelResource.from_list(_models_dict["deprecated"])
 
 all_resources = (
     [n.name for n in required_custom_nodes]
-    + [m.name for m in required_models]
-    + [c.name for c in default_checkpoints]
-    + [m.name for m in upscale_models]
-    + [m.name for m in optional_models]
+    + [m.id.string for m in required_models]
+    + [c.id.string for c in default_checkpoints]
+    + [m.id.string for m in upscale_models]
+    + [m.id.string for m in optional_models]
 )
 
 
@@ -592,6 +592,12 @@ def find_resource(id: ResourceId, include_deprecated=False):
     return next(
         (m for m in all_models(include_deprecated) if any(f.id == id for f in m.files)), None
     )
+
+
+def get_resource(id: ResourceId, include_deprecated=False):
+    if resource := find_resource(id, include_deprecated):
+        return resource
+    raise ValueError(f"Resource {id.string} not found")
 
 
 def compute_sha256(file_path: Path) -> str:
@@ -761,3 +767,25 @@ required_resource_ids = set([
     ResourceId(ResourceKind.vae, Arch.qwen_e, "default"),
     ResourceId(ResourceKind.vae, Arch.qwen_e_p, "default"),
 ])
+
+recommended_resource_ids = [
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.scribble),
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.line_art),
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.soft_edge),
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.canny_edge),
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.depth),
+    ResourceId(ResourceKind.controlnet, Arch.sd15, ControlMode.pose),
+    ResourceId(ResourceKind.controlnet, Arch.sdxl, ControlMode.universal),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.inpaint),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.scribble),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.line_art),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.canny_edge),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.depth),
+    ResourceId(ResourceKind.controlnet, Arch.illu, ControlMode.pose),
+    ResourceId(ResourceKind.ip_adapter, Arch.illu, ControlMode.reference),
+    ResourceId(ResourceKind.clip_vision, Arch.illu, "ip_adapter"),
+    ResourceId(ResourceKind.controlnet, Arch.flux, ControlMode.inpaint),
+    ResourceId(ResourceKind.controlnet, Arch.flux, ControlMode.universal),
+    ResourceId(ResourceKind.lora, Arch.flux, "turbo"),
+]
+recommended_models = [get_resource(rid) for rid in recommended_resource_ids]
