@@ -86,6 +86,7 @@ class Arch(Enum):
     qwen = "Qwen"
     qwen_e = "Qwen Edit"
     qwen_e_p = "Qwen Edit Plus"
+    zimage = "Z-Image"
 
     auto = "Automatic"
     all = "All"
@@ -117,6 +118,12 @@ class Arch(Enum):
                 return Arch.qwen_e
         if string == "qwen-image":
             return Arch.qwen
+        if (
+            string == "unknown"
+            and filename
+            and ("z-image" in filename.lower() or "z_image" in filename.lower())
+        ):
+            return Arch.zimage
         return None
 
     @staticmethod
@@ -210,6 +217,8 @@ class Arch(Enum):
                 return ["t5"]
             case Arch.qwen | Arch.qwen_e | Arch.qwen_e_p:
                 return ["qwen"]
+            case Arch.zimage:
+                return ["qwen_3"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
@@ -226,6 +235,7 @@ class Arch(Enum):
             Arch.qwen,
             Arch.qwen_e,
             Arch.qwen_e_p,
+            Arch.zimage,
         ]
 
 
@@ -728,6 +738,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_g"): ["clip_g"],
     resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5xxl_fp16", "t5xxl_fp8_e4m3fn", "t5xxl_fp8_e4m3fn_scaled", "t5-v1_1-xxl", "t5"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3"): ["qwen_3_4b", "qwen_3"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -739,6 +750,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.qwen, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e_p, "default"): ["qwen"],
+    resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "ae.s"],
 }
 # fmt: on
 
