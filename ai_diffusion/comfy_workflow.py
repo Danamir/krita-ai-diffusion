@@ -388,30 +388,41 @@ class ComfyWorkflow:
         cfg=7.0,
         seed=-1,
         two_pass=False,
-        first_pass_sampler='dpmpp_sde',
     ):
         self.sample_count += steps - start_at_step
-        first_pass_steps = round(steps*0.6)
 
-        if two_pass and first_pass_steps > start_at_step and arch.supports_split_rendering:
-            first_pass_sampler = first_pass_sampler or sampler
+        if two_pass and arch.supports_split_rendering:
+            from .settings import settings
+            first_pass_settings = settings.first_pass_settings(arch)
+
+            first_pass_sampler = first_pass_settings.sampler or sampler
+            first_pass_cfg = first_pass_settings.cfg or cfg
+            first_pass_ratio = first_pass_settings.ratio
+            first_pass_steps = first_pass_settings.steps
+
+            if first_pass_steps is None:
+                first_pass_steps = max(2, round((steps - start_at_step) * first_pass_ratio))
+
             sigmas = self.scheduler_sigmas(model, scheduler, steps, arch)
-
-            guider = self.cfg_guider(model, positive, negative, cfg)
+            second_pass_guider = self.cfg_guider(model, positive, negative, cfg)
+            if first_pass_cfg != cfg:
+                first_pass_guider = self.cfg_guider(model, positive, negative, first_pass_cfg)
+            else:
+                first_pass_guider = second_pass_guider
 
             _, sigmas = self.split_sigmas(
                 sigmas, start_at_step
             )
 
             first_sigmas, second_sigmas = self.split_sigmas(
-                sigmas, first_pass_steps - start_at_step
+                sigmas, first_pass_steps
             )
 
             latent = self.add(
                 "SamplerCustomAdvanced",
                 output_count=2,
                 noise=self.random_noise(seed),
-                guider=guider,
+                guider=first_pass_guider,
                 sampler=self.sampler_select(first_pass_sampler),
                 sigmas=first_sigmas,
                 latent_image=latent_image,
@@ -421,7 +432,7 @@ class ComfyWorkflow:
                 "SamplerCustomAdvanced",
                 output_count=2,
                 noise=self.disable_noise(),
-                guider=guider,
+                guider=second_pass_guider,
                 sampler=self.sampler_select(sampler),
                 sigmas=second_sigmas,
                 latent_image=latent,
@@ -449,7 +460,7 @@ class ComfyWorkflow:
             )[1]
 
     def scheduler_sigmas(
-        self, model: Output, scheduler="normal", steps=20, model_version=Arch.sdxl
+        self, model: Output, scheduler="normal", steps=20, model_version: Arch=Arch.sdxl
     ):
         if scheduler in ("align_your_steps", "ays"):
             assert model_version is Arch.sd15 or model_version.is_sdxl_like
@@ -509,6 +520,14 @@ class ComfyWorkflow:
             output_count=2,
             sigmas=sigmas,
             step=step,
+        )
+
+    def split_sigmas_denoise(self, sigmas: Output, denoise=0.0):
+        return self.add(
+            "SplitSigmasDenoise",
+            output_count=2,
+            sigmas=sigmas,
+            denoise=denoise,
         )
 
     def basic_guider(self, model: Output, positive: Output):

@@ -183,7 +183,7 @@ class Arch(Enum):
 
     @property
     def supports_split_rendering(self):
-        return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v]
+        return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v, Arch.zimage]
 
     @property
     def is_edit(self):  # edit models make changes to input images

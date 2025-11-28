@@ -857,7 +857,6 @@ def generate(
         latent,
         models.arch,
         two_pass=settings.use_refiner_pass,
-        first_pass_sampler=settings.first_pass_sampler,
         **_sampler_params(sampling)
     )
     out_image = scale_refine_and_decode(
@@ -1115,7 +1114,6 @@ def refine(
         latent_batch,
         models.arch,
         two_pass=settings.use_refiner_pass,
-        first_pass_sampler=settings.first_pass_sampler,
         **_sampler_params(sampling)
     )
     out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae or extent.desired.width * extent.desired.height > 3e6)

@@ -336,9 +336,17 @@ class RootRegion(QObject, ObservableProperties):
         self._update_negative_enabled()
 
     def _update_negative_enabled(self):
+        force_cfg = False
+
+        from .settings import settings
+        if settings.use_refiner_pass:
+            first_pass_settings = settings.first_pass_settings(self._model.arch)
+            if first_pass_settings.cfg is not None and first_pass_settings.cfg > 1:
+                force_cfg = True
+
         supported = self._model.arch.supports_cfg
-        self.negative_enabled = supported and self._model.style.cfg_scale > 1
-        self.negative_enabled_live = supported and self._model.style.live_cfg_scale > 1
+        self.negative_enabled = supported and (self._model.style.cfg_scale > 1 or force_cfg)
+        self.negative_enabled_live = supported and (self._model.style.live_cfg_scale > 1 or force_cfg)
 
     def _add(self, layer: Layer):
         region = Region(self, self._model)

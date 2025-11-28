@@ -136,6 +136,14 @@ class PerformanceSettings:
     tiled_vae: bool = False
 
 
+@dataclass
+class FirstPassSettings:
+    sampler: str = None
+    cfg: float = None
+    ratio: float = 0.6
+    steps: int = None
+
+
 class Setting:
     def __init__(self, name: str, default, desc="", help="", items=None):
         self.name = name
@@ -542,6 +550,23 @@ class Settings(QObject):
                     log.info(f"Migrated settings from {legacy_path} to {path}")
                 except Exception as e:
                     log.warning(f"Failed to migrate settings from {legacy_path} to {path}: {e}")
+
+    def first_pass_settings(self, arch):
+        fps = FirstPassSettings(
+            sampler=self.first_pass_sampler,
+        )
+
+        if '{' in self.first_pass_sampler:
+            json_first_pass = json.loads(self.first_pass_sampler)
+            settings_first_pass = json_first_pass.get(arch.name, json_first_pass.get('default', None))
+
+            if settings_first_pass is not None:
+                fps.sampler = settings_first_pass.get('sampler', fps.sampler)
+                fps.cfg = settings_first_pass.get('cfg', fps.cfg)
+                fps.ratio = settings_first_pass.get('ratio', fps.ratio)
+                fps.steps = settings_first_pass.get('steps', fps.steps)
+
+        return fps
 
 
 settings = Settings()
