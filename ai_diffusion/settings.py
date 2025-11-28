@@ -552,9 +552,7 @@ class Settings(QObject):
                     log.warning(f"Failed to migrate settings from {legacy_path} to {path}: {e}")
 
     def first_pass_settings(self, arch):
-        fps = FirstPassSettings(
-            sampler=self.first_pass_sampler,
-        )
+        fps = FirstPassSettings()
 
         if '{' in self.first_pass_sampler:
             json_first_pass = json.loads(self.first_pass_sampler)
@@ -565,6 +563,8 @@ class Settings(QObject):
                 fps.cfg = settings_first_pass.get('cfg', fps.cfg)
                 fps.ratio = settings_first_pass.get('ratio', fps.ratio)
                 fps.steps = settings_first_pass.get('steps', fps.steps)
+        else:
+            fps.sampler = self.first_pass_sampler
 
         return fps
 
