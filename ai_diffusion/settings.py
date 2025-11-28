@@ -246,8 +246,18 @@ class Settings(QObject):
     use_refiner_pass: bool
     _use_refiner_pass = Setting("Use Refiner Pass", False, "Use a refiner pass for part of the steps, only affects advanced sampler")
 
+    _first_pass_json = {
+        "default": {
+            "sampler": "dpmpp_sde",
+            "ratio": 0.6,
+        },
+        "zimage": {
+            "cfg": 1.8,
+            "steps": 2,
+        }
+    }
     first_pass_sampler: str
-    _first_pass_sampler = Setting("First Pass Sampler", "dpmpp_sde", "First pass sampler, only used if refiner pass is activated")
+    _first_pass_sampler = Setting("First Pass Sampler", json.dumps(_first_pass_json), "First pass sampler, only used if refiner pass is activated")
 
     split_conditioning_sdxl: bool
     _split_conditioning_sdxl = Setting("SDXL split conditioning", False, "Split the conditioning prompts G ang L on ' . ' token for SDXL")
