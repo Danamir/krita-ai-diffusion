@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import re
 from enum import Enum
 from itertools import chain
 import json
@@ -113,7 +115,7 @@ class Arch(Enum):
         if string == "chroma":
             return Arch.chroma
         if string == "qwen-image" and filename and "edit" in filename.lower():
-            if "2509" in filename.lower():
+            if re.match(r".*\D2\d{3}\D.*", filename.lower()):  # 2xxx pattern
                 return Arch.qwen_e_p
             else:
                 return Arch.qwen_e
