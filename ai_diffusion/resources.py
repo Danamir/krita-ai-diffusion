@@ -8,10 +8,10 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.41.0"
+version = "1.44.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "f2bb3230b796f6a486894fc3b597db2c0b9538c9"
+comfy_version = "807538fe6c66bca8c91edbad14414fb4e109cbde"
 nunchaku_version = "1.0.1"
 
 
@@ -42,7 +42,7 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "75c632df4bd0808035b95804e74108d59aac97cd",
+        "22cfd71f951d19ead5a3f0915a4cf7b7979dc41e",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
@@ -59,7 +59,7 @@ optional_custom_nodes = [
         "GGUF",
         "ComfyUI-GGUF",
         "https://github.com/city96/ComfyUI-GGUF",
-        "be2a08330d7ec232d684e50ab938870d7529471e",
+        "01f8845bf30d89fff293c7bd50187bc59d9d53ea",
         ["UnetLoaderGGUF", "DualCLIPLoaderGGUF"],
     ),
     CustomNode(
@@ -86,6 +86,7 @@ class Arch(Enum):
     qwen = "Qwen"
     qwen_e = "Qwen Edit"
     qwen_e_p = "Qwen Edit Plus"
+    qwen_l = "Qwen Layered"
     zimage = "Z-Image"
 
     auto = "Automatic"
@@ -116,6 +117,8 @@ class Arch(Enum):
                 return Arch.qwen_e_p
             else:
                 return Arch.qwen_e
+        if string == "qwen-image" and filename and "layered" in filename.lower():
+            return Arch.qwen_l
         if string == "qwen-image":
             return Arch.qwen
         if string == "z-image":
@@ -155,7 +158,7 @@ class Arch(Enum):
 
     @property
     def has_controlnet_inpaint(self):
-        return self is Arch.sd15 or self is Arch.flux
+        return self in (Arch.sd15, Arch.flux, Arch.zimage)
 
     @property
     def supports_regions(self):
@@ -183,7 +186,7 @@ class Arch(Enum):
 
     @property
     def is_edit(self):  # edit models make changes to input images
-        return self in [Arch.flux_k, Arch.qwen_e, Arch.qwen_e_p]
+        return self in [Arch.flux_k, Arch.qwen_e, Arch.qwen_e_p, Arch.qwen_l]
 
     @property
     def is_sdxl_like(self):
@@ -196,7 +199,7 @@ class Arch(Enum):
 
     @property
     def is_qwen_like(self):
-        return self in [Arch.qwen, Arch.qwen_e, Arch.qwen_e_p]
+        return self in [Arch.qwen, Arch.qwen_e, Arch.qwen_e_p, Arch.qwen_l]
 
     @property
     def text_encoders(self):
@@ -211,7 +214,7 @@ class Arch(Enum):
                 return ["clip_l", "t5"]
             case Arch.chroma:
                 return ["t5"]
-            case Arch.qwen | Arch.qwen_e | Arch.qwen_e_p:
+            case Arch.qwen | Arch.qwen_e | Arch.qwen_e_p | Arch.qwen_l:
                 return ["qwen"]
             case Arch.zimage:
                 return ["qwen_3"]
@@ -231,6 +234,7 @@ class Arch(Enum):
             Arch.qwen,
             Arch.qwen_e,
             Arch.qwen_e_p,
+            Arch.qwen_l,
             Arch.zimage,
         ]
 
@@ -243,6 +247,7 @@ class ResourceKind(Enum):
     clip_vision = "CLIP Vision"
     ip_adapter = "IP-Adapter"
     lora = "LoRA"
+    model_patch = "Model Patch"
     upscaler = "Upscale"
     inpaint = "Inpaint model"
     embedding = "Textual Embedding"
@@ -355,6 +360,14 @@ class ControlMode(Enum):
                 ControlMode.depth,
                 ControlMode.pose,
                 ControlMode.blur,
+            ]
+        if arch is Arch.zimage:
+            return self in [
+                ControlMode.inpaint,
+                ControlMode.soft_edge,
+                ControlMode.canny_edge,
+                ControlMode.depth,
+                ControlMode.pose,
             ]
         return False
 
@@ -723,6 +736,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.canny_edge): ["flux1-canny"],
+    resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.universal): ["z-image-turbo-fun-controlnet-union-2.1", "z-image-turbo-fun-controlnet-union"],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.default): [UpscalerName.default.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_2x): [UpscalerName.fast_2x.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_3x): [UpscalerName.fast_3x.value],
@@ -733,19 +747,20 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_l"): ["clip_l"],
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_g"): ["clip_g"],
     resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5xxl_fp16", "t5xxl_fp8_e4m3fn", "t5xxl_fp8_e4m3fn_scaled", "t5-v1_1-xxl", "t5"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3"): ["qwen_3_4b", "qwen_3"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen_2", "qwen-2", "qwen"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3"): ["qwen_3_4b", "qwen_3", "qwen-3"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu_v, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.sd3, "default"): ["sd3"],
-    resource_id(ResourceKind.vae, Arch.flux, "default"): ["flux", "ae.s"],
-    resource_id(ResourceKind.vae, Arch.flux_k, "default"): ["flux", "ae.s"],
-    resource_id(ResourceKind.vae, Arch.chroma, "default"): ["flux", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.flux, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.flux_k, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.chroma, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
     resource_id(ResourceKind.vae, Arch.qwen, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e_p, "default"): ["qwen"],
+    resource_id(ResourceKind.vae, Arch.qwen_l, "default"): ["qwen_image_layered_vae"],
     resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "ae.s"],
 }
 # fmt: on

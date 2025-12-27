@@ -684,6 +684,9 @@ class ComfyWorkflow:
     def load_style_model(self, model_name: str):
         return self.add_cached("StyleModelLoader", 1, style_model_name=model_name)
 
+    def load_model_patch(self, model_name: str):
+        return self.add_cached("ModelPatchLoader", 1, name=model_name)
+
     def load_lora_model(self, model: Output, lora_name: str, strength: float):
         return self.add(
             "LoraLoaderModelOnly", 1, model=model, lora_name=lora_name, strength_model=strength
@@ -751,6 +754,16 @@ class ComfyWorkflow:
         if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage):
             return self.add("EmptySD3LatentImage", 1, width=w, height=h, batch_size=batch_size)
         return self.add("EmptyLatentImage", 1, width=w, height=h, batch_size=batch_size)
+
+    def empty_latent_layers(self, extent: Extent, layer_count: int, batch_size=1):
+        w, h = extent.width, extent.height
+        l = 1 + layer_count * 4  # number of layers for Qwen-Image-Layered
+        return self.add(
+            "EmptyHunyuanLatentVideo", 1, width=w, height=h, length=l, batch_size=batch_size
+        )
+
+    def cut_latent_to_batch(self, latent: Output, dim: str = "t", slice: int = 1):
+        return self.add("LatentCutToBatch", 1, samples=latent, dim=dim, slice_size=slice)
 
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
@@ -970,6 +983,27 @@ class ComfyWorkflow:
             conditioning=conditioning,
             style_model=style_model,
             clip_vision_output=embeddings,
+        )
+
+    def apply_zimage_fun_controlnet(
+        self,
+        model: Output,
+        patch: Output,
+        vae: Output,
+        strength: float,
+        image: Output,
+        mask: Output | None = None,
+    ):
+        return self.add(
+            "ZImageFunControlnet",
+            1,
+            model=model,
+            model_patch=patch,
+            vae=vae,
+            image=image if not mask else None,
+            inpaint_image=image if mask else None,
+            mask=mask,
+            strength=strength,
         )
 
     def encode_ip_adapter(

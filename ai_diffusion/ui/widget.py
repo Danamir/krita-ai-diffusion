@@ -338,16 +338,14 @@ class StyleSelectWidget(QWidget):
             return
         client = root.connection.client_if_connected
         self._styles = filter_supported_styles(Styles.list().filtered(), client)
+        if self._value not in self._styles:
+            self._styles.insert(0, self._value)
         with SignalBlocker(self._combo):
             self._combo.clear()
             for style in self._styles:
                 icon = theme.checkpoint_icon(resolve_arch(style, client))
                 self._combo.addItem(icon, style.name, style.filename)
-            if self._value in self._styles:
-                self._combo.setCurrentText(self._value.name)
-            elif len(self._styles) > 0:
-                self._value = self._styles[0]
-                self._combo.setCurrentIndex(0)
+            self._combo.setCurrentText(self._value.name)
 
     def change_style(self):
         style = self._styles[self._combo.currentIndex()]
@@ -372,7 +370,10 @@ class StyleSelectWidget(QWidget):
     def value(self, style: Style):
         if style != self._value:
             self._value = style
-            self._combo.setCurrentText(style.name)
+            if style not in self._styles:
+                self.update_styles()
+            else:
+                self._combo.setCurrentText(style.name)
 
 
 class ResizeHandle(QWidget):
@@ -541,11 +542,6 @@ class TextPromptWidget(QPlainTextEdit):
             self.setStyleSheet("QFrame { background: rgba(255, 0, 0, 15); }")
         else:
             self.setFrameStyle(QFrame.Shape.NoFrame)
-
-    def setEnabled(self, a0):
-        super().setEnabled(a0)
-        disabled_hint = _("The selected Style does not use the negative prompt.")
-        self.setToolTip("" if a0 else disabled_hint)
 
     @property
     def has_focus(self):
@@ -721,6 +717,57 @@ class StrengthWidget(QWidget):
 
         steps, start_at_step = self._input.snapping.apply_strength(self._value)
         self._input.setSuffix(f"% ({steps - start_at_step}/{steps})")
+
+
+class LayerCountWidget(QWidget):
+    value_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = 4
+
+        self._layout = QHBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self._layout)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._slider.setMinimum(1)
+        self._slider.setMaximum(10)
+        self._slider.setValue(self._value)
+        self._slider.setSingleStep(1)
+        self._slider.valueChanged.connect(self._notify_changed)
+
+        self._input = QSpinBox(self)
+        self._input.setPrefix(_("Layers") + ": ")
+        self._input.setMinimum(1)
+        self._input.setMaximum(10)
+        self._input.setValue(self._value)
+        self._input.valueChanged.connect(self._notify_changed)
+
+        self._layout.addWidget(self._slider)
+        self._layout.addWidget(self._input)
+
+    def _notify_changed(self, value: int):
+        if value != self._value:
+            self._value = value
+            self._update()
+            self.value_changed.emit(self._value)
+
+    def _update(self):
+        with SignalBlocker(self._slider), SignalBlocker(self._input):
+            self._slider.setValue(self._value)
+            self._input.setValue(self._value)
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value: int):
+        if value == self._value:
+            return
+        self._value = value
+        self._update()
 
 
 class WorkspaceSelectWidget(QToolButton):

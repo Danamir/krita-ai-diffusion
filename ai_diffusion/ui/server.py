@@ -233,12 +233,13 @@ class PackageGroupWidget(QWidget):
         self._update()
 
     def _update_status(self):
-        available = sum(item.state is PackageState.available for item in self._items)
-        if all(item.state is PackageState.installed for item in self._items):
+        items = [i for i in self._items if _backend_supports(self.backend, i)]
+        available = sum(item.state is PackageState.available for item in items)
+        if all(item.state is PackageState.installed for item in items):
             self._status.setText(_("All installed"))
             self._status.setStyleSheet(f"color:{green}")
         elif self.is_checkable:
-            selected = sum(item.state is PackageState.selected for item in self._items)
+            selected = sum(item.state is PackageState.selected for item in items)
             if selected > 0:
                 self._status.setText(
                     f"{selected} of {selected + available} " + _("packages selected")
@@ -939,7 +940,7 @@ class ServerWidget(QWidget):
             self._status_label.setStyleSheet(f"color:{yellow};font-weight:bold")
             await root.connection._connect(url, ServerMode.managed)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
         self.state_changed.emit()
 
@@ -952,7 +953,7 @@ class ServerWidget(QWidget):
                 await root.connection.disconnect()
             await self._server.stop()
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
         self.state_changed.emit()
 
@@ -978,7 +979,7 @@ class ServerWidget(QWidget):
             await self._start()
 
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
 
     async def _upgrade(self):
@@ -991,7 +992,7 @@ class ServerWidget(QWidget):
             await self._start()
 
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
 
     async def _prepare_for_install(self):
@@ -1068,7 +1069,7 @@ class ServerWidget(QWidget):
                 if msg_box.exec_() == QMessageBox.Yes:
                     await self._server.fix_models(bad_models, self._handle_progress)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self._progress_bar.setVisible(False)
             self._progress_info.setVisible(False)
@@ -1098,7 +1099,7 @@ class ServerWidget(QWidget):
             if len(self.selected_models) > 0:
                 await self._server.download(self.selected_models, self._handle_progress)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self.update_ui()
 
@@ -1126,7 +1127,7 @@ class ServerWidget(QWidget):
         try:
             await self._server.uninstall(self._handle_progress, delete_models=True)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self._progress_bar.setVisible(False)
             self._progress_info.setVisible(False)
@@ -1219,8 +1220,11 @@ class ServerWidget(QWidget):
 
         self.show_error(self._error)
 
-    def show_error(self, error: str):
-        self._error = error
+    def show_error(self, error: str | Exception):
+        if isinstance(error, Exception):
+            self._error = str(error) or repr(error)
+        else:
+            self._error = error
         if self._error:
             error_text = "<b>Error:</b> " + self._error.replace("\n", "<br>")
             self._status_label.setText(error_text)
