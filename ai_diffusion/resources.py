@@ -10,11 +10,11 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.44.0"
+version = "1.45.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
 comfy_version = "807538fe6c66bca8c91edbad14414fb4e109cbde"
-nunchaku_version = "1.0.1"
+nunchaku_version = "1.1.0"
 
 
 class CustomNode(NamedTuple):
@@ -68,7 +68,7 @@ optional_custom_nodes = [
         "Nunchaku",
         "ComfyUI-nunchaku",
         "https://github.com/nunchaku-tech/ComfyUI-nunchaku",
-        "d3a640a1d0c9f726b7ca3acc28daca8f52d10922",
+        "930bc2266a4f3277e16be75e67c11875d20a01c6",
         ["NunchakuFluxDiTLoader"],
     ),
 ]
@@ -96,6 +96,7 @@ class Arch(Enum):
 
     @staticmethod
     def from_string(string: str, model_type: str = "eps", filename: str | None = None):
+        filename = filename.lower() if filename else ""
         if string == "sd15":
             return Arch.sd15
         if string == "sdxl" and model_type == "v-prediction":
@@ -104,7 +105,7 @@ class Arch(Enum):
             return Arch.sdxl
         if string == "sd3":
             return Arch.sd3
-        if string == "flux" and filename and "kontext" in filename.lower():
+        if string == "flux" and "kontext" in filename:
             return Arch.flux_k
         if string == "flux" or string == "flux-schnell":
             return Arch.flux
@@ -114,12 +115,12 @@ class Arch(Enum):
             return Arch.illu_v
         if string == "chroma":
             return Arch.chroma
-        if string == "qwen-image" and filename and "edit" in filename.lower():
-            if re.match(r".*\D2\d{3}\D.*", filename.lower()):  # 2xxx pattern
+        if string == "qwen-image" and "edit" in filename:
+            if re.match(r".*\D2\d{3}\D.*", filename):  # 2xxx pattern
                 return Arch.qwen_e_p
             else:
                 return Arch.qwen_e
-        if string == "qwen-image" and filename and "layered" in filename.lower():
+        if string == "qwen-image" and "layered" in filename:
             return Arch.qwen_l
         if string == "qwen-image":
             return Arch.qwen
