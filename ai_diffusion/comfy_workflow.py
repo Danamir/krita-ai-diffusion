@@ -465,7 +465,7 @@ class ComfyWorkflow:
             )[1]
 
     def scheduler_sigmas(
-        self, model: Output, scheduler="normal", steps=20, arch=Arch.sdxl, extent=Extent(1024, 1024)
+        self, model: Output, scheduler="normal", steps=20, arch: Arch = Arch.sdxl, extent=Extent(1024, 1024)
     ):
         if scheduler in ("align_your_steps", "ays"):
             assert arch is Arch.sd15 or arch.is_sdxl_like

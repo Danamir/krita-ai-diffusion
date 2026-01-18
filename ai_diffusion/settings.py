@@ -264,6 +264,14 @@ class Settings(QObject):
         "zimage": {
             "cfg": 1.8,
             "steps": 2,
+        },
+        "flux2_4b": {
+            "cfg": 5.0,
+            "steps": 2,
+        },
+        "flux2_9b": {
+            "cfg": 5.0,
+            "steps": 2,
         }
     }
     first_pass_sampler: str
