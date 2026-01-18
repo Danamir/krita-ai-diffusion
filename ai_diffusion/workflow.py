@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from copy import copy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
@@ -112,7 +113,7 @@ def snap_to_percent(steps: int, start_at_step: int, max_steps: int) -> int | Non
     return round((steps - start_at_step) * 100 / steps)
 
 
-def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | None = None):
+def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | None = None, arch: Arch | None = None):
     params: dict[str, Any] = dict(
         sampler=sampling.sampler,
         scheduler=sampling.scheduler,
@@ -124,6 +125,21 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
     )
     if strength is not None:
         params["steps"], params["start_at_step"] = apply_strength(strength, sampling.total_steps)
+
+    # inject two pass param
+    if settings.use_refiner_pass and arch is not None:
+        two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
+
+        match arch:
+            case Arch.flux2_4b | Arch.flux2_9b:
+                two_pass_methods = ("generate",)
+
+        parent_frame = inspect.currentframe().f_back
+        if parent_frame is not None:
+
+            if parent_frame.f_code.co_name in two_pass_methods:
+                params["two_pass"] = True
+
     return params
 
 
@@ -896,7 +912,7 @@ def generate(
     prompt = apply_reference_conditioning(
         w, prompt, None, None, cond, vae, models.arch, checkpoint.tiled_vae
     )
-    sample_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, extent.initial))
+    sample_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(model, prompt, latent, models.arch, **sample_params)
     out_image = scale_refine_and_decode(
         extent, w, cond, sampling, out_latent, model_orig, clip, vae, models, checkpoint.tiled_vae
@@ -1070,9 +1086,7 @@ def inpaint(
         inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
-    sampler_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, extent.initial))
-    if models.arch.is_flux2:  # disable two pass for Flux 2 inpaint
-        sampler_params["two_pass"] = False
+    sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
     )
@@ -1086,9 +1100,7 @@ def inpaint(
         upscale_mask = cropped_mask
         if crop_upscale_extent != target_bounds.extent:
             upscale_mask = w.scale_mask(cropped_mask, crop_upscale_extent)
-        sampler_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, upscale_extent.desired, strength=0.4))
-        if models.arch.is_flux2:  # disable two pass for Flux 2 inpaint
-            sampler_params["two_pass"] = False
+        sampler_params = _sampler_params(sampling, upscale_extent.desired, strength=0.4, arch=models.arch)
         upscale_model = w.load_upscale_model(upscaler)
         upscale = vae_decode(w, vae, out_latent, checkpoint.tiled_vae)
         upscale = w.crop_image(upscale, initial_bounds)
@@ -1162,9 +1174,7 @@ def refine(
     prompt = apply_reference_conditioning(
         w, prompt, in_image, latent, cond, vae, models.arch, checkpoint.tiled_vae
     )
-    sampler_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, extent.desired))
-    if models.arch.is_flux2:  # disable two pass for Flux 2 refine
-        sampler_params["two_pass"] = False
+    sampler_params = _sampler_params(sampling, extent.desired, arch=models.arch)
     sampler = w.sampler_custom_advanced(model, prompt, latent_batch, models.arch, **sampler_params)
     sampler = pack_latent_layers(w, sampler, misc)
     out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae or extent.desired.width * extent.desired.height > 3e6)
@@ -1221,9 +1231,7 @@ def refine_region(
         inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
-    sampler_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, extent.initial))
-    if models.arch.is_flux2:  # disable two pass for Flux 2 refine region
-        sampler_params["two_pass"] = False
+    sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
     )
