@@ -1087,6 +1087,8 @@ def inpaint(
         if crop_upscale_extent != target_bounds.extent:
             upscale_mask = w.scale_mask(cropped_mask, crop_upscale_extent)
         sampler_params = dict({"two_pass": settings.use_refiner_pass}, **_sampler_params(sampling, upscale_extent.desired, strength=0.4))
+        if models.arch.is_flux2:  # disable two pass for Flux 2 inpaint
+            sampler_params["two_pass"] = False
         upscale_model = w.load_upscale_model(upscaler)
         upscale = vae_decode(w, vae, out_latent, checkpoint.tiled_vae)
         upscale = w.crop_image(upscale, initial_bounds)
