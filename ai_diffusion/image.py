@@ -4,7 +4,6 @@ from PyQt5.QtGui import QImage, QImageWriter, QImageReader, QPixmap, QIcon, QPai
 from PyQt5.QtGui import qRgba, qRed, qGreen, qBlue, qAlpha, qGray
 from PyQt5.QtCore import Qt, QByteArray, QBuffer, QRect, QSize, QFile, QIODevice
 from typing import Callable, Iterable, SupportsIndex, Tuple, NamedTuple, Union, Optional
-from itertools import product
 from pathlib import Path
 
 from .settings import settings, ImageFileFormat
@@ -72,6 +71,10 @@ class Extent(NamedTuple):
     @staticmethod
     def largest(a: "Extent", b: "Extent"):
         return a if a.width * a.height > b.width * b.height else b
+
+    @staticmethod
+    def min(a: "Extent", b: "Extent"):
+        return Extent(min(a.width, b.width), min(a.height, b.height))
 
     @staticmethod
     def ratio(a: "Extent", b: "Extent"):
@@ -743,20 +746,21 @@ class Mask:
         return Mask(bounds, QByteArray(bytes(bounds.width * bounds.height)))
 
     @staticmethod
-    def rectangle(bounds: Bounds, feather=0):
+    def rectangle(bounds: Bounds, context: Bounds):
         # Note: for testing only, where Krita selection is not available
-        m = [255 for i in range(bounds.width * bounds.height)]
-        if feather > 0:
-            for x, y in product(range(bounds.width), range(bounds.height)):
-                l = min(0, x - feather) * -1
-                t = min(0, y - feather) * -1
-                r = max(0, x + feather + 1 - bounds.width)
-                b = max(0, y + feather + 1 - bounds.height)
-                alpha = (
-                    64 * l // feather + 64 * t // feather + 64 * r // feather + 64 * b // feather
-                )
-                m[y * bounds.width + x] = 255 - alpha
-        return Mask(bounds, QByteArray(bytes(m)))
+        m = []
+        for y in range(context.height):
+            for x in range(context.width):
+                if (
+                    x >= bounds.x
+                    and x < bounds.x + bounds.width
+                    and y >= bounds.y
+                    and y < bounds.y + bounds.height
+                ):
+                    m.append(255)
+                else:
+                    m.append(0)
+        return Mask(context, QByteArray(bytes(m)))
 
     @staticmethod
     def load(filepath: Union[str, Path]):

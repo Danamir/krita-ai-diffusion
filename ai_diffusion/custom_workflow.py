@@ -10,15 +10,15 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, QUuid, QAbstractListModel, QSortFilterProxyModel, QModelIndex
 from PyQt5.QtCore import QMetaObject, QTimer, pyqtSignal
 
-from .api import WorkflowInput
-from .client import TextOutput, ClientOutput
+from .api import WorkflowInput, InpaintContext
+from .client import OutputBatchMode, TextOutput, ClientOutput, JobInfoOutput
 from .comfy_workflow import ComfyWorkflow, ComfyNode
 from .connection import Connection, ConnectionState
-from .image import Bounds, Image
+from .image import Bounds, Image, Mask
 from .jobs import Job, JobParams, JobQueue, JobKind
 from .properties import Property, ObservableProperties
 from .style import Styles
-from .util import base_type_match, user_data_dir, client_logger as log
+from .util import base_type_match, parse_enum, user_data_dir, client_logger as log
 from .ui import theme
 from . import eventloop
 
@@ -531,6 +531,30 @@ class CustomWorkspace(QObject, ObservableProperties):
 
         return params
 
+    def prepare_mask(
+        self,
+        selection_node: ComfyNode,
+        mask: Mask | None,
+        mask_bounds: Bounds | None,
+        canvas_bounds: Bounds,
+    ):
+        ctx = selection_node.input("context", "entire_image").replace(" ", "_")
+        pad = selection_node.input("padding", 0)
+        if mask and mask_bounds:
+            match parse_enum(InpaintContext, ctx):
+                case InpaintContext.entire_image:
+                    bounds = canvas_bounds
+                case InpaintContext.automatic:
+                    bounds = Bounds.pad(mask.bounds, pad)
+                case InpaintContext.mask_bounds:
+                    bounds = Bounds.pad(mask_bounds, pad)
+                case _:
+                    raise ValueError(f"Invalid inpaint context: {ctx}")
+            bounds = Bounds.clamp(bounds, canvas_bounds.extent)
+            mask.bounds = mask.bounds.relative_to(bounds)
+            return mask, bounds
+        return None, canvas_bounds
+
     def switch_to_web_workflow(self):
         self._switch_workflow_bind = self._workflows.rowsInserted.connect(self._set_workflow_index)
         self._switch_workflow_timer = QTimer()
@@ -552,11 +576,24 @@ class CustomWorkspace(QObject, ObservableProperties):
             self._workflows.rowsInserted.disconnect(self._switch_workflow_bind)
             self._switch_workflow_bind = None
 
-    def show_output(self, output: ClientOutput | None):
+    def handle_output(self, job: Job, output: ClientOutput | None):
         if isinstance(output, TextOutput):
             self._new_outputs.append(output.key)
             self.outputs[output.key] = output
             self.outputs_changed.emit(self.outputs)
+        elif isinstance(output, JobInfoOutput):
+            job.params.resize_canvas = output.resize_canvas
+            job.params.bounds = Bounds(*output.offset, *job.params.bounds.extent)
+            if output.name:
+                job.params.name = output.name
+            match output.batch_mode:
+                case OutputBatchMode.images:
+                    job.kind = JobKind.diffusion
+                case OutputBatchMode.animation:
+                    job.kind = JobKind.animation
+                case OutputBatchMode.layers:
+                    job.kind = JobKind.diffusion
+                    job.params.is_layered = True
 
     def _handle_job_finished(self, job: Job):
         to_remove = [k for k in self.outputs.keys() if k not in self._new_outputs]

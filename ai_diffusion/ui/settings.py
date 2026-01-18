@@ -18,7 +18,6 @@ from PyQt5.QtWidgets import (
     QWidget,
     QMessageBox,
     QCheckBox,
-    QToolButton,
     QStyle,
     QStyleOption,
 )
@@ -509,21 +508,6 @@ class ConnectionSettings(SettingsTab):
         )
         self._supported_workloads.setOpenExternalLinks(True)
 
-        self._client_id = QWidget(self._connection_widget)
-        client_id_layout = QHBoxLayout(self._client_id)
-        client_id_layout.setContentsMargins(0, 0, 0, 0)
-        self._client_id_label = QLabel(self._client_id)
-        self._client_id_label.setStyleSheet(f"font-style: italic; color: {grey};")
-        self._client_id_button = QToolButton(self._client_id)
-        self._client_id_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._client_id_button.setIcon(Krita.instance().icon("edit-copy"))
-        self._client_id_button.setToolTip(_("Copy to clipboard"))
-        self._client_id_button.setAutoRaise(True)
-        self._client_id_button.clicked.connect(self._copy_client_id)
-        client_id_layout.addWidget(self._client_id_label)
-        client_id_layout.addWidget(self._client_id_button)
-        client_id_layout.addStretch()
-
         anchor = _("View log files")
         open_log_button = QLabel(f"<a href='file://{util.log_dir}'>{anchor}</a>", self)
         open_log_button.setToolTip(str(util.log_dir))
@@ -535,7 +519,6 @@ class ConnectionSettings(SettingsTab):
 
         connection_layout.addLayout(status_layout)
         connection_layout.addWidget(self._supported_workloads)
-        connection_layout.addWidget(self._client_id)
         connection_layout.addStretch()
 
         self._layout.addWidget(self._server_mode)
@@ -589,12 +572,9 @@ class ConnectionSettings(SettingsTab):
         self._server_mode.update_status(connection.state, self._server.state)
         self._cloud_widget.update_connection_state(connection.state)
         self._connect_button.setEnabled(True)
-        self._client_id.setVisible(False)
         if connection.state == ConnectionState.connected:
             self._connection_status.setText(_("Connected"))
             self._connection_status.setStyleSheet(f"color: {green}; font-weight:bold")
-            self._client_id_label.setText(f"Client ID: {settings.comfyui_client_id}")
-            self._client_id.setVisible(True)
         elif connection.state == ConnectionState.connecting:
             self._connection_status.setText(_("Connecting"))
             self._connection_status.setStyleSheet(f"color: {yellow}; font-weight:bold")
@@ -630,7 +610,7 @@ class ConnectionSettings(SettingsTab):
         text = ""
         if isinstance(res.missing, list):
             text = (
-                _("The following ComfyUI custom nodes are missing")
+                _("The following ComfyUI custom nodes are missing or too old")
                 + ":<ul>"
                 + "\n".join(
                     (f"<li>{p.name} <a href='{p.url}'>{p.url}</a></li>" for p in res.missing)
@@ -639,6 +619,7 @@ class ConnectionSettings(SettingsTab):
                 + _(
                     "Please install or update the custom node package, then restart the server and try again."
                 )
+                + _("If nodes are still missing, check the ComfyUI output at startup for errors.")
                 + "<br>"
             )
         else:
@@ -673,10 +654,6 @@ class ConnectionSettings(SettingsTab):
         self._supported_workloads.setStyleSheet(style)
         self._supported_workloads.setText(text)
 
-    def _copy_client_id(self):
-        if clipboard := QGuiApplication.clipboard():
-            clipboard.setText(settings.comfyui_client_id)
-
     def _open_logs(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(util.log_dir)))
 
@@ -686,8 +663,8 @@ class DiffusionSettings(SettingsTab):
         super().__init__(_("Diffusion Settings"))
 
         S = Settings
-        self.add("selection_grow", SliderSetting(S._selection_grow, self, 0, 25, "{} %"))
         self.add("selection_feather", SliderSetting(S._selection_feather, self, 0, 25, "{} %"))
+        self.add("selection_blend", SliderSetting(S._selection_blend, self, 0, 100, "{} px"))
         self.add("selection_padding", SliderSetting(S._selection_padding, self, 0, 25, "{} %"))
         self.add("nsfw_filter", ComboBoxSetting(S._nsfw_filter, parent=self))
 

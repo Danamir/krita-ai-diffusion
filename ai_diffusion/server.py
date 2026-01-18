@@ -17,11 +17,15 @@ from .resources import VerificationStatus, VerificationState
 from .network import download, DownloadProgress
 from .localization import translate as _
 from .platform_tools import ZipFile, create_process, decode_pipe_bytes, determine_system_encoding
-from .platform_tools import is_windows, is_macos
+from .platform_tools import is_windows, is_macos, is_linux
 from .util import client_logger as log, server_logger as server_log
 
 
 _exe = ".exe" if is_windows else ""
+
+torch_version = "2.8.0" if is_linux else "2.9.1"
+torchvision_version = "0.23.0" if is_linux else "0.24.1"
+nunchaku_version = ("1.2.0", "torch2.8") if is_linux else ("1.2.0", "torch2.9")
 
 
 class ServerState(Enum):
@@ -200,6 +204,9 @@ class Server:
         env = None
         if self._uv_cmd is not None:
             env = {"VIRTUAL_ENV": str(self.path / "venv")}
+            if is_linux:  # Restrict concurrency to improve robustness #2232 #2201
+                env["UV_CONCURRENT_DOWNLOADS"] = "2"
+                env["UV_CONCURRENT_INSTALLS"] = "2"
             cmd = [self._uv_cmd, "pip", "install", *args]
         else:
             cmd = [self._python_cmd, "-su", "-m", "pip", "install", *args]
@@ -207,7 +214,7 @@ class Server:
 
     async def _install_uv(self, network: QNetworkAccessManager, cb: InternalCB):
         script_ext = ".ps1" if is_windows else ".sh"
-        url = f"https://astral.sh/uv/0.8.12/install{script_ext}"
+        url = f"https://astral.sh/uv/0.9.26/install{script_ext}"
         script_path = self._cache_dir / f"install_uv{script_ext}"
         await _download_cached("Python", network, url, script_path, cb)
 
@@ -249,7 +256,11 @@ class Server:
         await _extract_archive("ComfyUI", archive_path, comfy_dir.parent, cb)
         temp_comfy_dir = comfy_dir.parent / f"ComfyUI-{resources.comfy_version}"
 
-        torch_args = ["torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1"]
+        torch_args = [
+            f"torch=={torch_version}",
+            f"torchvision=={torchvision_version}",
+            f"torchaudio=={torch_version}",
+        ]
         if is_macos:  # specific versions sometimes don't work (?)
             torch_args = ["torch", "torchvision", "torchaudio"]
         elif self.backend is ServerBackend.cpu:
@@ -301,13 +312,11 @@ class Server:
 
         pyver = await get_python_version_string(self._python_cmd)
         if is_windows and ("3.11" in pyver or "3.12" in pyver):
-            whl_file = self._cache_dir / "insightface-0.7.3-cp311-cp311-win_amd64.whl"
             whl_url = "https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl"
             if "3.12" in pyver:
-                whl_file = self._cache_dir / "insightface-0.7.3-cp312-cp312-win_amd64.whl"
                 whl_url = "https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp312-cp312-win_amd64.whl"
-            await _download_cached("FaceID", network, whl_url, whl_file, cb)
-            await self._pip_install("FaceID", [str(whl_file)], cb)
+            # Make sure numpy isn't updated to a version incompatible with other packages
+            await self._pip_install("FaceID", [whl_url, "numpy<2"], cb)
         else:
             await self._pip_install("FaceID", ["insightface"], cb)
 
@@ -318,8 +327,8 @@ class Server:
         assert "3.12" in pyver, "Nunchaku requires Python 3.12"
 
         platform = "win_amd64" if is_windows else "linux_x86_64"
-        ver = resources.nunchaku_version
-        whl_url = f"https://github.com/nunchaku-tech/nunchaku/releases/download/v{ver}/nunchaku-{ver}+torch2.9-cp312-cp312-{platform}.whl"
+        ver, torch = nunchaku_version
+        whl_url = f"https://github.com/nunchaku-tech/nunchaku/releases/download/v{ver}/nunchaku-{ver}+{torch}-cp312-cp312-{platform}.whl"
         await self._pip_install("Nunchaku", [whl_url], cb)
 
     async def _install_requirements(

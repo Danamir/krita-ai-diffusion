@@ -12,10 +12,11 @@ from typing import Any, Iterable, Optional, Sequence
 from .api import WorkflowInput
 from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
 from .client import SharedWorkflow, TranslationPackage, ClientFeatures, ClientJobQueue, TextOutput
-from .client import Quantization, MissingResources, filter_supported_styles, loras_to_upload
+from .client import JobInfoOutput, OutputBatchMode, Quantization, MissingResources
+from .client import filter_supported_styles, loras_to_upload
 from .comfy_workflow import ComfyObjectInfo
 from .files import FileFormat
-from .image import Image, ImageCollection
+from .image import Image, ImageCollection, Point
 from .network import RequestManager, NetworkError
 from .websockets.src import websockets
 from .style import Styles
@@ -23,7 +24,7 @@ from .resources import ControlMode, ResourceId, ResourceKind, Arch
 from .resources import CustomNode, UpscalerName, resource_id
 from .settings import PerformanceSettings, settings
 from .localization import translate as _
-from .util import client_logger as log
+from .util import client_logger as log, parse_enum
 from .workflow import create as create_workflow
 from . import platform_tools, resources, util
 
@@ -118,7 +119,7 @@ class ComfyClient(Client):
         self.url = url
         self.models = ClientModels()
         self._requests = RequestManager()
-        self._id = settings.comfyui_client_id
+        self._id = str(uuid.uuid4())
         self._active_job: Optional[JobInfo] = None
         self._waiting_job = QueuedJob()
         self._features: ClientFeatures = ClientFeatures()
@@ -385,6 +386,9 @@ class ComfyClient(Client):
                         text_output = _extract_text_output(job.id, msg)
                         if text_output is not None:
                             await self._messages.put(text_output)
+                        job_info = _extract_job_info_output(job.id, msg)
+                        if job_info is not None:
+                            await self._messages.put(job_info)
                         pose_json = _extract_pose_json(msg)
                         if pose_json is not None:
                             result = pose_json
@@ -723,7 +727,7 @@ def _find_text_encoder_models(model_list: Sequence[str]):
     kind = ResourceKind.text_encoder
     return {
         resource_id(kind, Arch.all, te): _find_model(model_list, kind, Arch.all, te)
-        for te in ["clip_l", "clip_g", "t5", "qwen", "qwen_3"]
+        for te in ["clip_l", "clip_g", "t5", "qwen", "qwen_3_4b", "qwen_3_8b"]
     }
 
 
@@ -759,8 +763,11 @@ def _find_clip_vision_model(model_list: Sequence[str]):
 
 
 def _find_model_patches(model_list: Sequence[str]):
-    res = ResourceId(ResourceKind.model_patch, Arch.zimage, ControlMode.universal)
-    return {res.string: _find_model(model_list, res.kind, res.arch, res.identifier)}
+    res = [
+        ResourceId(ResourceKind.model_patch, Arch.zimage, ControlMode.universal),
+        ResourceId(ResourceKind.model_patch, Arch.zimage, ControlMode.blur),
+    ]
+    return {r.string: _find_model(model_list, r.kind, r.arch, r.identifier) for r in res}
 
 
 def _find_style_models(model_list: Sequence[str]):
@@ -889,4 +896,24 @@ def _extract_text_output(job_id: str, msg: dict):
                 return ClientMessage(ClientEvent.output, job_id, result=result)
     except Exception as e:
         log.warning(f"Error processing message, error={str(e)}, msg={msg}")
+    return None
+
+
+def _extract_job_info_output(job_id: str, msg: dict):
+    try:
+        output = msg["data"]["output"]
+        if output is not None:
+            info = output.get("info")
+            if isinstance(info, list):
+                info = info[0]
+            if isinstance(info, dict):
+                result = JobInfoOutput(
+                    name=info.get("name", ""),
+                    offset=Point(info.get("offset_x", 0), info.get("offset_y", 0)),
+                    batch_mode=parse_enum(OutputBatchMode, info.get("batch_mode", "default")),
+                    resize_canvas=info.get("resize_canvas", False),
+                )
+                return ClientMessage(ClientEvent.output, job_id, result=result)
+    except Exception as e:
+        log.warning(f"Error processing Krita resize output: {e}, msg={msg}")
     return None

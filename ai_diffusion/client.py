@@ -8,7 +8,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 from .api import WorkflowInput
 from .comfy_workflow import ComfyObjectInfo
-from .image import ImageCollection
+from .image import ImageCollection, Point
 from .properties import Property, ObservableProperties
 from .files import FileLibrary, FileFormat
 from .style import Style
@@ -40,12 +40,26 @@ class TextOutput(NamedTuple):
     mime: str
 
 
+class OutputBatchMode(Enum):
+    default = 0
+    images = 1
+    animation = 2
+    layers = 3
+
+
+class JobInfoOutput(NamedTuple):
+    name: str = ""
+    offset: Point = Point(0, 0)
+    batch_mode: OutputBatchMode = OutputBatchMode.default
+    resize_canvas: bool = False
+
+
 class SharedWorkflow(NamedTuple):
     publisher: str
     workflow: dict
 
 
-ClientOutput = dict | SharedWorkflow | TextOutput
+ClientOutput = dict | SharedWorkflow | TextOutput | JobInfoOutput
 
 
 class ClientMessage(NamedTuple):
@@ -274,6 +288,14 @@ class ModelDict:
             if isinstance(key, ControlMode) and key.can_substitute_universal(self.arch):
                 result = self.find(ControlMode.universal)
         return result
+
+    def find_control(self, mode: ControlMode, allow_universal=True):
+        return (
+            self.control.find(mode, allow_universal)
+            or self.model_patch.find(mode, allow_universal)
+            or self.ip_adapter.find(mode)
+            or self.lora.find(mode)
+        )
 
     def for_version(self, arch: Arch):
         return ModelDict(self._models, self.kind, arch)

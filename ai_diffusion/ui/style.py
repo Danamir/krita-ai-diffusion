@@ -787,10 +787,10 @@ class StylePresets(SettingsTab):
 
     def _open_checkpoints_folder(self):
         arch = resolve_arch(self.current_style, root.connection.client_if_connected)
-        if arch.is_flux_like or arch is Arch.chroma or arch.is_qwen_like or arch is Arch.zimage:
-            self._open_folder(Path("models/diffusion_models"))
-        else:
+        if arch.is_sdxl_like or arch is Arch.sd15:
             self._open_folder(Path("models/checkpoints"))
+        else:
+            self._open_folder(Path("models/diffusion_models"))
 
     def _open_lora_folder(self):
         self._open_folder(Path("models/loras"))
@@ -906,6 +906,8 @@ class StylePresets(SettingsTab):
             valid_archs = (Arch.auto, Arch.flux, Arch.flux_k)
         elif arch.is_qwen_like:
             valid_archs = (Arch.auto, Arch.qwen, Arch.qwen_e, Arch.qwen_e_p, Arch.qwen_l)
+        elif arch.is_flux2:
+            valid_archs = (Arch.auto, Arch.flux2_4b, Arch.flux2_9b)
         else:
             valid_archs = (Arch.auto, arch)
         with SignalBlocker(self._arch_select):

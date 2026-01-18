@@ -10,11 +10,10 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.45.0"
+version = "1.46.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
-comfy_version = "807538fe6c66bca8c91edbad14414fb4e109cbde"
-nunchaku_version = "1.1.0"
+comfy_version = "732b707397922dbbec5ed04ecca3c773c878c64e"
 
 
 class CustomNode(NamedTuple):
@@ -44,15 +43,15 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "22cfd71f951d19ead5a3f0915a4cf7b7979dc41e",
+        "9d2e03e8d54f2da69cb6f63a0cc0d9dc1ff31cd8",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "b9039c22de926919f26b7242cfa4da00d8b6fbec",
-        ["INPAINT_LoadFooocusInpaint", "INPAINT_ApplyFooocusInpaint", "INPAINT_ExpandMask"],
+        "4ebbdc840db881c50a38965aa7955b76cec2a4c5",
+        ["INPAINT_LoadFooocusInpaint", "INPAINT_ShrinkMask", "INPAINT_ExpandMask"],
     ),
 ]
 
@@ -68,7 +67,7 @@ optional_custom_nodes = [
         "Nunchaku",
         "ComfyUI-nunchaku",
         "https://github.com/nunchaku-tech/ComfyUI-nunchaku",
-        "930bc2266a4f3277e16be75e67c11875d20a01c6",
+        "90999af9c26e4a40927fb26c028ece8875ac25b3",
         ["NunchakuFluxDiTLoader"],
     ),
 ]
@@ -82,6 +81,8 @@ class Arch(Enum):
     sd3 = "SD 3"
     flux = "Flux"
     flux_k = "Flux Kontext"
+    flux2_4b = "Flux 2 Klein 4B"
+    flux2_9b = "Flux 2 Klein 9B"
     illu = "Illustrious"
     illu_v = "Illustrious v-prediction"
     chroma = "Chroma"
@@ -109,6 +110,10 @@ class Arch(Enum):
             return Arch.flux_k
         if string == "flux" or string == "flux-schnell":
             return Arch.flux
+        if string == "flux2" and model_type == "klein-4b":
+            return Arch.flux2_4b
+        if string == "flux2" and model_type == "klein-9b":
+            return Arch.flux2_9b
         if string == "illu":
             return Arch.illu
         if string == "illu_v":
@@ -192,6 +197,10 @@ class Arch(Enum):
         return self in [Arch.flux_k, Arch.qwen_e, Arch.qwen_e_p, Arch.qwen_l]
 
     @property
+    def supports_edit(self):  # includes text-to-image models that can also edit
+        return self.is_edit or self.is_flux2
+
+    @property
     def is_sdxl_like(self):
         # illustrious technically uses sdxl architecture, but has a separate ecosystem
         return self in [Arch.sdxl, Arch.illu, Arch.illu_v]
@@ -199,6 +208,10 @@ class Arch(Enum):
     @property
     def is_flux_like(self):
         return self in [Arch.flux, Arch.flux_k]
+
+    @property
+    def is_flux2(self):
+        return self in [Arch.flux2_4b, Arch.flux2_9b]
 
     @property
     def is_qwen_like(self):
@@ -215,12 +228,16 @@ class Arch(Enum):
                 return ["clip_l", "clip_g"]
             case Arch.flux | Arch.flux_k:
                 return ["clip_l", "t5"]
+            case Arch.flux2_4b:
+                return ["qwen_3_4b"]
+            case Arch.flux2_9b:
+                return ["qwen_3_8b"]
             case Arch.chroma:
                 return ["t5"]
             case Arch.qwen | Arch.qwen_e | Arch.qwen_e_p | Arch.qwen_l:
                 return ["qwen"]
             case Arch.zimage:
-                return ["qwen_3"]
+                return ["qwen_3_4b"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @staticmethod
@@ -231,6 +248,8 @@ class Arch(Enum):
             Arch.sd3,
             Arch.flux,
             Arch.flux_k,
+            Arch.flux2_4b,
+            Arch.flux2_9b,
             Arch.illu,
             Arch.illu_v,
             Arch.chroma,
@@ -343,7 +362,6 @@ class ControlMode(Enum):
         """True if this control mode is covered by univeral control-net."""
         if arch.is_sdxl_like:
             return self in [
-                ControlMode.inpaint,
                 ControlMode.scribble,
                 ControlMode.line_art,
                 ControlMode.soft_edge,
@@ -368,6 +386,21 @@ class ControlMode(Enum):
             return self in [
                 ControlMode.inpaint,
                 ControlMode.soft_edge,
+                ControlMode.canny_edge,
+                ControlMode.depth,
+                ControlMode.pose,
+            ]
+        return False
+
+    def can_substitute_instruction(self, arch: Arch):
+        """True if this control mode is covered by instruction-following edit models."""
+        if arch.is_flux2:
+            return self in [
+                ControlMode.style,
+                ControlMode.composition,
+                ControlMode.face,
+                ControlMode.scribble,
+                ControlMode.line_art,
                 ControlMode.canny_edge,
                 ControlMode.depth,
                 ControlMode.pose,
@@ -740,6 +773,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.canny_edge): ["flux1-canny"],
     resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.universal): ["z-image-turbo-fun-controlnet-union-2.1", "z-image-turbo-fun-controlnet-union"],
+    resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.blur): ["z-image-turbo-fun-controlnet-tile-2.1", "z-image-turbo-fun-controlnet-tile"],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.default): [UpscalerName.default.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_2x): [UpscalerName.fast_2x.value],
     resource_id(ResourceKind.upscaler, Arch.all, UpscalerName.fast_3x): [UpscalerName.fast_3x.value],
@@ -751,7 +785,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_g"): ["clip_g"],
     resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5xxl_fp16", "t5xxl_fp8_e4m3fn", "t5xxl_fp8_e4m3fn_scaled", "t5-v1_1-xxl", "t5"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen_2", "qwen-2", "qwen"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3"): ["qwen_3_4b", "qwen_3", "qwen-3"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_4b"): ["qwen_3_4b", "qwen3-4b", "qwen_3", "qwen-3"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_8b"): ["qwen_3_8b", "qwen3-8b"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -759,12 +794,14 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.sd3, "default"): ["sd3"],
     resource_id(ResourceKind.vae, Arch.flux, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
     resource_id(ResourceKind.vae, Arch.flux_k, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.flux2_4b, "default"): ["flux2"],
+    resource_id(ResourceKind.vae, Arch.flux2_9b, "default"): ["flux2"],
     resource_id(ResourceKind.vae, Arch.chroma, "default"): ["flux-", "flux_", "flux/", "flux1", "ae.s"],
     resource_id(ResourceKind.vae, Arch.qwen, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_e_p, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_l, "default"): ["qwen_image_layered_vae"],
-    resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "flux-", "flux_", "flux/", "flux1", "ae.s"],
 }
 # fmt: on
 

@@ -111,6 +111,7 @@ class ConditioningInput:
     control: list[ControlInput] = field(default_factory=list)
     regions: list[RegionInput] = field(default_factory=list)
     language: str = ""
+    edit_reference: bool = False  # use input image as conditioning reference
 
 
 class InpaintMode(Enum):
@@ -121,6 +122,13 @@ class InpaintMode(Enum):
     remove_object = 4
     replace_background = 5
     custom = 6
+
+
+class InpaintContext(Enum):
+    automatic = 0
+    mask_bounds = 1
+    entire_image = 2
+    layer_bounds = 3
 
 
 class FillMode(Enum):
@@ -139,6 +147,7 @@ class InpaintParams:
     fill: FillMode = FillMode.neutral
     grow: int = 0
     feather: int = 0
+    blend: int = 0
     use_inpaint_model: bool = False
     use_condition_mask: bool = False
     use_reference: bool = False
