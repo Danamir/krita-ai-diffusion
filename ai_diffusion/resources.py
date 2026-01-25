@@ -43,15 +43,16 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "9d2e03e8d54f2da69cb6f63a0cc0d9dc1ff31cd8",
+        "2d14a03ad84d88ca27993e281fbc56aa1b9c4036",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        "4ebbdc840db881c50a38965aa7955b76cec2a4c5",
-        ["INPAINT_LoadFooocusInpaint", "INPAINT_ShrinkMask", "INPAINT_ExpandMask"],
+        # !! Remove workaround in comfy_workflow.py when updating !!
+        "ab62c98d408186324eeb7baff32a31dd7961ea64",
+        ["INPAINT_LoadFooocusInpaint", "INPAINT_ShrinkMask", "INPAINT_StabilizeMask"],
     ),
 ]
 
@@ -110,9 +111,9 @@ class Arch(Enum):
             return Arch.flux_k
         if string == "flux" or string == "flux-schnell":
             return Arch.flux
-        if string == "flux2" and model_type == "klein-4b":
+        if string == "flux2_4b" or (string == "flux2" and model_type == "klein-4b"):
             return Arch.flux2_4b
-        if string == "flux2" and model_type == "klein-9b":
+        if string == "flux2_9b" or (string == "flux2" and model_type == "klein-9b"):
             return Arch.flux2_9b
         if string == "illu":
             return Arch.illu
@@ -239,6 +240,10 @@ class Arch(Enum):
             case Arch.zimage:
                 return ["qwen_3_4b"]
         raise ValueError(f"Unsupported architecture: {self}")
+
+    @property
+    def latent_compression_factor(self):
+        return 16 if self.is_flux2 or self is Arch.sd3 else 8
 
     @staticmethod
     def list():

@@ -21,6 +21,7 @@ from ai_diffusion.client import Client, ClientEvent
 from ai_diffusion.style import Arch, Style
 from ai_diffusion.pose import Pose
 from ai_diffusion.workflow import detect_inpaint
+from ai_diffusion.util import ensure
 from . import config
 from .config import root_dir, test_dir, image_dir, result_dir, reference_dir, default_checkpoint
 from .conftest import CloudService
@@ -78,6 +79,8 @@ def default_style(client: Client, sd_ver=Arch.sd15):
 
     style = Style(Path("default.json"))
     style.checkpoints = [checkpoint] + version_checkpoints
+    if not sd_ver.is_sdxl_like:
+        style.style_prompt = ""
     if sd_ver.is_flux_like:
         style.sampler = "Flux - Euler simple"
         style.cfg_scale = 3.5
@@ -88,7 +91,7 @@ def default_style(client: Client, sd_ver=Arch.sd15):
     if sd_ver.is_flux2:
         style.sampler = "Flux 2 - Euler"
         style.cfg_scale = 1.0
-        style.sampler_steps = 4
+        style.sampler_steps = 5
     return style
 
 
@@ -320,9 +323,6 @@ def test_prepare_prompt_layers(arch: Arch):
             result.metadata["prompt_final"]
             == f"prompt Picture 2 for Picture 3, {style.style_prompt}"
         )
-    assert result.layers == ["layer1", "layer2"]
-    assert result.region_layers[0] == ["layer3"]
-    assert result.region_layers[1] == []
 
 
 def test_prepare_prompt_instructions():
@@ -481,6 +481,8 @@ def test_refine(qtapp, client, setup):
         strength=strength,
         perf=PerformanceSettings(batch_size=1, max_pixel_count=2),
     )
+    if sdver.is_edit:
+        ensure(job.conditioning).edit_reference = True
     result = run_and_save(qtapp, client, job, f"test_refine_{setup}")
     assert result.extent == extent
 
@@ -1010,29 +1012,23 @@ def test_custom_workflow(qtapp, local_client: Client):
     run_and_save(qtapp, local_client, job, "test_custom_workflow")
 
 
-inpaint_benchmark = {
+inpaint_benchmark: dict[str, tuple[InpaintMode, str, Bounds | None]] = {
     "tori": (InpaintMode.fill, "photo of tori, japanese garden", None),
     "bruges": (InpaintMode.fill, "photo of a canal in bruges, belgium", None),
     "apple-tree": (
         InpaintMode.expand,
-        "children's illustration of kids next to an apple tree",
-        Bounds(0, 640, 1024, 384),
+        "children's illustration showing kids next to an apple tree with a ladder",
+        Bounds(0, 480, 1024, 1024 - 480),
     ),
     "girl-cornfield": (
         InpaintMode.expand,
-        "anime artwork of girl in a cornfield",
-        Bounds(0, 0, 773 - 261, 768),
-    ),
-    "cuban-guitar": (InpaintMode.replace_background, "photo of a beach bar", None),
-    "jungle": (
-        InpaintMode.fill,
-        "concept artwork of a lake in a forest",
-        Bounds(680, 640, 1480, 1280),
+        "anime artwork showing a girl standing in a wheat field under a blue sky",
+        Bounds(0, 0, 1200 - 400, 1272),
     ),
     "street": (InpaintMode.remove_object, "photo of a street in tokyo", None),
     "nature": (
         InpaintMode.add_object,
-        "photo of a black bear standing in a stony river bed",
+        "photo of a stony river bed surrounded by trees. on the right side there is a black bear",
         Bounds(420, 200, 604, 718),
     ),
     "park": (
@@ -1045,6 +1041,12 @@ inpaint_benchmark = {
         "superman giving a speech at a congress hall filled with people",
         None,
     ),
+    "woman-travel": (
+        InpaintMode.add_object,
+        "photo of a woman in a trenchcoat at a brisk walk. she is pulling a trolley suitcase. it is spring, she is walking alongside a brick wall trimmed by a victorian style fence. tree branches can be seen reaching over the wall, with early blossom buds. the woman is seen in profile, she has long hair. her clothes are fashionable and she is wearing sunglasses.",
+        Bounds(275, 400, 1024 - 275, 1280 - 400),
+    ),
+    "bistro-table": (InpaintMode.remove_object, "photo of an empty bistro table", None),
 }
 
 
@@ -1059,6 +1061,8 @@ def run_inpaint_benchmark(
     text = ConditioningInput(prompt if prompt_mode == "prompt" else "")
     params = detect_inpaint(mode, mask.bounds, sdver, text.positive, [], 1.0)
     params.blend = 30
+    params.feather = min(81, max(33, int(0.1 * mask.bounds.extent.diagonal)))
+    params.grow = 4 + params.feather // 2
     job = create(
         WorkflowKind.inpaint,
         client,
@@ -1085,14 +1089,13 @@ def test_inpaint_benchmark(pytestconfig, qtapp, client):
     seeds = [4213, 897281]
     prompt_modes = ["prompt", "noprompt"]
     scenarios = inpaint_benchmark.keys()
-    sdvers = [Arch.zimage]
+    sdvers = [Arch.sdxl, Arch.zimage, Arch.flux2_4b]
     runs = itertools.product(sdvers, scenarios, prompt_modes, seeds)
 
     for sdver, scenario, prompt_mode, seed in runs:
         mode, _, _ = inpaint_benchmark[scenario]
         prompt_required = mode in [InpaintMode.add_object, InpaintMode.replace_background]
-        noprompt_supported = sdver is not Arch.zimage
-        if (not noprompt_supported or prompt_required) and prompt_mode == "noprompt":
+        if prompt_required and prompt_mode == "noprompt":
             continue
 
         print("-", scenario, "|", sdver.name, "|", prompt_mode, "|", seed)

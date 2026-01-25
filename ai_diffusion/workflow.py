@@ -1042,6 +1042,7 @@ def inpaint(
     in_mask = w.load_mask(ensure(images.hires_mask))
     in_mask = apply_grow_feather(w, in_mask, params)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
+    initial_mask = w.stabilize_mask(initial_mask)
     cropped_mask = w.crop_mask(in_mask, target_bounds)
 
     cond_base = cond.copy()
@@ -1488,6 +1489,20 @@ def expand_custom(
                 outputs[node.output(6)] = sampling.scheduler
                 outputs[node.output(7)] = sampling.total_steps
                 outputs[node.output(8)] = sampling.cfg_scale
+
+            case "ETN_KritaStyleAndPrompt":
+                checkpoint_input = ensure(input.models)
+                sampling = ensure(input.sampling)
+                model, clip, vae = load_checkpoint_with_lora(w, checkpoint_input, models)
+                outputs[node.output(0)] = model
+                outputs[node.output(1)] = clip.model
+                outputs[node.output(2)] = vae
+                outputs[node.output(3)] = input.positive_evaluated
+                outputs[node.output(4)] = input.negative_evaluated
+                outputs[node.output(5)] = sampling.sampler
+                outputs[node.output(6)] = sampling.scheduler
+                outputs[node.output(7)] = sampling.total_steps
+                outputs[node.output(8)] = sampling.cfg_scale
             case _:
                 mapped_inputs = {k: map_input(v) for k, v in node.inputs.items()}
                 mapped = ComfyNode(node.id, node.type, mapped_inputs)
@@ -1503,8 +1518,6 @@ def expand_custom(
 class PreparedPrompt(NamedTuple):
     conditioning: ConditioningInput
     loras: list[LoraInput]
-    layers: list[str]
-    region_layers: list[list[str]]
     metadata: dict[str, Any]
 
 
@@ -1555,7 +1568,7 @@ def prepare_prompts(
         meta["prompt_eval"] = cond.positive
     cond.positive, extra_loras = extract_loras(cond.positive, files.loras)
     start_index = 2 + sum(1 for c in cond.control if c.mode.is_ip_adapter)
-    cond.positive, layers = extract_layers(cond.positive, layer_replace, start_index)
+    cond.positive, _layers = extract_layers(cond.positive, layer_replace, start_index)
     cond.positive += _collect_lora_triggers(models.loras, files)
     if arch.is_flux2:
         cond.positive = build_control_instructions(cond)
@@ -1573,7 +1586,6 @@ def prepare_prompts(
     meta["negative_prompt_final"] = cond.negative
 
     meta["regions"] = []
-    region_layers: list[list[str]] = []
     for idx, region in enumerate(cond.regions):
         assert region.mask or idx == 0, "Only the first/bottom region can be without a mask"
         region_meta: dict[str, Any] = {"prompt": region.positive}
@@ -1585,14 +1597,13 @@ def prepare_prompts(
         region.positive, region.loras = extract_loras(region.positive, files.loras)
         region.loras = [l for l in region.loras if l not in extra_loras]
         region_index = start_index + sum(1 for c in region.control if c.mode.is_ip_adapter)
-        region.positive, r_layers = extract_layers(region.positive, layer_replace, region_index)
-        region_layers.append(r_layers)
+        region.positive, _layers = extract_layers(region.positive, layer_replace, region_index)
         meta["regions"].append(region_meta)
 
     if len(cond.regions) == 1:
         meta["prompt"] = meta["regions"][0]["prompt"]
 
-    return PreparedPrompt(cond, extra_loras, layers, region_layers, meta)
+    return PreparedPrompt(cond, extra_loras, meta)
 
 
 def prepare(
@@ -1647,7 +1658,9 @@ def prepare(
 
     elif kind is WorkflowKind.inpaint:
         assert isinstance(canvas, Image) and mask and inpaint and style
-        i.images, _ = resolution.prepare_image(canvas, arch, style, perf)
+        i.images, _ = resolution.prepare_image(
+            canvas, arch, style, perf, inpaint=inpaint.use_inpaint_model
+        )
         i.images.hires_mask = mask.to_image(canvas.extent)
         upscale_extent, _ = resolution.prepare_extent(
             mask.bounds.extent, arch, style, perf, downscale=False

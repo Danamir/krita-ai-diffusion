@@ -126,7 +126,7 @@ def test_inpaint_context(area, expected_extent, expected_crop: tuple[int, int] |
     "input,expected_initial,expected_desired",
     [
         (Extent(1536, 600), Extent(1008, 392), Extent(1536, 600)),
-        (Extent(400, 1024), Extent(392, 1008), Extent(400, 1024)),
+        (Extent(400, 1024), Extent(400, 1024), Extent(400, 1024)),
         (Extent(777, 999), Extent(560, 712), Extent(784, 1000)),
     ],
 )
@@ -141,6 +141,14 @@ def test_prepare_highres(input, expected_initial, expected_desired):
         and r.extent.desired == expected_desired
         and r.extent.target == input
     )
+
+
+def test_prepare_hightres_inpaint():
+    input = Extent(3000, 2000)
+    image = Image.create(input)
+    r, _ = resolution.prepare_image(image, Arch.flux, dummy_style, perf, inpaint=True)
+    assert r.extent.initial == Extent(1256, 840)
+    assert r.extent.desired == input
 
 
 @pytest.mark.parametrize(
