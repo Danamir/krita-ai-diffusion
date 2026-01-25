@@ -219,6 +219,8 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
             model = w.nunchaku_load_flux_lora(model, lora.name, lora.strength)
         elif arch.is_qwen_like and model_info.quantization is Quantization.svdq:
             model = w.nunchaku_load_qwen_lora(model, lora.name, lora.strength)
+        elif arch is Arch.zimage and model_info.quantization is Quantization.svdq:
+            model = w.load_lora_model(model, lora.name, lora.strength)
         else:
             model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
 

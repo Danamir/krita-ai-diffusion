@@ -609,6 +609,23 @@ class ComfyWorkflow:
     def rescale_cfg(self, model: Output, multiplier=0.7):
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
+    @staticmethod
+    def _model_type_from_filename(filename: str, default=None):
+        if "flux2" in filename or "flux_2" in filename or "flux-2" in filename:
+            return "flux2"
+        elif "zimage" in filename or "z_image" in filename or "z-image" in filename:
+            return "z-image"
+        elif "flux" in filename:
+            return "flux"
+        elif "qwen" in filename:
+            return "qwen"
+        elif "wan" in filename:
+            return "wan"
+        elif "sdxl" in filename:
+            return "sdxl"
+        else:
+            return default
+
     def load_checkpoint(self, checkpoint: str):
         if "__unet__" in checkpoint:
             # -Configuration-
@@ -634,6 +651,14 @@ class ComfyWorkflow:
                 model_output = self.add("UnetLoaderGGUF", 1, unet_name=unet_name)
             elif "nf4" in unet_name:
                 model_output = self.add("UNETLoaderNF4", 1, unet_name=unet_name)
+            elif "int8" in unet_name:
+                return self.add(
+                    "OTUNetLoaderW8A8",
+                    1,
+                    unet_name=unet_name,
+                    weight_dtype="default",
+                    model_type=self._model_type_from_filename(unet_name)
+                )
             else:
                 model_output = self.add("UNETLoader", 1, unet_name=unet_name)
 
@@ -657,6 +682,14 @@ class ComfyWorkflow:
             return self.add_cached("UnetLoaderGGUF", 1, unet_name=model_name)
         elif "nf4" in model_name:
             return self.add("UNETLoaderNF4", 1, unet_name=model_name)
+        elif "int8" in model_name:
+            return self.add(
+                "OTUNetLoaderW8A8",
+                1,
+                unet_name=model_name,
+                weight_dtype="default",
+                model_type=self._model_type_from_filename(model_name)
+            )
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
 
     def load_clip(self, clip_name: str, type: str):
