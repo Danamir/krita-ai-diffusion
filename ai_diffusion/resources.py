@@ -91,6 +91,7 @@ class Arch(Enum):
     qwen_e_p = "Qwen Edit Plus"
     qwen_l = "Qwen Layered"
     zimage = "Z-Image"
+    anima = "Anima"
 
     auto = "Automatic"
     all = "All"
@@ -131,6 +132,8 @@ class Arch(Enum):
             return Arch.qwen
         if string == "z-image":
             return Arch.zimage
+        if string == "anima" or "anima" in filename:
+            return Arch.anima
         return None
 
     @staticmethod
@@ -238,6 +241,8 @@ class Arch(Enum):
                 return ["qwen"]
             case Arch.zimage:
                 return ["qwen_3_4b"]
+            case Arch.anima:
+                return ["qwen_3_06b"]
         raise ValueError(f"Unsupported architecture: {self}")
 
     @property
@@ -262,6 +267,7 @@ class Arch(Enum):
             Arch.qwen_e_p,
             Arch.qwen_l,
             Arch.zimage,
+            Arch.anima,
         ]
 
 
@@ -791,6 +797,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen2.5-vl-7b", "qwen_2", "qwen-2", "qwen"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_4b"): ["qwen_3_4b", "qwen3-4b", "qwen_3", "qwen-3"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_8b"): ["qwen_3_8b", "qwen3-8b"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_06b"): ["qwen_3_06b", "qwen_3-06b", "qwen_3_06b_base"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],
     resource_id(ResourceKind.vae, Arch.sdxl, "default"): ["sdxl_vae"],
     resource_id(ResourceKind.vae, Arch.illu, "default"): ["sdxl_vae"],
@@ -806,6 +813,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.vae, Arch.qwen_e_p, "default"): ["qwen"],
     resource_id(ResourceKind.vae, Arch.qwen_l, "default"): ["qwen_image_layered_vae"],
     resource_id(ResourceKind.vae, Arch.zimage, "default"): ["z-image", "flux-", "flux_", "flux/", "flux1", "ae.s"],
+    resource_id(ResourceKind.vae, Arch.anima, "default"): ["qwen"],
 }
 # fmt: on
 

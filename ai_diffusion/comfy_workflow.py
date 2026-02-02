@@ -615,6 +615,8 @@ class ComfyWorkflow:
             return "flux2"
         elif "zimage" in filename or "z_image" in filename or "z-image" in filename:
             return "z-image"
+        elif "anima" in filename:
+            return "anima"
         elif "flux" in filename:
             return "flux"
         elif "qwen" in filename:
@@ -807,7 +809,7 @@ class ComfyWorkflow:
 
     def empty_latent_image(self, extent: Extent, arch: Arch, batch_size=1):
         w, h = extent.width, extent.height
-        if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage):
+        if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage, Arch.anima):
             return self.add("EmptySD3LatentImage", 1, width=w, height=h, batch_size=batch_size)
         if arch.is_flux2:
             return self.add("EmptyFlux2LatentImage", 1, width=w, height=h, batch_size=batch_size)
