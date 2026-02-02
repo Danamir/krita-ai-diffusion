@@ -1355,12 +1355,6 @@ class ComfyWorkflow:
         return self.add("INPAINT_MaskedBlur", 1, image=image, mask=mask, blur=blur, falloff=falloff)
 
     def expand_mask(self, mask: Output, grow: int, blur: int, kernel="gaussian"):
-        if self._run_mode is ComfyRunMode.server:
-            from .settings import settings, ServerMode
-
-            if settings.server_mode is ServerMode.managed and kernel == "linear":
-                blur = blur // 2  # bug in current version of comfyui-inpaint-nodes
-
         return self.add("INPAINT_ExpandMask", 1, mask=mask, grow=grow, blur=blur, blur_type=kernel)
 
     def shrink_mask(self, mask: Output, shrink: int, blur: int, kernel="gaussian"):
@@ -1438,7 +1432,9 @@ class ComfyWorkflow:
     def save_image(self, image: Output, prefix: str):
         return self.add("SaveImage", 1, images=image, filename_prefix=prefix)
 
-    def create_tile_layout(self, image: Output, tile_size: int, padding: int, blending: int):
+    def create_tile_layout(
+        self, image: Output, tile_size: int, padding: int, blending: int, multiple: int
+    ):
         return self.add(
             "ETN_TileLayout",
             1,
@@ -1446,6 +1442,7 @@ class ComfyWorkflow:
             min_tile_size=tile_size,
             padding=padding,
             blending=blending,
+            multiple=multiple,
         )
 
     def extract_image_tile(self, image: Output, layout: Output, index: int):

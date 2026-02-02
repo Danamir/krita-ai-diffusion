@@ -37,7 +37,7 @@ def generate_seed():
     return random.randint(0, 2**31 - 1)
 
 
-def _sampling_from_style(style: Style, strength: float, is_live: bool):
+def sampling_from_style(style: Style, strength: float, is_live: bool):
     sampler_name = style.live_sampler if is_live else style.sampler
     cfg = style.live_cfg_scale if is_live else style.cfg_scale
     min_steps, max_steps = style.get_steps(is_live=is_live)
@@ -957,36 +957,41 @@ def denoise_to_compositing_mask(w: ComfyWorkflow, mask: Output, inpaint: Inpaint
 def detect_inpaint(
     mode: InpaintMode,
     bounds: Bounds,
-    sd_ver: Arch,
-    prompt: str,
-    control: list[ControlInput],
+    arch: Arch,
+    cond: ConditioningInput,
     strength: float,
 ):
     assert mode is not InpaintMode.automatic
     result = InpaintParams(mode, bounds)
-    result.fill = {
-        InpaintMode.fill: FillMode.blur,
-        InpaintMode.expand: FillMode.border,
-        InpaintMode.add_object: FillMode.neutral,
-        InpaintMode.remove_object: FillMode.inpaint,
-        InpaintMode.replace_background: FillMode.replace,
-    }[mode]
+    match mode, cond.edit_reference:
+        case InpaintMode.fill, False:
+            result.fill = FillMode.blur
+        case InpaintMode.expand, False:
+            result.fill = FillMode.border
+        case InpaintMode.add_object, False:
+            result.fill = FillMode.neutral
+        case InpaintMode.remove_object, False:
+            result.fill = FillMode.inpaint
+        case InpaintMode.replace_background, False:
+            result.fill = FillMode.replace
+        case _, True:
+            result.fill = FillMode.none
 
     is_ref_mode = mode in [InpaintMode.fill, InpaintMode.expand]
-    result.use_reference = is_ref_mode and prompt == ""
+    result.use_reference = is_ref_mode and cond.positive == ""
 
-    if sd_ver is Arch.sd15:
+    if arch is Arch.sd15:
         result.use_inpaint_model = strength > 0.5
         result.use_condition_mask = (
             mode is InpaintMode.add_object
-            and prompt != ""
-            and not any(c.mode.is_structural for c in control)
+            and cond.positive != ""
+            and not any(c.mode.is_structural for c in cond.control)
         )
-    elif sd_ver.is_sdxl_like:
+    elif arch.is_sdxl_like:
         result.use_inpaint_model = strength > 0.8
-    elif sd_ver in (Arch.flux, Arch.zimage):
+    elif arch in (Arch.flux, Arch.zimage):
         result.use_inpaint_model = strength == 1.0
-    elif sd_ver is Arch.flux_k:
+    elif arch.is_edit:
         result.mode = InpaintMode.custom
         result.fill = FillMode.none
     return result
@@ -1072,6 +1077,7 @@ def inpaint(
     model, prompt = apply_control(
         w, model, prompt, cond_base.all_control, extent.initial, vae, models
     )
+
     if params.use_inpaint_model and models.arch is Arch.sdxl:
         prompt, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
             vae, in_image, initial_mask, prompt
@@ -1087,6 +1093,10 @@ def inpaint(
         latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
         latent = w.set_latent_noise_mask(latent, initial_mask)
         inpaint_model = model
+
+    prompt = apply_reference_conditioning(
+        w, prompt, in_image, latent, cond_base, vae, models.arch, checkpoint.tiled_vae
+    )
 
     latent = w.batch_latent(latent, misc.batch_count)
     sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
@@ -1345,11 +1355,12 @@ def upscale_tiled(
     models: ModelDict,
 ):
     upscale_factor = extent.initial.width / extent.input.width
+    multiple = models.arch.latent_compression_factor
     if upscale.tile_overlap >= 0:
-        layout = TileLayout(extent.initial, extent.desired.width, upscale.tile_overlap)
+        layout = TileLayout(extent.initial, extent.desired.width, upscale.tile_overlap, multiple)
     else:
         layout = TileLayout.from_denoise_strength(
-            extent.initial, extent.desired.width, sampling.denoise_strength
+            extent.initial, extent.desired.width, sampling.denoise_strength, multiple
         )
 
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
@@ -1363,7 +1374,9 @@ def upscale_tiled(
         upscaled = in_image
     if extent.input != extent.initial:
         upscaled = w.scale_image(upscaled, extent.initial)
-    tile_layout = w.create_tile_layout(upscaled, layout.min_size, layout.padding, layout.blending)
+    tile_layout = w.create_tile_layout(
+        upscaled, layout.min_size, layout.padding, layout.blending, multiple
+    )
 
     def tiled_control(control: Control, index: int):
         img = control.image.load(w, extent.initial, default_image=in_image)
@@ -1402,7 +1415,7 @@ def upscale_tiled(
         prompt = apply_reference_conditioning(
             w, prompt, tile_image, latent, tile_cond, vae, models.arch, checkpoint.tiled_vae
         )
-        sampler_params = _sampler_params(sampling, layout.bounds(i).extent)
+        sampler_params = _sampler_params(sampling, bounds.extent)
         sampler = w.sampler_custom_advanced(
             tile_model, prompt, latent, models.arch, **sampler_params
         )
@@ -1480,7 +1493,7 @@ def expand_custom(
                 style: Style = get_param(node, Style)
                 is_live = node.input("sampler_preset", "auto") == "live"
                 checkpoint_input = style.get_models(models.checkpoints)
-                sampling = _sampling_from_style(style, 1.0, is_live)
+                sampling = sampling_from_style(style, 1.0, is_live)
                 model, clip, vae = load_checkpoint_with_lora(w, checkpoint_input, models)
                 outputs[node.output(0)] = model
                 outputs[node.output(1)] = clip.model
@@ -1535,22 +1548,43 @@ _control_instructions = {
 }
 
 
-def build_control_instructions(cond: ConditioningInput):
-    offset = 2 if cond.edit_reference else 1
+def build_instructions(cond: ConditioningInput, arch: Arch, inpaint: InpaintMode | None):
     instructions = ""
+
+    if not cond.edit_reference and arch.supports_edit:
+        match inpaint:
+            case InpaintMode.add_object:
+                instructions += "Add the object to the scene.\n"
+            case InpaintMode.remove_object:
+                instructions += "Remove the object.\n"
+            case InpaintMode.replace_background:
+                instructions += "Replace the background while keeping the main subject.\n"
+        if instructions != "":
+            cond.edit_reference = True
+
+    offset = 2 if cond.edit_reference else 1
     for i, control in enumerate(cond.control):
         if instruction := _control_instructions.get(control.mode):
             instructions += instruction.format(offset + i) + "\n"
             control.mode = ControlMode.reference
-    if instructions:
+
+    if instructions != "":
         return f"{instructions}\n{cond.positive}"
     return cond.positive
 
 
 def prepare_prompts(
-    cond: ConditioningInput, style: Style, seed: int, arch: Arch, files: FileLibrary, is_live=False
+    cond: ConditioningInput,
+    style: Style,
+    seed: int,
+    arch: Arch,
+    inpaint: InpaintMode | None = None,
+    files: FileLibrary | None = None,
+    is_live=False,
 ):
     cond = copy(cond)
+    files = files or FileLibrary.instance()
+
     cond.regions = [copy(r) for r in cond.regions]
     meta: dict[str, Any] = {
         "prompt": cond.positive,
@@ -1573,7 +1607,7 @@ def prepare_prompts(
     cond.positive, _layers = extract_layers(cond.positive, layer_replace, start_index)
     cond.positive += _collect_lora_triggers(models.loras, files)
     if arch.is_flux2:
-        cond.positive = build_control_instructions(cond)
+        cond.positive = build_instructions(cond, arch, inpaint)
     meta["prompt_final"] = merge_prompt(cond.positive, cond.style, cond.language)
 
     cfg = style.live_cfg_scale if is_live else style.cfg_scale
@@ -1632,7 +1666,7 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.sampling = _sampling_from_style(style, strength, is_live)
+    i.sampling = sampling_from_style(style, strength, is_live)
     i.sampling.seed = seed
     i.models = style.get_models(models.checkpoints)
     i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
@@ -1700,12 +1734,15 @@ def prepare(
         target_extent = canvas.extent * upscale_factor
         if style.preferred_resolution > 0:
             tile_size = style.preferred_resolution
+        elif arch is Arch.sd15:
+            tile_size = 800
         else:
-            tile_size = 1024 if arch.is_sdxl_like else 800
+            tile_size = 1024
         tile_size = max(tile_size, target_extent.longest_side // 12)  # max 12x12 tiles total
-        tile_size = multiple_of(tile_size - 128, 8)
+        tile_size = multiple_of(tile_size - 128, arch.latent_compression_factor)
         tile_size = Extent(tile_size, tile_size)
-        extent = ExtentInput(canvas.extent, target_extent.multiple_of(8), tile_size, target_extent)
+        initial_extent = target_extent.multiple_of(arch.latent_compression_factor)
+        extent = ExtentInput(canvas.extent, initial_extent, tile_size, target_extent)
         i.images = ImageInput(extent, canvas)
         assert upscale is not None
         i.upscale = upscale

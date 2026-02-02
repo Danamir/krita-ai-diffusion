@@ -10,7 +10,7 @@ from typing import Any, NamedTuple, Sequence
 
 # Version identifier for all the resources defined here. This is used as the server version.
 # It usually follows the plugin version, but not all new plugin versions also require a server update.
-version = "1.46.0"
+version = "1.47.0"
 
 comfy_url = "https://github.com/comfyanonymous/ComfyUI"
 comfy_version = "732b707397922dbbec5ed04ecca3c773c878c64e"
@@ -43,15 +43,14 @@ required_custom_nodes = [
         "External Tooling Nodes",
         "comfyui-tooling-nodes",
         "https://github.com/Acly/comfyui-tooling-nodes",
-        "2d14a03ad84d88ca27993e281fbc56aa1b9c4036",
+        "7130dcb2df26d4b67914034b366c4c6d24a568c3",
         ["ETN_LoadImageCache", "ETN_SaveImageCache", "ETN_Translate"],
     ),
     CustomNode(
         "Inpaint Nodes",
         "comfyui-inpaint-nodes",
         "https://github.com/Acly/comfyui-inpaint-nodes",
-        # !! Remove workaround in comfy_workflow.py when updating !!
-        "ab62c98d408186324eeb7baff32a31dd7961ea64",
+        "b02942210daad35db71f654038cebd541e81fe17",
         ["INPAINT_LoadFooocusInpaint", "INPAINT_ShrinkMask", "INPAINT_StabilizeMask"],
     ),
 ]
@@ -789,7 +788,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_l"): ["clip_l"],
     resource_id(ResourceKind.text_encoder, Arch.all, "clip_g"): ["clip_g"],
     resource_id(ResourceKind.text_encoder, Arch.all, "t5"): ["t5xxl_fp16", "t5xxl_fp8_e4m3fn", "t5xxl_fp8_e4m3fn_scaled", "t5-v1_1-xxl", "t5"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen_2", "qwen-2", "qwen"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen2.5-vl-7b", "qwen_2", "qwen-2", "qwen"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_4b"): ["qwen_3_4b", "qwen3-4b", "qwen_3", "qwen-3"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_8b"): ["qwen_3_8b", "qwen3-8b"],
     resource_id(ResourceKind.vae, Arch.sd15, "default"): ["vae-ft-mse-840000-ema"],

@@ -26,12 +26,7 @@ from .network import NetworkError
 from .image import Extent, Image, Mask, Bounds, DummyImage
 from .client import Client, ClientMessage, ClientEvent, ClientOutput
 from .client import is_style_supported, filter_supported_styles, resolve_arch
-from .custom_workflow import (
-    CustomWorkspace,
-    WorkflowCollection,
-    CustomGenerationMode,
-    ComfyWorkflow,
-)
+from .custom_workflow import CustomWorkspace, WorkflowCollection, CustomGenerationMode
 from .document import Document, KritaDocument, SelectionModifiers
 from .layer import Layer, LayerType, RestoreActiveLayer
 from .pose import Pose
@@ -73,6 +68,7 @@ class ErrorKind(Enum):
     insufficient_funds = 201
     warning = 300
     incompatible_lora = 301
+    validation_warning = 302
 
     @property
     def is_warning(self):
@@ -173,8 +169,8 @@ class Model(QObject, ObservableProperties):
 
     def _forward_validation_error(self, error: str):
         if error:
-            self.report_error(Error(ErrorKind.warning, error))
-        else:
+            self.report_error(Error(ErrorKind.validation_warning, error))
+        elif self.error.kind is ErrorKind.validation_warning:
             self.clear_error()
 
     def generate(self):
@@ -213,7 +209,7 @@ class Model(QObject, ObservableProperties):
             workflow_kind = WorkflowKind.refine
         client = self._connection.client
         image = None
-        inpaint_mode = InpaintMode.fill
+        inpaint_mode: InpaintMode | None = None
         inpaint = None
         extent = self._doc.extent
         regions = self.active_regions
@@ -223,6 +219,7 @@ class Model(QObject, ObservableProperties):
         mask, selection_bounds = self._doc.create_mask_from_selection(smod)
         bounds = Bounds(0, 0, *extent)
         if mask is None:  # Check for region inpaint
+            inpaint_mode = InpaintMode.fill
             region_layer = regions.get_active_region_layer(use_parent=not self.region_only)
             if not region_layer.is_root:
                 mask = get_region_inpaint_mask(region_layer, extent)
@@ -240,10 +237,11 @@ class Model(QObject, ObservableProperties):
             conditioning, job_regions = ConditioningInput("", ""), []
 
         seed = self.seed if self.fixed_seed else workflow.generate_seed()
+        if not dryrun:
+            conditioning = self._add_reference_layers(conditioning)
         original_conditioning = conditioning
-        conditioning = self._add_reference_layers(conditioning)
         conditioning, loras, prompt_meta = workflow.prepare_prompts(
-            conditioning, self.style, seed, arch, FileLibrary.instance()
+            conditioning, self.style, seed, arch, inpaint_mode
         )
 
         if mask is not None or workflow_kind is WorkflowKind.refine:
@@ -258,11 +256,10 @@ class Model(QObject, ObservableProperties):
             bounds, mask.bounds = compute_relative_bounds(bounds, mask.bounds)
 
             if inpaint_mode is InpaintMode.custom:
-                inpaint = self.inpaint.get_params(mask)
+                inpaint = self.inpaint.get_params(mask, self.is_editing)
             else:
-                pos, ctrl = conditioning.positive, conditioning.control
                 inpaint = workflow.detect_inpaint(
-                    inpaint_mode, mask.bounds, arch, pos, ctrl, strength
+                    inpaint_mode, mask.bounds, arch, conditioning, strength
                 )
             inpaint = calc_selection_pre_process(inpaint, selection_bounds, smod)
 
@@ -286,6 +283,7 @@ class Model(QObject, ObservableProperties):
         job_params = JobParams(bounds, job_name, regions=job_regions)
         job_params.set_style(self.active_style, ensure(input.models).checkpoint)
         job_params.set_control(regions.control)
+        job_params.inpaint_mode = inpaint_mode
         job_params.is_layered = arch is Arch.qwen_l
         job_params.metadata.update(prompt_meta)
         job_params.metadata["loras"] = [dict(name=l.name, weight=l.strength) for l in loras]
@@ -317,7 +315,7 @@ class Model(QObject, ObservableProperties):
                 input = replace(input, sampling=replace(sampling, seed=seed))
                 if original_cond:  # re-evaluate wildcards in prompts after the seed change
                     next_prompt = workflow.prepare_prompts(
-                        original_cond, self.style, seed, self.arch, FileLibrary.instance()
+                        original_cond, self.style, seed, self.arch, params.inpaint_mode
                     )
                     input.conditioning = next_prompt.conditioning
                     params.metadata = params.metadata | next_prompt.metadata
@@ -405,7 +403,7 @@ class Model(QObject, ObservableProperties):
                 input, _ = self._prepare_upscale_image(dryrun=True)
             else:
                 return 0
-            return input.cost
+            return input.cost * self.batch_count
         except Exception as e:
             util.client_logger.warning(f"Failed to estimate workflow cost: {type(e)} {str(e)}")
             return 0
@@ -450,7 +448,7 @@ class Model(QObject, ObservableProperties):
         conditioning.language = self.prompt_translation_language
         conditioning = self._add_reference_layers(conditioning)
         conditioning, loras, _ = workflow.prepare_prompts(
-            conditioning, self.style, self.seed, self.arch, FileLibrary.instance(), is_live=True
+            conditioning, self.style, self.seed, self.arch, is_live=True
         )
 
         input = workflow.prepare(
@@ -499,15 +497,31 @@ class Model(QObject, ObservableProperties):
 
             params = self.custom.collect_parameters(self.layers, canvas_bounds, is_anim)
 
-            has_synced_style_and_prompt = (
-                next(wf.find(type="ETN_KritaStyleAndPrompt"), None) is not None
-            )
             custom_input = CustomWorkflowInput(wf.root, params)
-            prompt_meta = {}
-            if has_synced_style_and_prompt:
-                custom_input, prompt_meta = self._prepare_synced_style_and_prompt(
-                    params, seed, custom_input, wf
+            metadata: dict[str, Any] = dict(self.custom.params)
+            job_params = JobParams(bounds, self.custom.job_name, metadata=metadata)
+
+            style_node = next(wf.find(type="ETN_KritaStyleAndPrompt"), None)
+            if style_node is not None:
+                style = self.style
+                is_live = style_node.input("sampler_preset", "auto") == "live"
+                custom_input.models = style.get_models(self._connection.client.models.checkpoints)
+                custom_input.sampling = workflow.sampling_from_style(style, 1.0, is_live)
+
+                cond = ConditioningInput(self.regions.positive, self.regions.negative)
+                arch = resolve_arch(style, self._connection.client_if_connected)
+                prepared = workflow.prepare_prompts(cond, style, seed, arch)
+                custom_input.positive_evaluated = prepared.metadata["prompt_final"]
+                custom_input.negative_evaluated = prepared.metadata["negative_prompt_final"]
+                custom_input.models.loras = unique(
+                    custom_input.models.loras + prepared.loras, key=lambda l: l.name
                 )
+
+                job_params.set_style(self.style, custom_input.models.checkpoint)
+                metadata.update(prepared.metadata)
+                metadata["loras"] = [
+                    dict(name=l.name, weight=l.strength) for l in custom_input.models.loras
+                ]
 
             input = WorkflowInput(
                 WorkflowKind.custom,
@@ -516,11 +530,6 @@ class Model(QObject, ObservableProperties):
                 inpaint=InpaintParams(InpaintMode.fill, bounds),
                 custom_workflow=custom_input,
             )
-
-            metadata: dict[str, Any] = dict(self.custom.params)
-            metadata.update(prompt_meta)
-
-            job_params = JobParams(bounds, self.custom.job_name, metadata=metadata)
             job_kind = {
                 CustomGenerationMode.regular: JobKind.diffusion,
                 CustomGenerationMode.live: JobKind.live_preview,
@@ -537,46 +546,6 @@ class Model(QObject, ObservableProperties):
         except Exception as e:
             self.report_error(util.log_error(e))
             return False
-
-    def _prepare_synced_style_and_prompt(
-        self,
-        params: dict[str, Any],
-        seed: int,
-        custom_input: CustomWorkflowInput,
-        wf: ComfyWorkflow,
-    ) -> tuple[CustomWorkflowInput, dict[str, Any]]:
-        """Prepare prompts and models for ETN_KritaStyleAndPrompt node.
-        Returns updated CustomWorkflowInput with evaluated prompts, models, sampling, and metadata for job history.
-        """
-        style = self.style
-
-        style_node = next(wf.find(type="ETN_KritaStyleAndPrompt"), None)
-        is_live = style_node.input("sampler_preset", "auto") == "live" if style_node else False
-
-        checkpoint_input = style.get_models(self._connection.client.models.checkpoints)
-        sampling = workflow._sampling_from_style(style, 1.0, is_live)
-
-        positive = self.regions.positive
-        negative = self.regions.negative
-
-        cond = ConditioningInput(positive, negative)
-        arch = resolve_arch(style, self._connection.client_if_connected)
-        prepared = workflow.prepare_prompts(cond, style, seed, arch, FileLibrary.instance())
-
-        merged_loras = unique(checkpoint_input.loras + prepared.loras, key=lambda l: l.name)
-        checkpoint_input.loras = merged_loras
-
-        custom_input = replace(
-            custom_input,
-            positive_evaluated=prepared.metadata["prompt_final"],
-            negative_evaluated=prepared.metadata["negative_prompt_final"],
-            models=checkpoint_input,
-            sampling=sampling,
-        )
-
-        meta = dict(prepared.metadata)
-        meta["style"] = style.filename
-        return custom_input, meta
 
     def _get_current_image(self, bounds: Bounds):
         exclude = []
@@ -906,11 +875,11 @@ class Model(QObject, ObservableProperties):
             self._style_connection = style.changed.connect(self._handle_style_changed)
             self.style_changed.emit(style)
             self.modified.emit(self, "style")
-            self.edit_mode = self.edit_mode and self.can_edit
+            self.edit_mode = self.is_editing
 
     def _handle_style_changed(self):
         self.style_changed.emit(self.style)
-        self.edit_mode = self.edit_mode and self.can_edit
+        self.edit_mode = self.is_editing
 
     def generate_seed(self):
         self.seed = workflow.generate_seed()
@@ -1028,6 +997,11 @@ class Model(QObject, ObservableProperties):
         return self.edit_style is not None
 
     @property
+    def can_toggle_edit(self):
+        style_arch = resolve_arch(self.style, self._connection.client_if_connected)
+        return not style_arch.is_edit and self.can_edit
+
+    @property
     def is_editing(self):
         return self.arch.is_edit or (self.can_edit and self.edit_mode)
 
@@ -1048,8 +1022,9 @@ class CustomInpaint(QObject, ObservableProperties):
     context_layer_id_changed = pyqtSignal(QUuid)
     modified = pyqtSignal(QObject, str)
 
-    def get_params(self, mask: Mask):
-        params = InpaintParams(self.mode, mask.bounds, self.fill)
+    def get_params(self, mask: Mask, is_editing: bool):
+        fill = FillMode.none if is_editing else self.fill
+        params = InpaintParams(self.mode, mask.bounds, fill)
         params.use_inpaint_model = self.use_inpaint
         params.use_condition_mask = self.use_prompt_focus
         return params
@@ -1404,7 +1379,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         conditioning.language = m.prompt_translation_language
         conditioning = m._add_reference_layers(conditioning)
         conditioning, loras, prompt_meta = workflow.prepare_prompts(
-            conditioning, m.style, seed, m.arch, FileLibrary.instance(), is_live
+            conditioning, m.style, seed, m.arch, is_live=is_live
         )
 
         return workflow.prepare(
