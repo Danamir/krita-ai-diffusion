@@ -180,7 +180,14 @@ class PackageGroupWidget(QWidget):
         self._update_status()
 
     def _workload_matches(self, item: PackageItem):
-        archs_with_workload = (Arch.sd15, Arch.sdxl, Arch.flux, Arch.flux_k)
+        archs_with_workload = (
+            Arch.sd15,
+            Arch.sdxl,
+            Arch.flux,
+            Arch.flux_k,
+            Arch.flux2_4b,
+            Arch.zimage,
+        )
         return (
             not isinstance(item.package, ModelResource)
             or item.package.arch in self.workloads
@@ -302,7 +309,7 @@ def _enabled_workloads(selected: list[str], required: Iterable[ModelResource], s
 
 class CustomPackageTab(QWidget):
     title = _("Individual Packages")
-    workloads = (Arch.sd15, Arch.sdxl, Arch.flux)
+    workloads = (Arch.sd15, Arch.sdxl, Arch.flux, Arch.flux2_4b, Arch.zimage)
     workload_models = resources.required_models
 
     selected_models_changed = pyqtSignal()
@@ -324,7 +331,7 @@ class CustomPackageTab(QWidget):
 
         self._workload_group = PackageGroupWidget(
             _("Workloads"),
-            [_("Stable Diffusion 1.5"), _("Stable Diffusion XL"), "Flux"],
+            [_("Stable Diffusion 1.5"), _("Stable Diffusion XL"), "Flux", "Flux 2", "Z-Image"],
             description=(
                 _("Choose a Diffusion base model to install its basic requirements.")
                 + " <a href='https://docs.interstice.cloud/base-models'>"
@@ -373,9 +380,23 @@ class CustomPackageTab(QWidget):
                 is_expanded=False,
                 parent=self,
             ),
+            "flux2": PackageGroupWidget(
+                _("Flux 2 models"),
+                [m for m in optional_models if m.arch.is_flux2],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "zimage": PackageGroupWidget(
+                _("Z-Image models"),
+                [m for m in optional_models if m.arch is Arch.zimage],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
         }
 
-        for group in ["upscalers", "sd15", "sdxl", "illu", "flux"]:
+        for group in ["upscalers", "sd15", "sdxl", "illu", "flux", "flux2", "zimage"]:
             self._packages[group].changed.connect(self._change_models)
             layout.addWidget(self._packages[group])
 
@@ -572,7 +593,7 @@ class ModelCheckBox:
 
 class WorkloadsTab(QWidget):
     title = _("Workloads")
-    workloads = (Arch.sdxl, Arch.illu, Arch.flux, Arch.sd15)
+    workloads = (Arch.sdxl, Arch.illu, Arch.flux2_4b, Arch.zimage, Arch.flux, Arch.sd15)
     workload_models = resources.required_models + resources.recommended_models
 
     selected_models_changed = pyqtSignal()
@@ -621,6 +642,60 @@ class WorkloadsTab(QWidget):
                 Arch.illu,
                 "checkpoint-nova-illu",
                 sdxl_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_flux2 = QWidget(self)
+        layout.addWidget(self._pkg_flux2)
+
+        flux2_layout = QVBoxLayout(self._pkg_flux2)
+        flux2_header = QLabel("<b>FLUX 2</b>", self._pkg_flux2)
+        flux2_layout.addWidget(flux2_header)
+        flux2_props = ModelPropsWidget(
+            size=7, vram=8, speed=1, fidelity=1, understanding=1, parent=self
+        )
+        flux2_layout.addWidget(flux2_props)
+        desc = _(
+            "Versatile model with sharp details. Can generate and edit images with instructions. Sometimes struggles with image continuity."
+        )
+        flux2_desc = QLabel(desc, self._pkg_flux2)
+        flux2_desc.setWordWrap(True)
+        flux2_layout.addWidget(flux2_desc)
+        self._models += [
+            ModelCheckBox(
+                "Flux.2 [klein] 4B - " + _("Compact generation and edit model"),
+                Arch.flux2_4b,
+                ("checkpoint-fp8-flux2_4b", "checkpoint-q6_k-flux2_4b"),
+                flux2_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_zimage = QWidget(self)
+        layout.addWidget(self._pkg_zimage)
+
+        zimage_layout = QVBoxLayout(self._pkg_zimage)
+        zimage_header = QLabel("<b>Z-Image</b>", self._pkg_zimage)
+        zimage_layout.addWidget(zimage_header)
+        zimage_props = ModelPropsWidget(
+            size=12, vram=12, speed=0, fidelity=2, understanding=1, parent=self
+        )
+        zimage_layout.addWidget(zimage_props)
+        desc = _(
+            "Powerful and efficient model for stronger hardware. Good understanding of natural language (Chinese and English). The Turbo variant is fast and heavily tuned for realistic results."
+        )
+        zimage_desc = QLabel(desc, self._pkg_zimage)
+        zimage_desc.setWordWrap(True)
+        zimage_layout.addWidget(zimage_desc)
+        self._models += [
+            ModelCheckBox(
+                "Z-Image Turbo - " + _("for Photography and realistic images"),
+                Arch.zimage,
+                "checkpoint-turbo_fp8-zimage",
+                zimage_layout,
             ),
         ]
 

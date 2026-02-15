@@ -405,9 +405,6 @@ def test_inpaint(qtapp, client):
 
 @pytest.mark.parametrize("sdver", [Arch.sd15, Arch.sdxl, Arch.zimage, Arch.flux2_4b])
 def test_inpaint_upscale(qtapp, client, sdver):
-    if isinstance(client, CloudClient) and sdver is Arch.zimage:
-        pytest.skip("Skipping test for CloudClient with z-image model")
-
     image = Image.load(image_dir / "beach_1536x1024.webp")
     mask = Mask.rectangle(Bounds(150, 150, 768, 512), Bounds(150, 50, 1068, 812))
     prompt = ConditioningInput("ship")
@@ -709,6 +706,21 @@ def test_control_scribble(qtapp, client, op):
         run_and_save(qtapp, client, job, f"test_control_scribble_{op}")
 
 
+@pytest.mark.parametrize("arch", [Arch.sdxl, Arch.zimage])
+def test_control_lines(qtapp, client, arch: Arch):
+    lines_image = Image.load(image_dir / "truck_landscape_lines.webp")
+    control = [ControlInput(ControlMode.soft_edge, lines_image, 0.7)]
+    prompt = ConditioningInput("truck in a snowy landscape, tundra", control=control)
+    job = create(
+        WorkflowKind.generate,
+        client,
+        canvas=Extent(1024, 1024),
+        cond=prompt,
+        style=default_style(client, arch),
+    )
+    run_and_save(qtapp, client, job, f"test_control_lines_{arch.name}")
+
+
 def test_control_canny_downscale(qtapp, client):
     canny_image = Image.load(image_dir / "shrine_canny.webp")
     control = [ControlInput(ControlMode.canny_edge, canny_image, 1.0)]
@@ -820,8 +832,6 @@ def test_style_composition_sdxl(qtapp, client):
 
 @pytest.mark.parametrize("sdver", [Arch.sd15, Arch.sdxl])
 def test_ip_adapter_face(qtapp, client, sdver):
-    if isinstance(client, CloudClient):
-        pytest.skip("IP-adapter FaceID is not available in the cloud")
     extent = Extent(650, 650) if sdver == Arch.sd15 else Extent(1024, 1024)
     image = Image.load(image_dir / "face.webp")
     cond = ConditioningInput("portrait photo of a woman at a garden party")
@@ -922,6 +932,28 @@ def test_edit_reference(qtapp, client):
     cond.edit_reference = True
     job = create(WorkflowKind.refine, client, style=style, canvas=image, cond=cond)
     run_and_save(qtapp, client, job, "test_edit_reference")
+
+
+def test_flux2_outpaint_lora(qtapp, client):
+    image = Image.load(image_dir / "beach_1536x1024.webp")
+    mask = Mask.rectangle(Bounds(0, 0, 480, 1024), Bounds(0, 0, 768, 1024))
+    style = default_style(client, Arch.flux2_4b)
+    cond = ConditioningInput("")
+    cond, _, md = workflow.prepare_prompts(cond, style, 1, Arch.flux2_4b, InpaintMode.expand)
+    inpaint = workflow.detect_inpaint(InpaintMode.expand, mask.bounds, Arch.flux2_4b, cond, 1.0)
+    inpaint.grow = 40
+    inpaint.feather = 37
+    inpaint.blend = 17
+    job = create(
+        WorkflowKind.inpaint,
+        client,
+        canvas=image,
+        mask=mask,
+        cond=cond,
+        inpaint=inpaint,
+        style=style,
+    )
+    run_and_save(qtapp, client, job, "test_flux2_outpaint_lora", image, mask)
 
 
 def test_refine_max_pixels(qtapp, client):

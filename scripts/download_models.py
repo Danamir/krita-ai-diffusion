@@ -49,6 +49,7 @@ def list_models(
     flux=False,
     flux2=False,
     illu=False,
+    zimage=False,
     upscalers=False,
     checkpoints=[],
     controlnet=False,
@@ -76,10 +77,12 @@ def list_models(
     if illu or all:
         versions.append(Arch.illu)
         versions.append(Arch.illu_v)
+    if zimage or all:
+        versions.append(Arch.zimage)
 
     models: set[ModelResource] = set()
     models.update([m for m in default_checkpoints if all or (m.id.identifier in checkpoints)])
-    if minimal or recommended or all or sd15 or sdxl or flux:
+    if len(versions) > 1:
         models.update([m for m in required_models if m.arch in versions])
     if minimal:
         models.add(default_checkpoints[0])
@@ -89,7 +92,12 @@ def list_models(
         models.update([m for m in required_models if m.kind is ResourceKind.upscaler])
         models.update(resources.upscale_models)
     if controlnet or recommended or all:
-        kinds = [ResourceKind.controlnet, ResourceKind.ip_adapter, ResourceKind.clip_vision]
+        kinds = [
+            ResourceKind.controlnet,
+            ResourceKind.ip_adapter,
+            ResourceKind.clip_vision,
+            ResourceKind.model_patch,
+        ]
         models.update([m for m in optional_models if m.kind in kinds and m.arch in versions])
     if flux or all:
         lora = ResourceKind.lora
@@ -276,6 +284,7 @@ if __name__ == "__main__":
     parser.add_argument("--illu", action="store_true", help="[Workload] everything needed to run Illustrious-SDXL (no checkpoints)")
     parser.add_argument("--flux", action="store_true", help="[Workload] everything needed to run Flux (no checkpoints)")
     parser.add_argument("--flux2", action="store_true", help="[Workload] everything needed to run Flux 2 (no checkpoints)")
+    parser.add_argument("--zimage", action="store_true", help="[Workload] everything needed to run Z-Image (no checkpoints)")
     parser.add_argument("--checkpoints", action="store_true", dest="checkpoints", help="download all checkpoints for selected workloads")
     parser.add_argument("--controlnet", action="store_true", help="download ControlNet models for selected workloads")
     parser.add_argument("--checkpoint", action="append", choices=checkpoint_names, dest="checkpoint_list", help="download a specific checkpoint (can specify multiple times)")
@@ -284,7 +293,7 @@ if __name__ == "__main__":
     parser.add_argument("--deprecated", action="store_true", help="download old models which will be removed in the near future")
     parser.add_argument("--retry-attempts", type=int, default=5, metavar="N", help="number of retry attempts for downloading a model")
     parser.add_argument("--continue-on-error", action="store_true", help="continue downloading models even if an error occurs")
-    parser.add_argument("--backend", choices=["auto", "cpu", "cuda", "cuda_fp4", "xpu", "rocm"], default="auto", help="filter models for specific hardware")
+    parser.add_argument("--backend", choices=["auto", "cpu", "cuda", "cuda_fp4", "xpu", "rocm", "mps"], default="auto", help="filter models for specific hardware")
     parser.add_argument("-j", "--jobs", type=int, default=4, metavar="N", help="number of parallel downloads")
     # fmt: on
     args = parser.parse_args()
@@ -300,6 +309,8 @@ if __name__ == "__main__":
     if args.checkpoints and args.illu:
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu]
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu_v]
+    if args.checkpoints and args.zimage:
+        checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.zimage]
 
     print(f"Generative AI for Krita - Model download - v{resources.version}")
 
@@ -317,6 +328,7 @@ if __name__ == "__main__":
         flux=args.flux,
         flux2=args.flux2,
         illu=args.illu,
+        zimage=args.zimage,
         upscalers=args.upscalers,
         checkpoints=checkpoints,
         controlnet=args.controlnet,
