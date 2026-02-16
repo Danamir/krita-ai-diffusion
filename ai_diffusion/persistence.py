@@ -379,12 +379,26 @@ def import_prompt_from_file(model: Model):
                         model.regions.positive = "\n".join(positives)
                         model.regions.positive = model.regions.positive.strip("\n")
 
+            # ComfyUI fallback (older workflows)
+            elif text := reader.text("workflow"):
+                prompt: dict[str, dict] = json.loads(text)
+                for node in prompt.get("nodes", []):
+                    if node["type"] in _comfy_prompt_text_nodes:
+                        widgets_values = node.get("widgets_values", [])  # type: list[str]
+                        if len(widgets_values) > 1 and widgets_values[1] and widgets_values[1].strip():
+                            model.regions.positive = widgets_values[1].strip()
+                            break
+                        elif len(widgets_values) > 0 and widgets_values[0] and widgets_values[0].strip():
+                            model.regions.positive = widgets_values[0].strip()
+                            break
+
         except Exception as e:
             log.warning(f"Failed to read PNG metadata from {filename}: {e}")
 
 
 _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]
 _comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler"]
+_comfy_prompt_text_nodes = ["CLIPTextEncode", "ImpactWildcardProcessor"]
 
 def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     if node := workflow.get(node_key):
