@@ -87,7 +87,7 @@ def apply_strength_increase(
 
 
 def apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
-    if steps <= 4:
+    if steps <= 10:
         return apply_strength_increase(
             strength, steps, min_steps=min_steps, steps_increase=(0, 1, 2)
         )
@@ -128,11 +128,10 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
 
     # inject two pass param
     if settings.use_refiner_pass and arch is not None:
-        two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
-
-        match arch:
-            case Arch.flux2_4b | Arch.flux2_9b:
-                two_pass_methods = ("generate",)
+        if arch.is_sdxl_like:
+            two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
+        else:
+            two_pass_methods = ("generate",)
 
         parent_frame = inspect.currentframe().f_back
         if parent_frame is not None:

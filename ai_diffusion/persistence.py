@@ -400,6 +400,7 @@ _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "Sample
 _comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler"]
 _comfy_prompt_text_nodes = ["CLIPTextEncode", "ImpactWildcardProcessor"]
 
+
 def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     if node := workflow.get(node_key):
         if node["class_type"] == "CLIPTextEncode":
