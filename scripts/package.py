@@ -1,12 +1,12 @@
 import asyncio
-import aiohttp
-import sys
-import dotenv
 import os
 import subprocess
-from markdown import markdown
-from shutil import rmtree, copy, copytree, ignore_patterns, make_archive
+import sys
 from pathlib import Path
+from shutil import copy, copytree, ignore_patterns, make_archive, rmtree
+
+import aiohttp
+from markdown import markdown
 
 sys.path.append(str(Path(__file__).parent.parent))
 import ai_diffusion
@@ -89,12 +89,13 @@ def build_package():
 
 
 async def publish_package(package_path: Path, target: str):
-    dotenv.load_dotenv(root / "service" / "web" / ".env.local")
-    service_url = os.environ["TEST_SERVICE_URL"]
+    from service.pod.lib.environment import Config  # type: ignore
+
+    config = Config.from_env()
+    service_url = os.environ.get("TEST_SERVICE_URL", "http://localhost:8787")
     if target == "production":
         service_url = "https://api.interstice.cloud"
-    service_token = os.environ["INTERSTICE_INFRA_TOKEN"]
-    headers = {"Authorization": f"Bearer {service_token}"}
+    headers = {"Authorization": f"Bearer {config.secrets.interstice_infra_token}"}
 
     archive_data = package_path.read_bytes()
     async with aiohttp.ClientSession(service_url, headers=headers) as session:

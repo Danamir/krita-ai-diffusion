@@ -1,45 +1,71 @@
 from __future__ import annotations
+
 import asyncio
 import time
-import weakref
 import uuid
-from copy import copy
+import weakref
 from collections import deque
+from copy import copy
 from dataclasses import dataclass, replace
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, NamedTuple
-from PyQt5.QtCore import QObject, QMetaObject, QUuid, pyqtSignal, Qt
-from PyQt5.QtGui import QPainter, QColor, QBrush
 
-from . import eventloop, workflow, util
-from .api import ConditioningInput, ControlInput, WorkflowKind, WorkflowInput, SamplingInput
-from .api import FillMode, ImageInput, CustomWorkflowInput, UpscaleInput
-from .api import InpaintMode, InpaintContext, InpaintParams
-from .localization import translate as _
-from .util import clamp, ensure, unique, trim_text, client_logger as log
-from .settings import ApplyBehavior, ApplyRegionBehavior, GenerationFinishedAction, ImageFileFormat
-from .settings import settings
-from .network import NetworkError
-from .image import Extent, Image, Mask, Bounds, DummyImage
-from .client import Client, ClientMessage, ClientEvent, ClientOutput
-from .client import is_style_supported, filter_supported_styles, resolve_arch
-from .custom_workflow import CustomWorkspace, WorkflowCollection, CustomGenerationMode
-from .document import Document, KritaDocument, SelectionModifiers
-from .layer import Layer, LayerType, RestoreActiveLayer
-from .pose import Pose
-from .style import Style, Styles, Arch
-from .files import FileLibrary
+from PyQt5.QtCore import QMetaObject, QObject, Qt, QUuid, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QPainter
+
+from . import eventloop, util, workflow
+from .api import (
+    ConditioningInput,
+    ControlInput,
+    CustomWorkflowInput,
+    FillMode,
+    ImageInput,
+    InpaintContext,
+    InpaintMode,
+    InpaintParams,
+    SamplingInput,
+    UpscaleInput,
+    WorkflowInput,
+    WorkflowKind,
+)
+from .client import (
+    Client,
+    ClientEvent,
+    ClientMessage,
+    ClientOutput,
+    filter_supported_styles,
+    is_style_supported,
+    resolve_arch,
+)
 from .connection import Connection, ConnectionState
-from .properties import Property, ObservableProperties
-from .jobs import Job, JobKind, JobParams, JobQueue, JobState, JobRegion
 from .control import ControlLayer
-from .region import Region, RegionLink, RootRegion, process_regions, get_region_inpaint_mask
-from .resources import ControlMode
+from .custom_workflow import CustomGenerationMode, CustomWorkspace, WorkflowCollection
+from .document import Document, KritaDocument, SelectionModifiers
+from .files import FileLibrary
+from .image import Bounds, DummyImage, Extent, Image, Mask
+from .jobs import Job, JobKind, JobParams, JobQueue, JobRegion, JobState
+from .layer import Layer, LayerType, RestoreActiveLayer
+from .localization import translate as _
+from .network import NetworkError
+from .pose import Pose
+from .properties import ObservableProperties, Property
+from .region import Region, RegionLink, RootRegion, get_region_inpaint_mask, process_regions
 from .resolution import compute_bounds, compute_relative_bounds
+from .resources import ControlMode
+from .settings import (
+    ApplyBehavior,
+    ApplyRegionBehavior,
+    GenerationFinishedAction,
+    ImageFileFormat,
+    settings,
+)
+from .style import Arch, Style, Styles
 from .text import create_img_metadata, extract_layers
+from .util import PluginError, clamp, ensure, trim_text, unique
+from .util import client_logger as log
 
 
 class QueueMode(Enum):
@@ -286,7 +312,7 @@ class Model(QObject, ObservableProperties):
         job_params.inpaint_mode = inpaint_mode
         job_params.is_layered = arch is Arch.qwen_l
         job_params.metadata.update(prompt_meta)
-        job_params.metadata["loras"] = [dict(name=l.name, weight=l.strength) for l in loras]
+        job_params.metadata["loras"] = [{"name": l.name, "weight": l.strength} for l in loras]
         job_params.metadata["strength"] = strength
         return input, job_params, original_conditioning
 
@@ -323,6 +349,9 @@ class Model(QObject, ObservableProperties):
             job = self.jobs.add(kind, copy(params))
             front = queue_mode is QueueMode.front
             await self._enqueue_job(job, input, front=front)
+
+        if self.workspace is not Workspace.custom:
+            self._track_style_usage(self.style)
 
     async def _enqueue_job(self, job: Job, input: WorkflowInput, front: bool = False):
         if not self.jobs.any_executing():
@@ -405,7 +434,7 @@ class Model(QObject, ObservableProperties):
                 return 0
             return input.cost * self.batch_count
         except Exception as e:
-            util.client_logger.warning(f"Failed to estimate workflow cost: {type(e)} {str(e)}")
+            util.client_logger.warning(f"Failed to estimate workflow cost: {type(e)} {e!s}")
             return 0
 
     def generate_live(self):
@@ -420,6 +449,7 @@ class Model(QObject, ObservableProperties):
         client = self._connection.client
         min_mask_size = 512 if self.arch is Arch.sd15 else 800
         extent = self._doc.extent
+        regions = self.active_regions
         region_layer = None
         job_regions: list[JobRegion] = []
         inpaint = InpaintParams(InpaintMode.fill, Bounds(0, 0, *extent))
@@ -430,7 +460,7 @@ class Model(QObject, ObservableProperties):
         inpaint = calc_selection_pre_process(inpaint, selection_bounds, smod)
 
         bounds = Bounds(0, 0, *self._doc.extent)
-        region_layer = self.regions.get_active_region_layer(use_parent=False)
+        region_layer = regions.get_active_region_layer(use_parent=False)
         if mask is None and region_layer.bounds != bounds:
             mask = get_region_inpaint_mask(region_layer, extent, min_size=min_mask_size)
             free_space = mask.bounds.extent - region_layer.compute_bounds().extent
@@ -442,9 +472,9 @@ class Model(QObject, ObservableProperties):
             workflow_kind = WorkflowKind.refine_region
             bounds, mask.bounds = compute_relative_bounds(mask.bounds, mask.bounds)
         if mask is not None or workflow_kind is WorkflowKind.refine:
-            image = self._get_current_image(bounds)
+            image = self._get_current_image(bounds, exclude_internal=False)
 
-        conditioning, job_regions = process_regions(self.regions, bounds)
+        conditioning, job_regions = process_regions(regions, bounds)
         conditioning.language = self.prompt_translation_language
         conditioning = self._add_reference_layers(conditioning)
         conditioning, loras, _ = workflow.prepare_prompts(
@@ -479,6 +509,7 @@ class Model(QObject, ObservableProperties):
 
         try:
             wf = ensure(self.custom.graph)
+            client = self._connection.client
             is_live = self.custom.mode is CustomGenerationMode.live
             is_anim = self.custom.mode is CustomGenerationMode.animation
             seed = self.seed if is_live or self.fixed_seed else workflow.generate_seed()
@@ -492,10 +523,12 @@ class Model(QObject, ObservableProperties):
                 mask, bounds = self.custom.prepare_mask(selection_node, mask, select_bounds, bounds)
 
             img_input = ImageInput.from_extent(bounds.extent)
-            img_input.initial_image = self._get_current_image(bounds)
+            img_input.initial_image = self._get_current_image(bounds, exclude_internal=not is_live)
             img_input.hires_mask = mask.to_image(bounds.extent) if mask else None
 
-            params = self.custom.collect_parameters(self.layers, canvas_bounds, is_anim)
+            params = self.custom.collect_parameters(
+                self.layers, canvas_bounds, client.models, is_live, is_anim
+            )
 
             custom_input = CustomWorkflowInput(wf.root, params)
             metadata: dict[str, Any] = dict(self.custom.params)
@@ -505,11 +538,11 @@ class Model(QObject, ObservableProperties):
             if style_node is not None:
                 style = self.style
                 is_live = style_node.input("sampler_preset", "auto") == "live"
-                custom_input.models = style.get_models(self._connection.client.models.checkpoints)
+                custom_input.models = style.get_models(client.models.checkpoints)
                 custom_input.sampling = workflow.sampling_from_style(style, 1.0, is_live)
 
                 cond = ConditioningInput(self.regions.positive, self.regions.negative)
-                arch = resolve_arch(style, self._connection.client_if_connected)
+                arch = resolve_arch(style, client)
                 prepared = workflow.prepare_prompts(cond, style, seed, arch)
                 custom_input.positive_evaluated = prepared.metadata["prompt_final"]
                 custom_input.negative_evaluated = prepared.metadata["negative_prompt_final"]
@@ -520,7 +553,7 @@ class Model(QObject, ObservableProperties):
                 job_params.set_style(self.style, custom_input.models.checkpoint)
                 metadata.update(prepared.metadata)
                 metadata["loras"] = [
-                    dict(name=l.name, weight=l.strength) for l in custom_input.models.loras
+                    {"name": l.name, "weight": l.strength} for l in custom_input.models.loras
                 ]
 
             input = WorkflowInput(
@@ -541,15 +574,16 @@ class Model(QObject, ObservableProperties):
 
             self.clear_error()
             await self.enqueue_jobs(input, job_kind, job_params, count=self.batch_count)
-            return input
 
         except Exception as e:
             self.report_error(util.log_error(e))
             return False
+        else:
+            return input
 
-    def _get_current_image(self, bounds: Bounds):
+    def _get_current_image(self, bounds: Bounds, exclude_internal=True):
         exclude = []
-        if self.workspace is not Workspace.live:
+        if exclude_internal:
             exclude = [  # exclude control layers from projection
                 c.layer for c in self.regions.control if not c.mode.is_part_of_image
             ]
@@ -587,9 +621,8 @@ class Model(QObject, ObservableProperties):
         return job
 
     def cancel(self, active=False, queued=False):
-        if queued:
-            if to_cancel := self.clear_queued():
-                self._connection.cancel(to_cancel)
+        if queued and (to_cancel := self.clear_queued()):
+            self._connection.cancel(to_cancel)
         if active and self.jobs.any_executing():
             self._connection.interrupt()
 
@@ -899,7 +932,7 @@ class Model(QObject, ObservableProperties):
             for layer_name in layer_names:
                 uid = next((l.id for l in self._doc.layers.images if l.name == layer_name), None)
                 if uid is None:
-                    raise Exception(_("Layer not found") + f' "{layer_name}"')
+                    raise PluginError(_("Layer not found") + f' "{layer_name}"')
                 ctrl = ControlLayer(self, ControlMode.reference, uid, 0)
                 control.append(ctrl.to_api())
 
@@ -929,14 +962,25 @@ class Model(QObject, ObservableProperties):
 
     @property
     def active_regions(self):
-        is_edit = self.workspace is Workspace.generation and self.edit_mode
+        is_edit = self.workspace in (Workspace.generation, Workspace.live) and self.edit_mode
         return self.edit_regions if is_edit else self.regions
 
     @property
     def active_style(self):
-        if self.workspace is Workspace.generation and self.edit_mode and self.edit_style:
+        if (
+            self.workspace in (Workspace.generation, Workspace.live)
+            and self.edit_mode
+            and self.edit_style
+        ):
             return self.edit_style
         return self.style
+
+    def _track_style_usage(self, style: Style):
+        if count := settings.recent_styles_count:
+            recent = [f for f in settings.recent_styles if f != style.filename]
+            recent.insert(0, style.filename)
+            settings.recent_styles = recent[:count]
+            settings.save()
 
     @property
     def preview_layer_id(self):
@@ -1277,7 +1321,7 @@ class LiveWorkspace(QObject, ObservableProperties):
         return self._result_composition
 
     def set_result(self, value: Image, params: JobParams):
-        canvas = self.model._get_current_image(params.bounds)
+        canvas = self.model._get_current_image(params.bounds, exclude_internal=False)
         painter = QPainter(canvas._qimage)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
         painter.setBrush(QBrush(QColor(0, 0, 96, 192), Qt.BrushStyle.DiagCrossPattern))
@@ -1378,7 +1422,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         conditioning, _ = process_regions(m.regions, bounds, self._model.layers.root, time=time)
         conditioning.language = m.prompt_translation_language
         conditioning = m._add_reference_layers(conditioning)
-        conditioning, loras, prompt_meta = workflow.prepare_prompts(
+        conditioning, loras, _prompt_meta = workflow.prepare_prompts(
             conditioning, m.style, seed, m.arch, is_live=is_live
         )
 
@@ -1398,7 +1442,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
 
     async def _generate_frame(self):
         m = self._model
-        requires_image = m.strength < 1.0 or m.arch.is_edit
+        requires_image = m.strength < 1.0 or m.is_editing
         bounds = Bounds(0, 0, *m.document.extent)
         canvas = m._get_current_image(bounds) if requires_image else bounds.extent
         seed = m.seed if m.fixed_seed else workflow.generate_seed()
@@ -1409,7 +1453,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
     def generate_batch(self):
         m = self._model
         doc = m.document
-        requires_image = m.strength < 1.0 or m.arch.is_edit
+        requires_image = m.strength < 1.0 or m.is_editing
         if requires_image and not m.layers.active.is_animated:
             m.report_error(_("The active layer does not contain an animation."))
             return
@@ -1439,7 +1483,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         for frame in range(start_frame, end_frame + 1):
             if layer.node.hasKeyframeAtTime(frame) or m.strength == 1.0:
                 canvas: Image | Extent = extent
-                if m.strength < 1.0 or m.arch.is_edit:
+                if m.strength < 1.0 or m.is_editing:
                     canvas = layer.get_pixels(time=frame)
 
                 inputs = self._prepare_input(canvas, seed, frame)
@@ -1559,7 +1603,7 @@ def _save_job_result(model: Model, job: Job | None, index: int):
     assert len(job.results) > index, "Cannot save result, invalid result index"
     assert model.document.filename, "Cannot save result, document is not saved"
     timestamp = job.timestamp.strftime("%Y%m%d-%H%M%S")
-    cur_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    cur_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     prompt = util.sanitize_prompt(job.params.name)
     path = Path(model.document.filename)
     name_template = (

@@ -1,26 +1,32 @@
 from __future__ import annotations
-from PyQt5.QtCore import QMetaObject, Qt, QTimer, QRectF
-from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QToolButton,
-    QLabel,
-    QSpinBox,
-    QSizePolicy,
-)
-from PyQt5.QtGui import QPainter, QPen, QFont, QColor
 
-from ..properties import Binding, bind, Bind
+from PyQt5.QtCore import QMetaObject, QRectF, Qt, QTimer
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen
+from PyQt5.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ..image import Extent, Image
-from ..model import Model
 from ..localization import translate as _
+from ..model import Model
+from ..properties import Bind, Binding, bind
 from ..root import root
+from . import theme
 from .control import ControlListWidget
 from .region import ActiveRegionWidget, PromptHeader
-from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget
-from .widget import ErrorBox, create_wide_tool_button
-from . import theme
+from .widget import (
+    ErrorBox,
+    StrengthWidget,
+    StyleSelectWidget,
+    WorkspaceSelectWidget,
+    create_wide_tool_button,
+)
 
 
 class SpinnerWidget(QWidget):
@@ -177,17 +183,25 @@ class LiveWidget(QWidget):
             _("Generate a random seed value to get a variation of the image.")
         )
 
+        self.edit_toggle = QToolButton(parent=self)
+        self.edit_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.edit_toggle.setAutoRaise(True)
+        self.edit_toggle.clicked.connect(self.toggle_edit)
+
         params_layout = QHBoxLayout()
         params_layout.addWidget(self.strength_slider)
         params_layout.addWidget(self.seed_input)
         params_layout.addWidget(self.random_seed_button)
+        params_layout.addWidget(self.edit_toggle)
         layout.addLayout(params_layout)
 
         self.control_list = ControlListWidget(self)
         self.add_control_button = create_wide_tool_button(
             "control-add", _("Add Control Layer"), self
         )
+        self.add_control_button.clicked.connect(self.create_control)
         self.add_region_button = create_wide_tool_button("region-add", _("Add Region"), self)
+        self.add_region_button.clicked.connect(self.create_region)
         prompt_buttons_layout = QVBoxLayout()
         prompt_buttons_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         prompt_buttons_layout.setSpacing(2)
@@ -241,19 +255,19 @@ class LiveWidget(QWidget):
                 model.live.is_recording_changed.connect(self.update_is_recording),
                 model.live.has_result_changed.connect(self.apply_button.setEnabled),
                 model.live.has_result_changed.connect(self.apply_layer_button.setEnabled),
-                self.add_region_button.clicked.connect(model.regions.create_region_layer),
-                self.add_control_button.clicked.connect(model.regions.add_control),
                 self.random_seed_button.clicked.connect(model.generate_seed),
+                model.edit_mode_changed.connect(self.update_edit_mode),
                 model.progress_changed.connect(self.update_progress),
                 model.live.result_available.connect(self.show_result),
-                model.regions.active_changed.connect(self.update_region),
+                model.active_regions.active_changed.connect(self.update_region),
                 model.layers.active_changed.connect(self.update_region),
             ]
             self.apply_button.setEnabled(model.live.has_result)
             self.apply_layer_button.setEnabled(model.live.has_result)
-            self.prompt_widget.region = model.regions
-            self.region_widget.root = model.regions
+            self.prompt_widget.region = model.active_regions
+            self.region_widget.root = model.active_regions
             self.strength_slider.model = model
+            self.update_edit_mode()
             self.update_region()
             self.update_is_active()
             self.update_is_recording()
@@ -265,24 +279,46 @@ class LiveWidget(QWidget):
     def toggle_record(self):
         self.model.live.is_recording = not self.model.live.is_recording
 
+    def toggle_edit(self):
+        self.model.edit_mode = not self.model.edit_mode
+
+    def update_edit_mode(self):
+        self.prompt_widget.region = self.model.active_regions
+        self.region_widget.root = self.model.active_regions
+        self.update_region()
+        if self.model.edit_mode:
+            self.edit_toggle.setIcon(theme.icon("workspace-generation"))
+            self.edit_toggle.setToolTip(_("Switch to generate mode"))
+        else:
+            self.edit_toggle.setIcon(theme.icon("edit"))
+            self.edit_toggle.setToolTip(_("Switch to edit mode"))
+
     def update_is_active(self):
         self.active_button.setIcon(
             self._pause_icon if self.model.live.is_active else self._play_icon
         )
 
     def update_region(self):
-        has_regions = len(self.model.regions) > 0
+        regions = self.model.active_regions
+        has_regions = len(regions) > 0
         self.region_widget.setVisible(has_regions)
-        self.region_widget.region = self.model.regions.region_for_active_layer
+        self.region_widget.region = regions.region_for_active_layer
         self.prompt_widget.header_style = PromptHeader.icon if has_regions else PromptHeader.none
-        self.control_list.model = self.model.regions.active_or_root.control
+        self.control_list.model = regions.active_or_root.control
 
     def focus_root_region(self):
-        if len(self.model.regions) > 0:
-            self.model.regions.active = self.model.regions
+        regions = self.model.active_regions
+        if len(regions) > 0:
+            regions.active = regions
 
     def focus_active_region(self):
-        self.model.regions.active = self.model.regions.region_for_active_layer
+        self.model.active_regions.active = self.model.active_regions.region_for_active_layer
+
+    def create_control(self):
+        self.model.active_regions.add_control()
+
+    def create_region(self):
+        self.model.active_regions.create_region_layer()
 
     def update_is_recording(self):
         self.record_button.setIcon(

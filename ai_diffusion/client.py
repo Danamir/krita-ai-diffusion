@@ -1,23 +1,31 @@
 from __future__ import annotations
+
 import asyncio
 import hashlib
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import AsyncGenerator, Callable, Iterable
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncGenerator, Callable, Generic, Iterable, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar
+
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .api import WorkflowInput
 from .comfy_workflow import ComfyObjectInfo
+from .files import FileFormat, FileLibrary
 from .image import ImageCollection, Point
-from .properties import Property, ObservableProperties
-from .files import FileLibrary, FileFormat
-from .style import Style
-from .settings import PerformanceSettings
-from .resources import ControlMode, ResourceKind, Arch, UpscalerName
-from .resources import CustomNode, ResourceId
 from .localization import translate as _
-from .util import client_logger as log, ensure
+from .properties import ObservableProperties, Property
+from .resources import Arch, ControlMode, CustomNode, ResourceId, ResourceKind, UpscalerName
+from .settings import PerformanceSettings
+from .style import Style
+from .util import PluginError, ensure
+from .util import client_logger as log
+
+
+class ServerError(Exception):
+    pass
 
 
 class ClientEvent(Enum):
@@ -107,10 +115,10 @@ class DeviceInfo(NamedTuple):
         try:
             name = data["devices"][0]["name"]
             name = name.split(":")[1] if ":" in name else name
-            vram = int(round(data["devices"][0]["vram_total"] / (1024**3)))
+            vram = round(data["devices"][0]["vram_total"] / (1024**3))
             return DeviceInfo(data["devices"][0]["type"], name, vram)
         except Exception as e:
-            log.error(f"Could not parse device info {data}: {str(e)}")
+            log.error(f"Could not parse device info {data}: {e!s}")
             return DeviceInfo("cpu", "unknown", 0)
 
 
@@ -242,7 +250,7 @@ class ClientModels:
         id = ResourceId(kind, arch, identifier)
         model = self.find(id)
         if model is None:
-            raise Exception(f"{id.name} not found")
+            raise PluginError(f"{id.name} not found")
         return model
 
     def find(self, id: ResourceId):
@@ -350,10 +358,10 @@ class ModelDict:
     @property
     def fooocus_inpaint(self):
         assert self.arch is Arch.sdxl
-        return dict(
-            head=self._models.resource(ResourceKind.inpaint, "fooocus_head", Arch.sdxl),
-            patch=self._models.resource(ResourceKind.inpaint, "fooocus_patch", Arch.sdxl),
-        )
+        return {
+            "head": self._models.resource(ResourceKind.inpaint, "fooocus_head", Arch.sdxl),
+            "patch": self._models.resource(ResourceKind.inpaint, "fooocus_patch", Arch.sdxl),
+        }
 
     @property
     def all(self):
@@ -386,10 +394,11 @@ class TranslationPackage(NamedTuple):
         return [TranslationPackage.from_dict(item) for item in data]
 
 
-class ClientFeatures(NamedTuple):
+@dataclass(frozen=True)
+class ClientFeatures:
     ip_adapter: bool = True
     translation: bool = True
-    languages: list[TranslationPackage] = []
+    languages: list[TranslationPackage] = field(default_factory=list)
     max_upload_size: int = 0
     max_control_layers: int = 1000
     gguf: bool = False

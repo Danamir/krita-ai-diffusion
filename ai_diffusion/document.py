@@ -1,16 +1,18 @@
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 from uuid import uuid4
 from weakref import WeakValueDictionary
+
 import krita
 from krita import Krita
-from PyQt5.QtCore import QObject, QByteArray, QTimer, pyqtSignal
+from PyQt5.QtCore import QByteArray, QObject, QTimer, pyqtSignal
 
-from .image import Extent, Bounds, Mask, Image
+from .image import Bounds, Extent, Image, Mask
 from .layer import Layer, LayerManager, LayerType
-from .pose import Pose
 from .localization import translate as _
+from .pose import Pose
 from .util import acquire_elements
 
 
@@ -63,7 +65,6 @@ class Document(QObject):
 
     def resize_canvas(self, width: int, height: int):
         """Resize the underlying canvas if supported by the implementation."""
-        pass
 
     def annotate(self, key: str, value: QByteArray):
         pass
@@ -171,6 +172,7 @@ class KritaDocument(Document):
             id = cls._id_from_annotation(doc)
             if id and id in cls._instances:
                 return cls._instances[id]
+        return None
 
     @property
     def extent(self):
@@ -326,15 +328,13 @@ def _selection_is_entire_document(selection: krita.Selection, extent: Extent):
     if bounds.width + bounds.x < extent.width or bounds.height + bounds.y < extent.height:
         return False
     mask = selection.pixelData(*bounds)
-    is_opaque = all(x == b"\xff" for x in mask)
-    return is_opaque
+    return all(x == b"\xff" for x in mask)
 
 
 class PoseLayers:
-    _layers: dict[str, Pose] = {}
-    _timer = QTimer()
-
     def __init__(self):
+        self._layers: dict[str, Pose] = {}
+        self._timer = QTimer()
         self._timer.setInterval(500)
         self._timer.timeout.connect(self.update)
         self._timer.start()

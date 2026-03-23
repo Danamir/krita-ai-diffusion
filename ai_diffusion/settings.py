@@ -1,15 +1,18 @@
 from __future__ import annotations
-from dataclasses import dataclass
-import os
+
 import json
+import os
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple, Optional, Any
+from typing import Any, ClassVar, NamedTuple
+
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from .platform_tools import is_macos, is_windows
-from .util import encode_json, read_json_with_comments, user_data_dir, client_logger as log
 from .localization import translate as _
+from .platform_tools import is_macos, is_windows
+from .util import client_logger as log
+from .util import encode_json, read_json_with_comments, user_data_dir
 
 
 class ServerMode(Enum):
@@ -82,9 +85,9 @@ class ImageFileFormat(Enum):
             return ImageFileFormat.png_small
         if extension == ".webp":
             return ImageFileFormat.webp
-        if extension == ".jpg" or extension == ".jpeg":
+        if extension in {".jpg", ".jpeg"}:
             return ImageFileFormat.jpeg
-        raise Exception(f"Unsupported image extension: {extension}")
+        raise ValueError(f"Unsupported image extension: {extension}")
 
     @property
     def extension(self):
@@ -248,6 +251,13 @@ class Settings(QObject):
         _("Selection Padding"), 6, _("Minimum additional padding around the selection area")
     )
 
+    color_match: bool
+    _color_match = Setting(
+        _("Color Match"),
+        True,
+        _("Match peripheral colors and brightness with existing content. Requires a selection."),
+    )
+
     nsfw_filter: float
     _nsfw_filter = Setting(
         _("NSFW Filter"), 0.0, _("Attempt to filter out images with explicit content")
@@ -362,7 +372,7 @@ class Settings(QObject):
     tag_files: list[str]
     _tag_files = Setting(
         _("Tag Auto-Completion"),
-        list(),
+        [],
         _("Enable text completion for tags from the selected files"),
     )
 
@@ -390,6 +400,24 @@ class Settings(QObject):
 
     show_builtin_styles: bool
     _show_builtin_styles = Setting(_("Show pre-installed styles"), True)
+
+    recent_styles_count: int
+    _recent_styles_count = Setting(
+        _("Recent Styles"),
+        4,
+        _("Number of most recently used styles to show at the top of the style list"),
+    )
+
+    recent_styles: list[str]
+    _recent_styles = Setting(
+        "Recent Styles",
+        [
+            "built-in/edit-flux2.json",
+            "built-in/anime-illustrious.json",
+            "built-in/cinematic-photo-zimage.json",
+            "built-in/digital-artwork-xl.json",
+        ],
+    )
 
     history_size: int
     _history_size = Setting(
@@ -463,7 +491,7 @@ class Settings(QObject):
         _("Conserve memory by processing output images in smaller tiles."),
     )
 
-    _performance_presets = {
+    _performance_presets: ClassVar[dict[PerformancePreset, PerformancePresetSettings]] = {
         PerformancePreset.cpu: PerformancePresetSettings(
             batch_size=1,
             resolution_multiplier=1.0,
@@ -539,12 +567,12 @@ class Settings(QObject):
         if not init:
             self.server_mode = ServerMode.managed
 
-    def save(self, path: Optional[Path] = None):
+    def save(self, path: Path | None = None):
         path = self.default_path or path
         with open(path, "w") as file:
             file.write(json.dumps(self._values, default=encode_json, indent=4))
 
-    def load(self, path: Optional[Path] = None):
+    def load(self, path: Path | None = None):
         path = self.default_path or path
         self._migrate_legacy_settings(path)
         if not path.exists():
@@ -571,6 +599,9 @@ class Settings(QObject):
         if preset not in [PerformancePreset.custom, PerformancePreset.auto]:
             for k, v in self._performance_presets[preset]._asdict().items():
                 self._values[k] = v
+
+    def __iter__(self):
+        return iter(self._values.items())
 
     def _migrate_legacy_settings(self, path: Path):
         if path == self.default_path:

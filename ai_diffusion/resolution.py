@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import math
 from enum import Enum
 from typing import NamedTuple, overload
@@ -27,8 +28,7 @@ def compute_bounds(extent: Extent, mask_bounds: Bounds | None, op: WorkflowKind)
             image_bounds = Bounds.pad(
                 mask_bounds, context_padding, min_size=512, multiple=8, square=True
             )
-            image_bounds = Bounds.clamp(image_bounds, extent)
-            return image_bounds
+            return Bounds.clamp(image_bounds, extent)
         else:
             # For img2img inpainting (strength < 100%) only use the mask area as input
             return mask_bounds

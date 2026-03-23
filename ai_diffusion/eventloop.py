@@ -1,5 +1,6 @@
 import asyncio
-from typing import Callable
+from collections.abc import Callable
+
 from PyQt5.QtCore import QTimer
 
 _loop = asyncio.new_event_loop()
@@ -37,13 +38,13 @@ def run(future):
 
 
 def stop():
-    global _timer, _loop
+    global _timer
     try:
         _timer.stop()
         _timer = None
         _loop.stop()
         _loop.close()
-    except Exception:
+    except Exception:  # noqa
         pass
 
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
+
+import json
+import zlib
 from copy import deepcopy
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple, Tuple, Literal, TypeVar, overload, Any
+from typing import Any, Literal, NamedTuple, TypeVar, overload
 from uuid import uuid4
-import json
-import zlib
 
 from .image import Bounds, Extent, Image, ImageCollection
 from .resources import Arch, ControlMode
-from .util import base_type_match, client_logger as log
+from .util import base_type_match
+from .util import client_logger as log
 
 
 class ComfyRunMode(Enum):
@@ -23,9 +25,9 @@ class Output(NamedTuple):
 
 
 T = TypeVar("T")
-Output2 = Tuple[Output, Output]
-Output3 = Tuple[Output, Output, Output]
-Output4 = Tuple[Output, Output, Output, Output]
+Output2 = tuple[Output, Output]
+Output3 = tuple[Output, Output, Output]
+Output4 = tuple[Output, Output, Output, Output]
 Input = int | float | bool | str | Output
 
 
@@ -211,7 +213,7 @@ class ComfyWorkflow:
     @overload
     def add_cached(self, class_type: str, output_count: Literal[3], **inputs) -> Output3: ...
 
-    def add_cached(self, class_type: str, output_count: Literal[1] | Literal[3], **inputs):
+    def add_cached(self, class_type: str, output_count: Literal[1, 3], **inputs):
         key = class_type + str(inputs)
         result = self._cache.get(key, None)
         if result is None:
@@ -251,7 +253,7 @@ class ComfyWorkflow:
         return self.sample_count
 
     def __iter__(self):
-        return iter(self.node(int(k)) for k in self.root.keys())
+        return iter(self.node(int(k)) for k in self.root)
 
     def __contains__(self, node: ComfyNode):
         return any(n == node for n in self)
@@ -389,7 +391,7 @@ class ComfyWorkflow:
         start_at_step=0,
         cfg=7.0,
         seed=-1,
-        extent=Extent(1024, 1024),
+        extent: Extent | None = None,
         two_pass=False,
     ):
         self.sample_count += steps - start_at_step
@@ -465,7 +467,12 @@ class ComfyWorkflow:
             )[1]
 
     def scheduler_sigmas(
-        self, model: Output, scheduler="normal", steps=20, arch: Arch = Arch.sdxl, extent=Extent(1024, 1024)
+        self,
+        model: Output,
+        scheduler="normal",
+        steps=20,
+        arch: Arch = Arch.sdxl,
+        extent: Extent | None = None,
     ):
         if scheduler in ("align_your_steps", "ays"):
             assert arch is Arch.sd15 or arch.is_sdxl_like
@@ -510,6 +517,7 @@ class ComfyWorkflow:
                 beta=0.5,
             )
         elif scheduler == "flux2":
+            extent = extent or Extent(1024, 1024)
             return self.add(
                 "Flux2Scheduler",
                 output_count=1,
@@ -1298,6 +1306,20 @@ class ComfyWorkflow:
             "INPAINT_InpaintWithModel", 1, inpaint_model=model, image=image, mask=mask, seed=834729
         )
 
+    def color_match(
+        self, target: Output, reference: Output, exclude_mask: Output | None = None, strength=1.0
+    ):
+        if strength <= 0.0:
+            return target
+        return self.add(
+            "INPAINT_ColorMatch",
+            1,
+            target=target,
+            reference=reference,
+            exclude_mask=exclude_mask,
+            strength=strength,
+        )
+
     def crop_mask(self, mask: Output, bounds: Bounds):
         return self.add(
             "CropMask",
@@ -1485,8 +1507,8 @@ class ComfyWorkflow:
         )
 
     def estimate_pose(self, image: Output, resolution: int):
-        feat = dict(detect_hand="enable", detect_body="enable", detect_face="enable")
-        mdls = dict(bbox_detector="yolox_l.onnx", pose_estimator="dw-ll_ucoco_384.onnx")
+        feat = {"detect_hand": "enable", "detect_body": "enable", "detect_face": "enable"}
+        mdls = {"bbox_detector": "yolox_l.onnx", "pose_estimator": "dw-ll_ucoco_384.onnx"}
         if self._run_mode is ComfyRunMode.runtime:
             # use smaller model, but it requires onnxruntime, see #630
             mdls["bbox_detector"] = "yolo_nas_l_fp16.onnx"

@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 from typing import NamedTuple
 
-from .util import user_data_dir, client_logger as log
+from .util import client_logger as log
+from .util import user_data_dir
 
 
 class Language(NamedTuple):
@@ -29,7 +30,9 @@ class Localization:
     available: list[Language]
     current: "Localization"
 
-    def __init__(self, id: str = "en", name: str = "English", translations: dict = {}):
+    def __init__(self, id: str = "en", name: str = "English", translations: dict | None = None):
+        if translations is None:
+            translations = {}
         self._id = id
         self._name = name
         self._translations = translations
@@ -55,7 +58,7 @@ class Localization:
                 lang = json.load(f)
                 return Localization(id, lang["name"], lang["translations"])
         except Exception as e:
-            raise Exception(f"Could not load language file for {id} at {filepath}: {e}")
+            raise RuntimeError(f"Could not load language file for {id} at {filepath}: {e}")
 
     @staticmethod
     def init(settings_path: Path | None = None):

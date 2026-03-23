@@ -1,28 +1,29 @@
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
-from PyQt5.QtWidgets import QAction
-from krita import Extension, Krita, DockWidgetFactory, DockWidgetFactoryBase, Window  # type: ignore
 
-from . import eventloop, __version__
-from .settings import settings
+from krita import DockWidgetFactory, DockWidgetFactoryBase, Extension, Krita, Window  # type: ignore
+from PyQt5.QtWidgets import QAction
+
+from . import __version__, eventloop
 from .model import Workspace
+from .root import root
+from .settings import settings
 from .ui import actions
 from .ui.diffusion import ImageDiffusionWidget
 from .ui.settings import SettingsDialog
-from .root import root
 from .util import client_logger as log
 
 
 class AIToolsExtension(Extension):
-    _actions: dict[str, QAction] = {}
-    _settings_dialog: SettingsDialog
-
     def __init__(self, parent):
         super().__init__(parent)
+        self._actions: dict[str, QAction] = {}
+
         log.info(f"Extension initialized, Version: {__version__}, Python: {sys.version}")
 
-        debugpy_path = Path(__file__).parent / "debugpy" / "src"
+        extension_dir = Path(__file__).parent
+        debugpy_path = extension_dir / "debugpy" / "src"
         if debugpy_path.exists():
             try:
                 sys.path.insert(0, str(debugpy_path))
@@ -32,6 +33,13 @@ class AIToolsExtension(Extension):
                 log.info("Developer mode: debugpy listening on port 5678")
             except ImportError:
                 pass
+
+        pykrita_dir = extension_dir.parent
+        if pykrita_dir.name != "pykrita" and not (pykrita_dir / ".git").exists():
+            log.warning(
+                "Plugin is not installed in a 'pykrita' directory, this may break user files "
+                f"and settings. Detected installation path is: {pykrita_dir}"
+            )
 
         eventloop.setup()
         settings.load()

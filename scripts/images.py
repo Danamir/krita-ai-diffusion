@@ -8,26 +8,26 @@ Usage:
 
 import argparse
 import hashlib
-import os
 import sys
-import dotenv
-import requests
-import boto3
+import typing
 from pathlib import Path
+
+import boto3
+import requests
 from botocore.exceptions import ClientError
 
 root_dir = Path(__file__).parent.parent
 image_dir = root_dir / "tests" / "images"
 
-if (root_dir / "service").exists():
-    dotenv.load_dotenv(root_dir / "service" / "web" / ".env.local")
+if not typing.TYPE_CHECKING:
+    from service.pod.lib.environment import Config
+
+    config = Config.from_env()
+else:
+    config: typing.Any = None  # type: ignore
 
 MANIFEST_FILE = image_dir / "manifest.txt"
 BASE_URL = "https://lfs.interstice.cloud"
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_REGION = os.getenv("R2_REGION")
 BUCKET_NAME = "lfs"
 REPO_NAME = "krita-ai-diffusion"
 
@@ -71,8 +71,9 @@ def load_manifest() -> dict[str, str]:
 def save_manifest(manifest: dict[str, str]) -> None:
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(MANIFEST_FILE, "w") as f:
-        for local_filepath, sha256 in sorted(manifest.items()):
-            f.write(f"{local_filepath} {sha256}\n")
+        f.writelines(
+            f"{local_filepath} {sha256}\n" for local_filepath, sha256 in sorted(manifest.items())
+        )
 
 
 def download_images() -> None:
@@ -129,10 +130,6 @@ def download_images() -> None:
 
 
 def upload_images() -> None:
-    if not CF_ACCOUNT_ID or not R2_ACCESS_KEY_ID or not R2_SECRET_ACCESS_KEY or not R2_REGION:
-        print("Missing credentials.")
-        return
-
     manifest = load_manifest()
 
     if not image_dir.exists():
@@ -149,10 +146,10 @@ def upload_images() -> None:
 
     r2_client = boto3.client(
         "s3",
-        endpoint_url=f"https://{CF_ACCOUNT_ID}.r2.cloudflarestorage.com",
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        region_name=R2_REGION,
+        endpoint_url=f"https://{config.secrets.cf_account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=config.secrets.r2_access_key_id,
+        aws_secret_access_key=config.secrets.r2_secret_access_key,
+        region_name=config.secrets.r2_region,
     )
 
     upload_count = 0

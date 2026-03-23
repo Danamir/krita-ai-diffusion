@@ -5,22 +5,36 @@ import os
 import platform
 import uuid
 from base64 import b64encode
+from collections.abc import Iterable
 from copy import copy
-from datetime import datetime
-from enum import Enum
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any
 
-from .api import WorkflowInput
-from .client import Client, ClientEvent, ClientMessage, ClientModels, DeviceInfo, News
-from .client import ClientFeatures, ClientJobQueue, TranslationPackage, User, loras_to_upload
-from .image import ImageCollection, qt_supports_webp
-from .network import RequestManager, NetworkError
-from .files import File
-from .settings import PerformanceSettings, settings
-from .localization import translate as _
-from .util import clamp, ensure, client_logger as log
 from . import __version__ as plugin_version
+from .api import WorkflowInput
+from .client import (
+    Client,
+    ClientEvent,
+    ClientFeatures,
+    ClientJobQueue,
+    ClientMessage,
+    ClientModels,
+    DeviceInfo,
+    News,
+    ServerError,
+    TranslationPackage,
+    User,
+    loras_to_upload,
+)
+from .files import File
+from .image import ImageCollection, qt_supports_webp
+from .localization import translate as _
+from .network import NetworkError, RequestManager
+from .settings import PerformanceSettings, settings
+from .util import clamp, ensure
+from .util import client_logger as log
 
 
 class JobState(Enum):
@@ -102,19 +116,19 @@ class CloudClient(Client):
         client_id = str(uuid.uuid4())
         info = f"Generative AI for Krita [Device: {platform.node()}]"
         log.info(f"Sending authorization request for {info} to {self.url}")
-        init = await self._post("auth/initiate", dict(client_id=client_id, client_info=info))
+        init = await self._post("auth/initiate", {"client_id": client_id, "client_info": info})
 
         sign_in_url = f"{self.default_web_url}{init['url']}"
         log.info(f"Waiting for completion of authorization at {sign_in_url}")
         yield sign_in_url
 
-        auth_confirm = await self._post("auth/confirm", dict(client_id=client_id))
-        time = datetime.now()
+        auth_confirm = await self._post("auth/confirm", {"client_id": client_id})
+        time = datetime.now(timezone.utc)
         while auth_confirm["status"] == "not-found":
-            if (datetime.now() - time).seconds > 300:
+            if (datetime.now(timezone.utc) - time).seconds > 300:
                 raise TimeoutError(_("Sign-in attempt timed out after 5 minutes"))
             await asyncio.sleep(2)
-            auth_confirm = await self._post("auth/confirm", dict(client_id=client_id))
+            auth_confirm = await self._post("auth/confirm", {"client_id": client_id})
 
         if auth_confirm["status"] == "authorized":
             self._token = auth_confirm["token"]
@@ -135,7 +149,7 @@ class CloudClient(Client):
             self._token = ""
             if e.status == 401:
                 e.message = _("The login data is incorrect, please sign in again.")
-            raise e
+            raise
         self._user = User(user_data["id"], user_data["name"])
         self._user.images_generated = user_data["images_generated"]
         self._user.credits = user_data["credits"]
@@ -237,7 +251,7 @@ class CloudClient(Client):
         await self._report(ClientEvent.progress, job.local_id, 0)
 
         status = response["status"].lower()
-        while status == "in_queue" or status == "in_progress":
+        while status in {"in_queue", "in_progress"}:
             response = await self._post(f"status/{job.remote_id}", {})
             status = response["status"].lower()
 
@@ -260,6 +274,12 @@ class CloudClient(Client):
         elif status == "failed":
             err_msg, err_trace = _extract_error(response, job.remote_id)
             log.error(f"{job} failed\n{err_msg}\n{err_trace}")
+            await self._report(ClientEvent.error, job.local_id, error=err_msg)
+            job.state = JobState.finalized
+
+        elif status == "violation":
+            err_msg = response.get("error", "content violation")
+            log.warning(f"{job} was aborted: {err_msg}")
             await self._report(ClientEvent.error, job.local_id, error=err_msg)
             job.state = JobState.finalized
 
@@ -315,11 +335,10 @@ class CloudClient(Client):
     async def interrupt(self):
         if job := self._exec_send.current_job:
             job.state = JobState.cancelled
-        if job := self._exec_generate.current_job:
-            if job.remote_id and job.worker_id:
-                response = await self._post(f"cancel/{job.worker_id}/{job.remote_id}", {})
-                log.info(f"Requested cancellation of {job}: {response}")
-                job.state = JobState.cancelled
+        if (job := self._exec_generate.current_job) and job.remote_id and job.worker_id:
+            response = await self._post(f"cancel/{job.worker_id}/{job.remote_id}", {})
+            log.info(f"Requested cancellation of {job}: {response}")
+            job.state = JobState.cancelled
         # If a job is in the receive stage, we let it finish normally.
 
     async def cancel(self, job_ids: Iterable[str]):
@@ -372,7 +391,7 @@ class CloudClient(Client):
 
     async def _upload_lora(self, lora: File):
         assert lora.path and lora.hash and lora.size
-        upload = await self._post("upload/lora", dict(hash=lora.hash, size=lora.size))
+        upload = await self._post("upload/lora", {"hash": lora.hash, "size": lora.size})
         if upload["status"] == "too-large":
             max_size = int(upload.get("max", 0)) / (1024 * 1024)
             raise ValueError(
@@ -391,9 +410,11 @@ class CloudClient(Client):
                 yield sent / max(total, 1)
         except NetworkError as e:
             log.error(f"LoRA model upload failed [{e.status}]: {e.message}")
-            raise Exception(_("Connection error during upload of LoRA model") + f" {lora.name}")
+            raise ServerError(
+                _("Connection error during upload of LoRA model") + f" {lora.name}"
+            ) from e
         except Exception as e:
-            raise Exception(_("Error during upload of LoRA model") + f" {lora.name}") from e
+            raise ServerError(_("Error during upload of LoRA model") + f" {lora.name}") from e
 
     async def receive_images(self, images: dict):
         offsets = images.get("offsets")

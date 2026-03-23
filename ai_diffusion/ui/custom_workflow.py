@@ -1,34 +1,59 @@
+import math
+from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from krita import Krita
-from PyQt5.QtCore import Qt, pyqtSignal, QMetaObject, QUuid, QUrl, QPoint, QSize
-from PyQt5.QtGui import QFontMetrics, QIcon, QDesktopServices, QPalette
-from PyQt5.QtWidgets import QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QMenu
-from PyQt5.QtWidgets import QLabel, QLineEdit, QListWidgetItem, QMessageBox, QSpinBox, QAction
-from PyQt5.QtWidgets import QToolButton, QVBoxLayout, QWidget, QSlider, QDoubleSpinBox
-from PyQt5.QtWidgets import QScrollArea, QTextEdit, QSplitter
+from PyQt5.QtCore import QMetaObject, QPoint, QSize, Qt, QUrl, QUuid, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QFontMetrics, QIcon, QPalette
+from PyQt5.QtWidgets import (
+    QAction,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QTextEdit,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..custom_workflow import CustomParam, ParamKind, SortedWorkflows, WorkflowSource
-from ..custom_workflow import CustomGenerationMode
 from ..client import TextOutput
+from ..custom_workflow import (
+    CustomGenerationMode,
+    CustomParam,
+    ParamKind,
+    SortedWorkflows,
+    WorkflowSource,
+)
 from ..jobs import JobKind
+from ..localization import translate as _
 from ..model import Model
-from ..properties import Binding, Bind, bind, bind_combo
-from ..style import Styles
+from ..properties import Bind, Binding, bind, bind_combo
 from ..root import root
 from ..settings import settings
-from ..localization import translate as _
-from ..util import ensure, clamp, base_type_match
-from .generation import GenerateButton, ProgressBar, QueueButton, HistoryWidget
+from ..style import Styles
+from ..util import base_type_match, clamp, ensure
+from . import theme
+from .generation import GenerateButton, HistoryWidget, ProgressBar, QueueButton
 from .live import LivePreviewArea
-from .switch import SwitchWidget
-from .widget import TextPromptWidget, WorkspaceSelectWidget, StyleSelectWidget, ErrorBox
 from .region import ActiveRegionWidget, PromptHeader
 from .settings_widgets import ExpanderButton
-from . import theme
+from .switch import SwitchWidget
 from .theme import SignalBlocker
+from .widget import ErrorBox, StyleSelectWidget, TextPromptWidget, WorkspaceSelectWidget
 
 
 class LayerSelect(QComboBox):
@@ -137,7 +162,7 @@ class IntParamWidget(QWidget):
         return self._widget.value()
 
     @value.setter
-    def value(self, value: int | float):
+    def value(self, value: float):
         v = int(value)
         v = max(self._widget.minimum(), min(self._widget.maximum(), v))
         with SignalBlocker(self._widget):
@@ -161,13 +186,18 @@ class FloatParamWidget(QWidget):
 
         self._slider: QSlider | None = None
         assert param.min is not None and param.max is not None and param.default is not None
-        if param.max - param.min <= 100:
+        delta = abs(param.max - param.min)
+        step = round(delta / 20, math.ceil(-math.log10(delta / 20)))
+        if 0.1 <= delta <= 100:
             self._slider = QSlider(Qt.Orientation.Horizontal, parent)
             self._slider.setRange(round(param.min * 100), round(param.max * 100))
+            self._slider.setSingleStep(round(step * 50))
+            self._slider.setPageStep(round(step * 200))
             self._slider.setMinimumHeight(self._slider.minimumSizeHint().height() + 4)
             self._slider.valueChanged.connect(self._slider_changed)
             self._widget = QDoubleSpinBox(parent)
             self._widget.setRange(param.min, param.max)
+            self._widget.setSingleStep(step)
             self._widget.setDecimals(2)
             self._widget.valueChanged.connect(self._input_changed)
             layout.addWidget(self._slider)
@@ -175,6 +205,8 @@ class FloatParamWidget(QWidget):
         else:
             self._widget = QDoubleSpinBox(parent)
             self._widget.setRange(param.min, param.max)
+            self._widget.setSingleStep(step)
+            self._widget.setDecimals(max(0, math.ceil(-math.log10(delta / 100))))
             self._widget.valueChanged.connect(self._notify)
             layout.addWidget(self._widget)
 
@@ -200,7 +232,7 @@ class FloatParamWidget(QWidget):
         return float(self._widget.value())
 
     @value.setter
-    def value(self, value: float | int):
+    def value(self, value: float):
         v = float(value)
         v = max(self._widget.minimum(), min(self._widget.maximum(), v))
         with SignalBlocker(self._widget):
@@ -375,9 +407,8 @@ class StyleParamWidget(QWidget):
 
     @value.setter
     def value(self, value: str):
-        if value != self.value:
-            if style := Styles.list().find(value):
-                self._style_select.value = style
+        if value != self.value and (style := Styles.list().find(value)):
+            self._style_select.value = style
 
 
 CustomParamWidget = (
@@ -586,8 +617,7 @@ class WorkflowOutputsWidget(QWidget):
                 value = QTextEdit(widget)
                 value.setFrameShape(QFrame.Shape.StyledPanel)
                 value.setStyleSheet(
-                    "QTextEdit { background: transparent; border-left: 1px solid %s; padding-left: 2px; }"
-                    % theme.line
+                    f"QTextEdit {{ background: transparent; border-left: 1px solid {theme.line}; padding-left: 2px; }}"
                 )
                 value.setReadOnly(True)
                 match output.mime:

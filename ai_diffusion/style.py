@@ -1,17 +1,20 @@
 from __future__ import annotations
+
+import json
+from collections.abc import Iterable
 from copy import copy
 from enum import Enum
-from typing import Any, Iterable, NamedTuple
-import json
 from pathlib import Path
+from typing import Any, NamedTuple
+
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .api import CheckpointInput, LoraInput
-from .settings import Setting, settings
-from .resources import Arch
 from .localization import translate as _
-from .util import encode_json, find_unused_path, read_json_with_comments
-from .util import plugin_dir, user_data_dir, client_logger as log
+from .resources import Arch
+from .settings import Setting, settings
+from .util import client_logger as log
+from .util import encode_json, find_unused_path, plugin_dir, read_json_with_comments, user_data_dir
 
 
 class StyleSettings:
@@ -146,7 +149,7 @@ class Style(QObject):
     def __setattr__(self, name: str, value: Any):
         current = getattr(self, name)
         super().__setattr__(name, value)
-        if current != value and name in StyleSettings.__dict__.keys():
+        if current != value and name in StyleSettings.__dict__:
             self.changed.emit(name, value)
 
     @staticmethod
@@ -181,10 +184,11 @@ class Style(QObject):
             )
             if "sd_checkpoint" in cfg:
                 style.checkpoints = [cfg["sd_checkpoint"]]
-            return style
         except json.JSONDecodeError as e:
             log.warning(f"Failed to load style {filepath}: {e}")
             return None
+        else:
+            return style
 
     def save(self):
         cfg = {
@@ -214,7 +218,7 @@ class Style(QObject):
         return "not-found"
 
     def get_models(self, available_checkpoints: Iterable[str]):
-        result = CheckpointInput(
+        return CheckpointInput(
             checkpoint=self.preferred_checkpoint(available_checkpoints),
             vae=self.vae,
             clip_skip=self.clip_skip,
@@ -223,7 +227,6 @@ class Style(QObject):
             loras=[LoraInput.from_dict(l) for l in self.loras if l.get("enabled", True)],
             self_attention_guidance=self.self_attention_guidance,
         )
-        return result
 
     def get_steps(self, is_live: bool) -> tuple[int, int]:
         sampler_name = self.live_sampler if is_live else self.sampler
@@ -299,15 +302,14 @@ class Styles(QObject):
 
     def find_style_files(self):
         for folder in (self.builtin_folder, self.user_folder):
-            for file in folder.rglob("*.json"):
-                yield file
+            yield from folder.rglob("*.json")
 
     def reload(self):
         styles = (Style.load(f) for f in self.find_style_files())
         self._list = [s for s in styles if s is not None]
         self._list.sort(key=lambda s: s.name)
         if len(self._list) == 0:
-            self.create("default")
+            self.create("default.json")
         else:
             self.changed.emit()
 
@@ -334,6 +336,15 @@ class Styles(QObject):
 
     def __iter__(self):
         return iter(self._list)
+
+
+def sort_recent_styles(styles: list[Style], recent_filenames: list[str], count: int):
+    if count == 0 or not recent_filenames:
+        return [], list(styles)
+    style_map = {s.filename: s for s in styles}
+    recent = [style_map[f] for f in recent_filenames[:count] if f in style_map]
+    remaining = [s for s in styles if s not in recent]
+    return recent, remaining
 
 
 class SamplerPreset(NamedTuple):
@@ -422,7 +433,7 @@ class SamplerPresets:
     def names(self):
         def is_visible(name: str, preset: SamplerPreset):
             return not preset.hidden or any(
-                s.live_sampler == name or s.sampler == name for s in Styles.list()
+                name in (s.live_sampler, s.sampler) for s in Styles.list()
             )
 
         return [name for name, preset in self._presets.items() if is_visible(name, preset)]

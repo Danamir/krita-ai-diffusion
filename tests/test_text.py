@@ -1,20 +1,20 @@
-from ai_diffusion.text import (
-    char16_len,
-    char16_index_to_str_index,
-    str_index_to_char16_index,
-    eval_wildcards,
-    extract_layers,
-    merge_prompt,
-    extract_loras,
-    edit_attention,
-    select_on_cursor_pos,
-    create_img_metadata,
-    strip_prompt_comments,
-)
 from ai_diffusion.api import LoraInput
 from ai_diffusion.files import File, FileCollection
-from ai_diffusion.jobs import JobParams
 from ai_diffusion.image import Bounds
+from ai_diffusion.jobs import JobParams
+from ai_diffusion.text import (
+    char16_index_to_str_index,
+    char16_len,
+    create_img_metadata,
+    edit_attention,
+    eval_wildcards,
+    extract_layers,
+    extract_loras,
+    merge_prompt,
+    select_on_cursor_pos,
+    str_index_to_char16_index,
+    strip_prompt_comments,
+)
 
 
 def test_char16_len():
@@ -80,6 +80,17 @@ def test_strip_prompt_comments_multiline():
     prompt = "Line1 # comment\nLine2 \\# not a comment # comment\n# Line3"
     expected = "Line1\nLine2 # not a comment"
     assert strip_prompt_comments(prompt) == expected
+
+
+def test_strip_prompt_comments_hex_color():
+    assert (
+        strip_prompt_comments("A color code #FF5733 should not be stripped")
+        == "A color code #FF5733 should not be stripped"
+    )
+    assert (
+        strip_prompt_comments("A color code with comment #ff5733 # this is a comment")
+        == "A color code with comment #ff5733"
+    )
 
 
 def test_merge_prompt():

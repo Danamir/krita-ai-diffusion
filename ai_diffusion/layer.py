@@ -1,13 +1,17 @@
 from __future__ import annotations
+
 from contextlib import contextmanager, nullcontext
 from enum import Enum
+from typing import ClassVar
+
 import krita
-from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
+from PyQt5.QtCore import QByteArray, QObject, QTimer, QUuid, pyqtSignal
 from PyQt5.QtGui import QImage
 
-from .image import Extent, Bounds, Image, ImageCollection
-from .util import acquire_elements, ensure, maybe, client_logger as log
 from . import eventloop
+from .image import Bounds, Extent, Image, ImageCollection
+from .util import acquire_elements, ensure, maybe
+from .util import client_logger as log
 
 
 class LayerType(Enum):
@@ -128,8 +132,7 @@ class Layer(QObject):
     def bounds(self):
         # In Krita layer bounds can be larger than the image - this property clamps them
         bounds = Bounds.from_qrect(self._node.bounds())
-        bounds = Bounds.restrict(bounds, Bounds(0, 0, *self._manager.image_extent))
-        return bounds
+        return Bounds.restrict(bounds, Bounds(0, 0, *self._manager.image_extent))
 
     @property
     def parent_layer(self):
@@ -201,7 +204,7 @@ class Layer(QObject):
         bounds = bounds or self.bounds
         time_range = range(doc.playBackStartTime(), doc.playBackEndTime() + 1)
         return ImageCollection(
-            (fn(bounds, time) for time in time_range if self._node.hasKeyframeAtTime(time))
+            fn(bounds, time) for time in time_range if self._node.hasKeyframeAtTime(time)
         )
 
     def get_pixel_frames(self, bounds: Bounds | None = None):
@@ -480,8 +483,7 @@ class LayerManager(QObject):
         node = doc.createNode(name, "paintlayer")
         if img and bounds:
             node.setPixelData(img.data, *bounds)
-        layer = self._insert(node, parent, above, make_active)
-        return layer
+        return self._insert(node, parent, above, make_active)
 
     def _insert(
         self,
@@ -538,8 +540,8 @@ class LayerManager(QObject):
         layer.remove_later()
         return replacement
 
-    _image_types = [t.value for t in LayerType if t.is_image]
-    _mask_types = [t.value for t in LayerType if t.is_mask]
+    _image_types: ClassVar[list[str]] = [t.value for t in LayerType if t.is_image]
+    _mask_types: ClassVar[list[str]] = [t.value for t in LayerType if t.is_mask]
 
     @property
     def all(self) -> list[Layer]:

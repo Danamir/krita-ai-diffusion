@@ -1,42 +1,52 @@
 from __future__ import annotations
 
-from typing import Optional, cast
 from pathlib import Path
+from typing import cast
+
+from krita import Krita
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QPalette
 from PyQt5.QtWidgets import (
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
     QCheckBox,
-    QFrame,
-    QLabel,
-    QSpinBox,
-    QToolButton,
     QComboBox,
-    QWidget,
     QCompleter,
     QFileDialog,
-    QMessageBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QPalette, QColor
-from krita import Krita
 
 from ..client import filter_supported_styles, resolve_arch
-from ..resources import Arch, ResourceId, ResourceKind, search_paths
-from ..settings import Setting, ServerMode, settings
-from ..server import Server
-from ..files import File, FileFilter, FileSource, FileFormat
-from ..style import Style, Styles, StyleSettings, SamplerPresets
+from ..files import File, FileFilter, FileFormat, FileSource
 from ..localization import translate as _
+from ..resources import Arch, ResourceId, ResourceKind, search_paths
 from ..root import root
-from .settings_widgets import ExpanderButton, SpinBoxSetting, SliderSetting, SwitchSetting
-from .settings_widgets import ComboBoxSetting, TextSetting, LineEditSetting, SettingWidget
-from .settings_widgets import SettingsTab, WarningIcon
-from .widget import create_framed_label
-from .theme import SignalBlocker, add_header, icon
-from .switch import SwitchWidget
+from ..server import Server
+from ..settings import ServerMode, Setting, settings
+from ..style import SamplerPresets, Style, Styles, StyleSettings
 from . import theme
+from .settings_widgets import (
+    ComboBoxSetting,
+    ExpanderButton,
+    LineEditSetting,
+    SettingsTab,
+    SettingWidget,
+    SliderSetting,
+    SpinBoxSetting,
+    SwitchSetting,
+    TextSetting,
+    WarningIcon,
+)
+from .switch import SwitchWidget
+from .theme import SignalBlocker, add_header, icon
+from .widget import create_framed_label
 
 
 class LoraItem(QWidget):
@@ -49,6 +59,7 @@ class LoraItem(QWidget):
 
         self._loras = loras
         self._current: File | None = None
+        self._is_active = True
 
         completer = QCompleter(self._loras)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -240,15 +251,18 @@ class LoraItem(QWidget):
     @property
     def value(self):
         if self._current is None:
-            return dict(name="", strength=1.0, enabled=True)
-        return dict(
-            name=self._current.id, strength=self.strength, enabled=self._enabled.isChecked()
-        )
+            return {"name": "", "strength": 1.0, "enabled": True}
+        return {
+            "name": self._current.id,
+            "strength": self.strength,
+            "enabled": self._enabled.isChecked(),
+        }
 
     @value.setter
     def value(self, v: dict):
         new_value = root.files.loras.find(v["name"]) or File.remote(v["name"])
-        if self._current is None or new_value.id != self._current.id:
+        ui_name = self._select.currentText()
+        if self._current is None or new_value.id != self._current.id or ui_name != new_value.name:
             self._current = new_value
             index = self._select.findData(new_value.id)
             if index >= 0:
@@ -258,6 +272,16 @@ class LoraItem(QWidget):
         self.strength = v["strength"]
         self._enabled.setChecked(v.get("enabled", True))
         self._update()
+
+    @property
+    def is_active(self):
+        """False if item is kept alive for reuse but not displayed."""
+        return self._is_active
+
+    @is_active.setter
+    def is_active(self, value: bool):
+        self._is_active = value
+        self.setVisible(value)  # isVisible() can be False depending on UI state, even if active
 
     def start_apply_filter(self):
         self._select.blockSignals(True)
@@ -306,7 +330,7 @@ _special_lora_warning = _(
 class LoraList(QWidget):
     value_changed = pyqtSignal()
 
-    open_folder_button: Optional[QToolButton] = None
+    open_folder_button: QToolButton | None = None
     last_filter = "All"
 
     def __init__(self, setting: Setting, parent=None):
@@ -366,9 +390,9 @@ class LoraList(QWidget):
     def _add_item(self, lora: dict | File | None = None):
         assert self._item_list is not None
         for i in self._items:
-            if not i.isVisible():
+            if not i.is_active:
                 item = i  # reuse existing item to avoid cost of creating new ones
-                item.setVisible(True)
+                item.is_active = True
                 break
         else:
             item = LoraItem(self._loras, parent=self)
@@ -379,7 +403,7 @@ class LoraList(QWidget):
         if isinstance(lora, dict):
             item.value = lora
         elif isinstance(lora, File):
-            item.value = dict(name=lora.id, strength=1.0)
+            item.value = {"name": lora.id, "strength": 1.0}
         else:
             item.reset()
         self._item_list.addWidget(item)
@@ -387,7 +411,7 @@ class LoraList(QWidget):
 
     def _remove_item(self, item: QWidget):
         # removing and creating items is slow, hiding allows reuse
-        item.setVisible(False)
+        item.is_active = False
         self._item_list.removeWidget(item)
         self.value_changed.emit()
 
@@ -443,10 +467,10 @@ class LoraList(QWidget):
 
     @property
     def value(self):
-        return [item.value for item in self._items if item.isVisible()]
+        return [item.value for item in self._items if item.is_active]
 
     @value.setter
-    def value(self, v):
+    def value(self, v: list[dict | File]):
         for item in self._items:
             self._remove_item(item)
         for lora in v:
@@ -839,7 +863,7 @@ class StylePresets(SettingsTab):
 
     def _show_edit_style(self, style: Style):
         arch = resolve_arch(style, root.connection.client_if_connected)
-        self._edit_style.visible = not arch.is_edit
+        self._edit_style.visible = not arch.supports_edit
 
     def _setup_edit_style(self):
         client = root.connection.client_if_connected
@@ -847,7 +871,7 @@ class StylePresets(SettingsTab):
         edit_styles.extend(
             (s.name, s.filename)
             for s in filter_supported_styles(Styles.list(), client)
-            if s != self.current_style and resolve_arch(s, client).is_edit
+            if s != self.current_style and resolve_arch(s, client).supports_edit
         )
         self._edit_style.set_items(edit_styles)
 

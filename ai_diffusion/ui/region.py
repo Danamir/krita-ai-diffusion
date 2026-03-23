@@ -1,30 +1,33 @@
 from __future__ import annotations
-from enum import Enum
-from PyQt5.QtWidgets import QWidget, QLabel, QToolButton, QHBoxLayout, QVBoxLayout, QFrame, QMenu
-from PyQt5.QtGui import (
-    QGuiApplication,
-    QMouseEvent,
-    QResizeEvent,
-    QPixmap,
-    QImage,
-    QPainter,
-    QIcon,
-    QFontMetrics,
-)
-from PyQt5.QtCore import QObject, QEvent, Qt, QMetaObject, QPoint, QSize, pyqtSignal
 
-from ..root import root
+from enum import Enum
+from functools import partial
+
+from PyQt5.QtCore import QEvent, QMetaObject, QObject, QPoint, QSize, Qt, pyqtSignal
+from PyQt5.QtGui import (
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+)
+from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QMenu, QToolButton, QVBoxLayout, QWidget
+
 from ..client import Client
-from ..image import Bounds
-from ..properties import Binding, bind
 from ..document import LayerType
-from ..region import Region, RootRegion, RegionLink, translate_prompt
+from ..image import Bounds
 from ..localization import translate as _
+from ..properties import Binding, bind
+from ..region import Region, RegionLink, RootRegion, translate_prompt
+from ..root import root
 from ..util import ensure
-from .control import ControlListWidget
-from .widget import TextPromptWidget
-from .settings import settings
 from . import theme
+from .control import ControlListWidget
+from .settings import settings
+from .widget import TextPromptWidget
 
 
 class InactiveRegionWidget(QFrame):
@@ -329,12 +332,12 @@ class ActiveRegionWidget(QFrame):
                 if len(name) > 20:
                     name = name[:17] + "..."
 
-                def link():
-                    region.link(active_layer)
-                    self.region = region
+                def link(r: Region):
+                    r.link(active_layer)
+                    self.region = r
 
                 action = ensure(menu.addAction(name))
-                action.triggered.connect(link)
+                action.triggered.connect(partial(link, region))
 
         pos = self._link_region_button.rect().bottomLeft()
         menu.exec_(self._link_region_button.mapToGlobal(pos))
@@ -355,7 +358,7 @@ class ActiveRegionWidget(QFrame):
         return settings.show_negative_prompt and isinstance(self._region, RootRegion)
 
     def update_settings(self, key: str, value):
-        if key == "prompt_line_count" or key == "prompt_line_count_live":
+        if key in {"prompt_line_count", "prompt_line_count_live"}:
             self._update_prompt_widgets()
         elif key == "show_negative_prompt":
             self.negative.text = ""
@@ -400,9 +403,8 @@ class ActiveRegionWidget(QFrame):
             self._language_button.setText(lang.upper())
             if enabled:
                 text = self._lang_help_enabled
-                if client := root.connection.client_if_connected:
-                    if client.features.translation:
-                        text += "\n" + self._lang_help_translate
+                if (client := root.connection.client_if_connected) and client.features.translation:
+                    text += "\n" + self._lang_help_translate
             else:
                 text = self._lang_help_disabled
             self._language_button.setToolTip(text)

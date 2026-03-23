@@ -1,46 +1,62 @@
 from __future__ import annotations
-from krita import Krita
 
-from typing import Optional
+from krita import Krita
+from PyQt5.QtCore import QMetaObject, QSize, Qt, QUrl, pyqtSignal
+from PyQt5.QtGui import (
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QFontDatabase,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+)
 from PyQt5.QtWidgets import (
-    QVBoxLayout,
-    QHBoxLayout,
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QPushButton,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QLineEdit,
+    QMessageBox,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
-    QComboBox,
-    QWidget,
-    QMessageBox,
-    QCheckBox,
     QStyle,
     QStyleOption,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QMetaObject, QSize, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QGuiApplication, QCursor, QFontMetrics, QPainter, QColor
 
-from ..client import Client, User, MissingResources
+from .. import __version__, eventloop, resources, util
+from ..client import Client, MissingResources, User
 from ..cloud_client import CloudClient
-from ..resources import Arch, ResourceId
-from ..settings import Settings, ServerMode, PerformancePreset, settings, ImageFileFormat
-from ..server import Server, ServerState
-from ..style import Style
-from ..root import root
 from ..connection import ConnectionState, apply_performance_preset
-from ..updates import UpdateState
+from ..localization import Localization
+from ..localization import translate as _
 from ..properties import Binding
-from ..localization import Localization, translate as _
-from .. import resources, eventloop, util, __version__
+from ..resources import Arch, ResourceId
+from ..root import collect_diagnostics, root
+from ..server import Server, ServerState
+from ..settings import ImageFileFormat, PerformancePreset, ServerMode, Settings, settings
+from ..style import Style
+from ..updates import UpdateState
 from .server import ServerWidget
-from .settings_widgets import SpinBoxSetting, SliderSetting, SwitchSetting, TextSetting
-from .settings_widgets import SettingsTab, ComboBoxSetting, FileListSetting
+from .settings_widgets import (
+    ComboBoxSetting,
+    FileListSetting,
+    SettingsTab,
+    SliderSetting,
+    SpinBoxSetting,
+    SwitchSetting,
+    TextSetting,
+)
 from .style import StylePresets
-from .theme import add_header, logo, red, yellow, green, grey
+from .theme import add_header, green, grey, logo, red, yellow
 
 
 class InitialSetupWidget(QWidget):
@@ -337,7 +353,7 @@ class ServerModeButton(QPushButton):
 
         font = QFontMetrics(self.font())
         self._text_width = font.horizontalAdvance(self._text)
-        max_width = max((font.horizontalAdvance(s[0]) for s in _server_mode_status.values()))
+        max_width = max(font.horizontalAdvance(s[0]) for s in _server_mode_status.values())
         self.setMinimumWidth(self._text_width + max_width + 32)
         self.setFixedHeight(int(1.3 * self.sizeHint().height()))
 
@@ -612,9 +628,7 @@ class ConnectionSettings(SettingsTab):
             text = (
                 _("The following ComfyUI custom nodes are missing or too old")
                 + ":<ul>"
-                + "\n".join(
-                    (f"<li>{p.name} <a href='{p.url}'>{p.url}</a></li>" for p in res.missing)
-                )
+                + "\n".join(f"<li>{p.name} <a href='{p.url}'>{p.url}</a></li>" for p in res.missing)
                 + "</ul>"
                 + _(
                     "Please install or update the custom node package, then restart the server and try again."
@@ -627,7 +641,7 @@ class ConnectionSettings(SettingsTab):
             basic = util.unique(basic, key=lambda m: m.string)
             if len(basic) > 0:
                 text = _("Missing common models (required)") + ":\n<ul>"
-                text += "\n".join((f"<li>{model_name(m, True)}</li>" for m in basic))
+                text += "\n".join(f"<li>{model_name(m, True)}</li>" for m in basic)
                 text += "</ul>"
             text += _("Detected base models:") + "\n<ul>"
             for arch, missing in res.missing.items():
@@ -666,6 +680,7 @@ class DiffusionSettings(SettingsTab):
         self.add("selection_feather", SliderSetting(S._selection_feather, self, 0, 25, "{} %"))
         self.add("selection_blend", SliderSetting(S._selection_blend, self, 0, 100, "{} px"))
         self.add("selection_padding", SliderSetting(S._selection_padding, self, 0, 25, "{} %"))
+        self.add("color_match", SwitchSetting(S._color_match, parent=self))
         self.add("nsfw_filter", ComboBoxSetting(S._nsfw_filter, parent=self))
 
         nsfw_settings = [(_("Disabled"), 0.0), (_("Basic"), 0.65), (_("Strict"), 0.8)]
@@ -706,6 +721,7 @@ class InterfaceSettings(SettingsTab):
             SwitchSetting(S._show_negative_prompt, (_("Show"), _("Hide")), self),
         )
         self.add("show_steps", SwitchSetting(S._show_steps, parent=self))
+        self.add("recent_styles_count", SpinBoxSetting(S._recent_styles_count, self, 0, 10))
 
         self.add("tag_files", FileListSetting(S._tag_files, files=self._tag_files(), parent=self))
         self._layout.addWidget(self._widgets["tag_files"].list_widget)
@@ -983,6 +999,18 @@ class AboutSettings(SettingsTab):
         self._update_button.setMinimumWidth(font_height * 6)
         self._update_button.clicked.connect(self._run_update)
 
+        sys_header = QLabel(_("System Information"), self)
+        sys_header.setFont(large)
+        sys_desc = QLabel(_("Please attach this information when reporting issues!"), self)
+        sys_desc.setFont(italic)
+        sys_button = QPushButton(_("Collect Diagnostics"), self)
+        sys_button.setMinimumWidth(font_height * 6)
+        sys_button.clicked.connect(self._collect_diagnostics)
+        anchor = _("View log files")
+        open_log_button = QLabel(f"<a href='file://{util.log_dir}'>{anchor}</a>", self)
+        open_log_button.setToolTip(str(util.log_dir))
+        open_log_button.linkActivated.connect(self._open_logs)
+
         doc_header = QLabel(_("Documentation and Support"), self)
         doc_header.setFont(large)
 
@@ -1010,6 +1038,11 @@ class AboutSettings(SettingsTab):
         update_layout.addWidget(self._update_button)
         update_layout.addStretch()
         self._layout.addLayout(update_layout)
+        self._layout.addSpacing(20)
+        self._layout.addWidget(sys_header)
+        self._layout.addWidget(sys_desc)
+        self._layout.addWidget(sys_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._layout.addWidget(open_log_button)
         self._layout.addSpacing(20)
         self._layout.addWidget(doc_header)
         self._layout.addSpacing(5)
@@ -1073,11 +1106,36 @@ class AboutSettings(SettingsTab):
     def _write(self):
         settings.auto_update = self._update_checkbox.isChecked()
 
+    def _collect_diagnostics(self):
+        diagnostics = collect_diagnostics()
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(diagnostics)
+
+        window = QDialog(self)
+        window.setWindowTitle(_("Diagnostics Information"))
+        layout = QVBoxLayout()
+        text = QTextEdit(window)
+        text.setReadOnly(True)
+        text.setText(diagnostics)
+        text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.SmallestReadableFont))
+        if clipboard is not None:
+            msg = _("System information has been copied to the clipboard.")
+            layout.addWidget(QLabel("✔️ " + msg))
+        layout.addSpacing(6)
+        layout.addWidget(text)
+        window.setLayout(layout)
+        window.resize(min(self.width(), 800), 640)
+        window.exec_()
+
+    def _open_logs(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(util.log_dir)))
+
 
 _links_text = """
 <a href='https://www.interstice.cloud'>Website</a><br><br>
 <a href='https://docs.interstice.cloud'>Handbook: Guides and Tips</a><br><br>
-<a href='https://github.com/Acly/krita-ai-diffusion'>GitHub</a><br><br>
+<a href='https://github.com/Acly/krita-ai-diffusion'>GitHub</a>
 """
 
 _contact_text = """
@@ -1091,7 +1149,7 @@ class SettingsDialog(QDialog):
     _instance = None
 
     @classmethod
-    def instance(cls) -> "SettingsDialog":
+    def instance(cls) -> SettingsDialog:
         assert cls._instance is not None
         return cls._instance
 
@@ -1181,7 +1239,7 @@ class SettingsDialog(QDialog):
         settings.save()
         self.read()
 
-    def show(self, style: Optional[Style] = None):
+    def show(self, style: Style | None = None):
         self.read()
         self.connection.update_ui()
         super().show()

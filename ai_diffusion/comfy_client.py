@@ -1,32 +1,58 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import struct
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from itertools import chain, product
 from time import time
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any
 
+from . import platform_tools, resources, util
 from .api import WorkflowInput
-from .client import Client, CheckpointInfo, ClientMessage, ClientEvent, DeviceInfo, ClientModels
-from .client import SharedWorkflow, TranslationPackage, ClientFeatures, ClientJobQueue, TextOutput
-from .client import JobInfoOutput, OutputBatchMode, Quantization, MissingResources
-from .client import filter_supported_styles, loras_to_upload
+from .client import (
+    CheckpointInfo,
+    Client,
+    ClientEvent,
+    ClientFeatures,
+    ClientJobQueue,
+    ClientMessage,
+    ClientModels,
+    DeviceInfo,
+    JobInfoOutput,
+    MissingResources,
+    OutputBatchMode,
+    Quantization,
+    ServerError,
+    SharedWorkflow,
+    TextOutput,
+    TranslationPackage,
+    filter_supported_styles,
+    loras_to_upload,
+)
 from .comfy_workflow import ComfyObjectInfo
 from .files import FileFormat
 from .image import Image, ImageCollection, Point
-from .network import RequestManager, NetworkError
-from .websockets.src import websockets
-from .style import Styles
-from .resources import ControlMode, ResourceId, ResourceKind, Arch
-from .resources import CustomNode, UpscalerName, resource_id
-from .settings import PerformanceSettings, settings
 from .localization import translate as _
-from .util import client_logger as log, parse_enum
+from .network import NetworkError, RequestManager
+from .resources import (
+    Arch,
+    ControlMode,
+    CustomNode,
+    ResourceId,
+    ResourceKind,
+    UpscalerName,
+    resource_id,
+)
+from .settings import PerformanceSettings, settings
+from .style import Styles
+from .util import client_logger as log
+from .util import parse_enum
+from .websockets.src import websockets
 from .workflow import create as create_workflow
-from . import platform_tools, resources, util
 
 if platform_tools.is_macos:
     import os
@@ -120,7 +146,7 @@ class ComfyClient(Client):
         self.models = ClientModels()
         self._requests = RequestManager()
         self._id = str(uuid.uuid4())
-        self._active_job: Optional[JobInfo] = None
+        self._active_job: JobInfo | None = None
         self._waiting_job = QueuedJob()
         self._features: ClientFeatures = ClientFeatures()
         self._supported_archs: dict[Arch, list[ResourceId]] = {}
@@ -148,8 +174,8 @@ class ComfyClient(Client):
             async with websockets.connect(f"{wsurl}/ws?clientId={client._id}", **wsargs):
                 pass
         except Exception as e:
-            msg = _("Could not establish websocket connection at") + f" {wsurl}: {str(e)}"
-            raise Exception(msg)
+            msg = _("Could not establish websocket connection at") + f" {wsurl}: {e!s}"
+            raise ServerError(msg)
 
         # Check custom nodes
         log.info("Checking for required custom nodes...")
@@ -296,9 +322,9 @@ class ComfyClient(Client):
             if result["prompt_id"] != job.id:
                 log.error(f"Prompt ID mismatch: {result['prompt_id']} != {job.id}")
                 raise ValueError("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!")
-        except Exception as e:
+        except Exception:
             self._waiting_job.clear()
-            raise e
+            raise
 
     async def _listen(self):
         url = websocket_url(self.url)
@@ -308,9 +334,9 @@ class ComfyClient(Client):
                 await self._subscribe_workflows()
                 await self._listen_websocket(websocket)
             except websockets.exceptions.ConnectionClosedError as e:
-                log.warning(f"Websocket connection closed: {str(e)}")
+                log.warning(f"Websocket connection closed: {e!s}")
             except OSError as e:
-                msg = _("Could not connect to websocket server at") + f"{url}: {str(e)}"
+                msg = _("Could not connect to websocket server at") + f"{url}: {e!s}"
                 await self._report(ClientEvent.error, "", error=msg)
             except asyncio.CancelledError:
                 await websocket.close()
@@ -424,12 +450,10 @@ class ComfyClient(Client):
         # Make sure changes to all queues are processed before suspending this
         # function, otherwise it may interfere with subsequent calls to enqueue.
         tasks = [self._post("queue", {"delete": list(job_ids)})]
-        if job := self._waiting_job.peek():
-            if job.id in job_ids:
-                self._waiting_job.clear()
+        if (job := self._waiting_job.peek()) and job.id in job_ids:
+            self._waiting_job.clear()
         self._queue.remove_if(lambda j: j.id in job_ids)
-        for id in job_ids:
-            tasks.append(self._report(ClientEvent.interrupted, id))
+        tasks.extend(self._report(ClientEvent.interrupted, id) for id in job_ids)
         await asyncio.gather(*tasks)
 
     async def disconnect(self):
@@ -462,7 +486,7 @@ class ComfyClient(Client):
             if offset < total:
                 log.warning(f"Timeout while inspecting models, received {offset}/{total} entries")
         except NetworkError as e:
-            log.error(f"Error while inspecting models in {folder_name}: {str(e)}")
+            log.error(f"Error while inspecting models in {folder_name}: {e!s}")
 
     @property
     def queued_count(self):
@@ -519,16 +543,16 @@ class ComfyClient(Client):
             data = await self._requests.download(f"{self.url}/api/etn/image/{id}", timeout=300)
             return Image.from_bytes(data)
         except Exception as e:
-            log.error(f"Error transferring result image {self.url}/api/etn/image/{id}: {str(e)}")
-            raise e
+            log.error(f"Error transferring result image {self.url}/api/etn/image/{id}: {e!s}")
+            raise
 
     async def upload_images(self, image_data: dict[str, bytes]):
         for id, data in image_data.items():
             try:
                 await self._put(f"api/etn/image/{id}", data)
             except Exception as e:
-                log.error(f"Error uploading image {id}: {str(e)}")
-                raise RuntimeError(f"Error uploading input image to ComfyUI: {str(e)}") from e
+                log.error(f"Error uploading image {id}: {e!s}")
+                raise RuntimeError(f"Error uploading input image to ComfyUI: {e!s}") from e
 
     async def _transfer_result_images(self, msg: dict) -> list[Image]:
         output = msg["data"]["output"]
@@ -546,20 +570,20 @@ class ComfyClient(Client):
         try:
             return await self._get(f"api/etn/translate/{lang}/{text}")
         except NetworkError as e:
-            log.error(f"Could not translate text: {str(e)}")
+            log.error(f"Could not translate text: {e!s}")
             return text
 
     async def _subscribe_workflows(self):
         try:
             await self._post("api/etn/workflow/subscribe", {"client_id": self._id})
         except Exception as e:
-            log.error(f"Couldn't subscribe to shared workflows: {str(e)}")
+            log.error(f"Couldn't subscribe to shared workflows: {e!s}")
 
     async def _unsubscribe_workflows(self):
         try:
             await self._post("api/etn/workflow/unsubscribe", {"client_id": self._id})
         except Exception as e:
-            log.error(f"Couldn't unsubscribe from shared workflows: {str(e)}")
+            log.error(f"Couldn't unsubscribe from shared workflows: {e!s}")
 
     @property
     def missing_resources(self):
@@ -592,7 +616,7 @@ class ComfyClient(Client):
 
                 await self.refresh()
             except Exception as e:
-                raise Exception(_("Error during upload of LoRA model") + f" {file.path}: {str(e)}")
+                raise ServerError(_("Error during upload of LoRA model") + f" {file.path}: {e!s}")
 
     async def _get_active_job(self, job_id: str):
         if self._active_job and self._active_job.id == job_id:
@@ -657,7 +681,7 @@ def websocket_url(url_http: str):
 
 
 def websocket_args(auth_token: str):
-    args: dict[str, Any] = dict(max_size=2**30, ping_timeout=60)
+    args: dict[str, Any] = {"max_size": 2**30, "ping_timeout": 60}
     if auth_token:
         args["extra_headers"] = {"Authorization": f"Bearer {auth_token}"}
     return args
@@ -836,7 +860,7 @@ def _ensure_supported_style(client: Client):
         if checkpoint is None:
             log.warning("No checkpoints found for any of the supported workloads!")
             if len(client.models.checkpoints) == 0:
-                raise Exception(_("No diffusion model checkpoints found"))
+                raise RuntimeError(_("No diffusion model checkpoints found"))
             return
         log.info(f"No supported styles found, creating default style with checkpoint {checkpoint}")
         default = next((s for s in Styles.list() if s.filename == "default.json"), None)
@@ -852,7 +876,7 @@ async def _list_languages(client: ComfyClient) -> list[TranslationPackage]:
         result = await client._get("api/etn/languages")
         return TranslationPackage.from_list(result)
     except NetworkError as e:
-        log.error(f"Could not list available languages for translation: {str(e)}")
+        log.error(f"Could not list available languages for translation: {e!s}")
         return []
 
 
@@ -872,7 +896,7 @@ def _extract_pose_json(msg: dict):
         if output is not None and "openpose_json" in output:
             return json.loads(output["openpose_json"][0])
     except Exception as e:
-        log.warning(f"Error processing message, error={str(e)}, msg={msg}")
+        log.warning(f"Error processing message, error={e!s}, msg={msg}")
     return None
 
 
@@ -896,7 +920,7 @@ def _extract_text_output(job_id: str, msg: dict):
                 result = TextOutput(key, name, text, mime)
                 return ClientMessage(ClientEvent.output, job_id, result=result)
     except Exception as e:
-        log.warning(f"Error processing message, error={str(e)}, msg={msg}")
+        log.warning(f"Error processing message, error={e!s}, msg={msg}")
     return None
 
 

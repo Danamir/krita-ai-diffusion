@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import os
 from asyncio import Future
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
-from PyQt5.QtCore import QByteArray, QUrl, QFile, QBuffer
-from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply, QSslError
+
+from PyQt5.QtCore import QBuffer, QByteArray, QFile, QUrl
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslError
 
 from .localization import translate as _
 from .util import client_logger as log
@@ -48,7 +50,7 @@ class NetworkError(Exception):
                     text = reply.readAll().data().decode("utf-8")
                     if text:
                         return NetworkError(code, f"{text} ({reply.errorString()})", url, status)
-                except Exception:
+                except Exception:  # noqa
                     pass
         if code == QNetworkReply.NetworkError.OperationCanceledError:
             return NetworkError(
@@ -97,7 +99,7 @@ class RequestManager:
         request.setAttribute(QNetworkRequest.FollowRedirectsAttribute, True)
         bearer_token = bearer or self._bearer_token
         if bearer_token:
-            request.setRawHeader(b"Authorization", f"Bearer {bearer_token}".encode("utf-8"))
+            request.setRawHeader(b"Authorization", f"Bearer {bearer_token}".encode())
         for key, value in self._additional_headers:
             request.setRawHeader(key, value)
         if timeout is not None:
@@ -262,7 +264,7 @@ class DownloadHelper:
         received = received_bytes / 10**6
         total = total_bytes / 10**6
         diff = received - self._received
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         speed = 0
         self._received = received
         self._total = max(self._total, total)
@@ -283,7 +285,7 @@ class DownloadHelper:
     def seconds_since_last_update(self):
         if self._time is None:
             return 0
-        return (datetime.now() - self._time).total_seconds()
+        return (datetime.now(timezone.utc) - self._time).total_seconds()
 
 
 def _write_file_chunks(file: QFile, reply: QNetworkReply):
@@ -296,7 +298,7 @@ def _write_file_chunks(file: QFile, reply: QNetworkReply):
 async def _try_download(network: QNetworkAccessManager, url: str, path: Path):
     out_file = QFile(str(path) + ".part")
     if not out_file.open(QFile.ReadWrite | QFile.Append):  # type: ignore
-        raise Exception(
+        raise RuntimeError(
             _("Error during download: could not open {path} for writing", path=out_file.fileName())
         )
 
@@ -304,7 +306,7 @@ async def _try_download(network: QNetworkAccessManager, url: str, path: Path):
     request.setAttribute(QNetworkRequest.FollowRedirectsAttribute, True)
     if out_file.size() > 0:
         log.info(f"Found {path}.part, resuming download from {out_file.size()} bytes")
-        request.setRawHeader(b"Range", f"bytes={out_file.size()}-".encode("utf-8"))
+        request.setRawHeader(b"Range", f"bytes={out_file.size()}-".encode())
     reply = network.get(request)
     assert reply is not None, f"Network request for {url} failed: reply is None"
 
@@ -374,12 +376,12 @@ async def download(network: QNetworkAccessManager, url: str, path: Path):
             ]:
                 log.warning(f"Download interrupted: {e}")
                 if retry == 1:
-                    raise e
+                    raise
                 await asyncio.sleep(1)
             else:
                 raise NetworkError(e.code, _("Failed to download") + f" {url}: {e.message}", url)
         except Exception as e:
-            raise Exception(_("Failed to download") + f" {url}: {e}") from e
+            raise RuntimeError(_("Failed to download") + f" {url}: {e}") from e
 
         log.info(f"Retrying download of {url}, {retry - 1} attempts left")
 

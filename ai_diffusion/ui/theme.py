@@ -1,15 +1,17 @@
 from __future__ import annotations
-from PyQt5.QtCore import Qt, QObject, QSize
-from PyQt5.QtGui import QGuiApplication, QPalette, QIcon, QPixmap, QFontMetrics
-from PyQt5.QtWidgets import QVBoxLayout, QLabel, QWidget
+
 from pathlib import Path
 
-from ..files import FileFormat
-from ..settings import Setting
-from ..style import Arch
+from PyQt5.QtCore import QObject, QSize, Qt
+from PyQt5.QtGui import QFontMetrics, QGuiApplication, QIcon, QPalette, QPixmap
+from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+
 from ..client import Client
+from ..files import FileFormat
 from ..localization import translate as _
 from ..platform_tools import is_windows
+from ..settings import Setting
+from ..style import Arch
 from ..util import client_logger as log
 
 _palette = QGuiApplication.palette()
@@ -19,8 +21,9 @@ base = _palette.color(QPalette.ColorRole.Base).name()
 green = "#30b030" if is_dark else "#209020"
 yellow = "#c0c030" if is_dark else "#706020"
 red = "#d07a40" if is_dark else "#c07630"
-grey = "#888" if is_dark else "#606060"
-highlight = "#8df" if is_dark else "#357"
+grey = "#888888" if is_dark else "#666666"
+highlight = "#80d0f0" if is_dark else "#335577"
+strong_highlight = "#70d0ff" if is_dark else "#2040ff"
 progress_alt = "#a16207" if is_dark else "#ca8a04"
 active = _palette.color(QPalette.ColorRole.Highlight).name()
 line = _palette.color(QPalette.ColorRole.Background).darker(120).name()
@@ -42,7 +45,7 @@ def icon(name: str):
     if not path.exists():
         path = path.with_suffix(".png")
     if not path.exists():
-        log.error(f"Icon {name} not found for them {theme}")
+        log.error(f"Icon {name} not found for theme {theme}")
         return QIcon()
     return QIcon(str(path))
 

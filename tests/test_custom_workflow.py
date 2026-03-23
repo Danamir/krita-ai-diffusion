@@ -1,31 +1,38 @@
 import json
 import zlib
-import pytest
+from collections.abc import Iterable
 from copy import copy
-from typing import Iterable
 from pathlib import Path
+
+import pytest
 from PyQt5.QtCore import Qt
 
-from ai_diffusion.api import CustomWorkflowInput, ImageInput, WorkflowInput
+from ai_diffusion import workflow
+from ai_diffusion.api import CustomStyleInput, CustomWorkflowInput, ImageInput, WorkflowInput
 from ai_diffusion.client import (
+    CheckpointInfo,
     Client,
     ClientModels,
-    CheckpointInfo,
     JobInfoOutput,
     OutputBatchMode,
     TextOutput,
 )
-from ai_diffusion.connection import Connection, ConnectionState
 from ai_diffusion.comfy_workflow import ComfyNode, ComfyObjectInfo, ComfyWorkflow, Output
-from ai_diffusion.custom_workflow import WorkflowSource, WorkflowCollection
-from ai_diffusion.custom_workflow import SortedWorkflows, CustomWorkspace
-from ai_diffusion.custom_workflow import CustomParam, ParamKind, workflow_parameters
-from ai_diffusion.image import Image, Extent, ImageCollection, Mask
-from ai_diffusion.jobs import JobQueue, Job, JobKind, JobParams
-from ai_diffusion.style import Style
+from ai_diffusion.connection import Connection, ConnectionState
+from ai_diffusion.custom_workflow import (
+    CustomParam,
+    CustomWorkspace,
+    ParamKind,
+    SortedWorkflows,
+    WorkflowCollection,
+    WorkflowSource,
+    workflow_parameters,
+)
+from ai_diffusion.image import Bounds, Extent, Image, ImageCollection, Mask
+from ai_diffusion.jobs import Job, JobKind, JobParams, JobQueue
 from ai_diffusion.resources import Arch
-from ai_diffusion.image import Bounds
-from ai_diffusion import workflow
+from ai_diffusion.style import Style
+from ai_diffusion.util import PluginError
 
 from .config import test_dir
 
@@ -193,7 +200,7 @@ def test_files(tmp_path: Path):
 
     bad_file = tmp_path / "bad.json"
     bad_file.write_text("bad json")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(PluginError):
         collection.import_file(bad_file)
 
 
@@ -242,6 +249,34 @@ def test_workspace():
     assert workspace.metadata[0].default == 24
     assert workspace.metadata[1].name == "param3"
     assert workspace.params == {"param2": 23, "param3": 7}
+
+
+def test_workspace_no_connection():
+    connection = create_mock_connection({}, state=ConnectionState.disconnected)
+    workflows = WorkflowCollection(connection)
+    jobs = JobQueue()
+    workspace = CustomWorkspace(workflows, dummy_generate, jobs)
+
+    doc_graph = {
+        "1": {
+            "class_type": "ETN_Parameter",
+            "inputs": {
+                "name": "param2",
+                "type": "number (integer)",
+                "default": 23,
+                "min": 5,
+                "max": 95,
+            },
+        }
+    }
+    # store embedded graph, but don't make it active yet (disconnected)
+    workspace.set_graph("unicorn", doc_graph, document_name="doc1")
+    assert workspace.workflow_id == "unicorn"
+
+    # connecting should trigger workflows.loaded and set the embedded workflow as active
+    # since a workflow named "unicorn" doesn't exist
+    connection.state = ConnectionState.connected
+    assert workspace.workflow_id == "Embedded Workflow (doc1)"
 
 
 def test_import():
@@ -467,8 +502,9 @@ def img_id(image: Image):
 
 def test_expand():
     ext = ComfyWorkflow()
-    in_img, width, height, seed = ext.add("ETN_KritaCanvas", 4)
-    scaled = ext.add("ImageScale", 1, image=in_img, width=width, height=height)
+    in_img, width, height, seed, in_mask = ext.add("ETN_KritaCanvas", 5)  # type: ignore
+    rgba = ext.apply_mask(in_img, in_mask)
+    scaled = ext.add("ImageScale", 1, image=rgba, width=width, height=height)
     ext.add("ETN_KritaOutput", 1, images=scaled)
     inty = ext.add(
         "ETN_Parameter", 1, name="inty", type="number (integer)", default=4, min=0, max=10
@@ -479,7 +515,7 @@ def test_expand():
     choicy = ext.add("ETN_Parameter", 1, name="choicy", type="choice", default="c")
     layer_img = ext.add("ETN_KritaImageLayer", 1, name="layer_img")
     layer_mask = ext.add("ETN_KritaMaskLayer", 1, name="layer_mask")
-    stylie = ext.add("ETN_KritaStyle", 9, name="style", sampler_preset="live")  # type: ignore
+    stylie = ext.add("ETN_KritaStyle", 9, name="style", sampler_preset="auto")  # type: ignore
     ext.add(
         "Sink",
         1,
@@ -506,6 +542,19 @@ def test_expand():
     style.checkpoints = ["checkpoint.safetensors"]
     style.style_prompt = "bee hive"
     style.negative_prompt = "pigoon"
+
+    models = ClientModels()
+    models.checkpoints = {
+        "checkpoint.safetensors": CheckpointInfo("checkpoint.safetensors", Arch.sd15)
+    }
+
+    style_input = CustomStyleInput(
+        models=style.get_models(models.checkpoints),
+        sampling=workflow.sampling_from_style(style, 1.0, False),
+        positive_prompt=style.style_prompt,
+        negative_prompt=style.negative_prompt,
+    )
+
     params = {
         "inty": 7,
         "numby": 3.4,
@@ -514,30 +563,26 @@ def test_expand():
         "choicy": "b",
         "layer_img": Image.create(Extent(4, 4), Qt.GlobalColor.black),
         "layer_mask": Image.create(Extent(4, 4), Qt.GlobalColor.white),
-        "style": style,
+        "style": style_input,
     }
 
     input = CustomWorkflowInput(workflow=ext.root, params=params)
     images = ImageInput.from_extent(Extent(4, 4))
     images.initial_image = Image.create(Extent(4, 4), Qt.GlobalColor.red)
 
-    models = ClientModels()
-    models.checkpoints = {
-        "checkpoint.safetensors": CheckpointInfo("checkpoint.safetensors", Arch.sd15)
-    }
-
     w = ComfyWorkflow()
     w = workflow.expand_custom(w, input, images, Bounds(0, 0, 4, 4), 123, models)
 
     expected = [
         ComfyNode(1, "ETN_LoadImageCache", {"id": img_id(images.initial_image)}),
-        ComfyNode(2, "ImageScale", {"image": Output(1, 0), "width": 4, "height": 4}),
-        ComfyNode(3, "ETN_KritaOutput", {"images": Output(2, 0)}),
-        ComfyNode(4, "ETN_LoadImageCache", {"id": img_id(params["layer_img"])}),
-        ComfyNode(5, "ETN_LoadImageCache", {"id": img_id(params["layer_mask"])}),
-        ComfyNode(6, "CheckpointLoaderSimple", {"ckpt_name": "checkpoint.safetensors"}),
+        ComfyNode(2, "ETN_ApplyMaskToImage", {"image": Output(1, 0), "mask": Output(1, 1)}),
+        ComfyNode(3, "ImageScale", {"image": Output(2, 0), "width": 4, "height": 4}),
+        ComfyNode(4, "ETN_KritaOutput", {"images": Output(3, 0)}),
+        ComfyNode(5, "ETN_LoadImageCache", {"id": img_id(params["layer_img"])}),
+        ComfyNode(6, "ETN_LoadImageCache", {"id": img_id(params["layer_mask"])}),
+        ComfyNode(7, "CheckpointLoaderSimple", {"ckpt_name": "checkpoint.safetensors"}),
         ComfyNode(
-            7,
+            8,
             "Sink",
             {
                 "seed": 123,
@@ -546,17 +591,17 @@ def test_expand():
                 "texty": "cat",
                 "booly": False,
                 "choicy": "b",
-                "layer_img": Output(4, 0),
-                "layer_mask": Output(5, 1),
-                "model": Output(6, 0),
-                "clip": Output(6, 1),
-                "vae": Output(6, 2),
+                "layer_img": Output(5, 0),
+                "layer_mask": Output(6, 1),
+                "model": Output(7, 0),
+                "clip": Output(7, 1),
+                "vae": Output(7, 2),
                 "positive": "bee hive",
                 "negative": "pigoon",
-                "sampler": "euler",
-                "scheduler": "sgm_uniform",
-                "steps": 6,
-                "guidance": 1.8,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+                "steps": 20,
+                "guidance": 7.0,
             },
         ),
     ]
@@ -623,7 +668,7 @@ def test_expand_selection():
     select, select_active, off_x, off_y = ext.add(
         "ETN_KritaSelection", 4, context="automatic", padding=2
     )
-    canvas, width, height, seed = ext.add("ETN_KritaCanvas", 4)
+    canvas, width, height, _seed = ext.add("ETN_KritaCanvas", 4)
     ext.add(
         "Sink",
         1,
