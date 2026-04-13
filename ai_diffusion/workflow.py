@@ -1189,7 +1189,7 @@ def inpaint(
         cropped_extent = ScaledExtent(
             desired_extent, desired_extent, desired_extent, target_bounds.extent
         )
-        out_image = vae_decode(w, vae, out_latent, checkpoint.tiled_vae or desired_extent.width * desired_extent.height > 3e6)
+        out_image = vae_decode(w, vae, out_latent, checkpoint.tiled_vae or force_tiled_vae(desired_extent))
         out_image = w.color_match(out_image, in_image, inpaint_mask, misc.color_match)
         out_image = scale(
             extent.initial, extent.desired, extent.refinement_scaling, w, out_image, models
@@ -1202,6 +1202,22 @@ def inpaint(
     out_masked = w.apply_mask(out_image, compositing_mask)
     w.send_image(out_masked)
     return w
+
+
+def force_tiled_vae(extent: ScaledExtent | Extent):
+    if extent is None:
+        return False
+
+    # Bypass force tiled vae
+    return False
+
+    # Old values for low VRAM
+    if isinstance(extent, ScaledExtent):
+        return extent.desired.width * extent.desired.height > 3e6
+    elif isinstance(extent, Extent):
+        return extent.width * extent.height > 3e6
+
+    return False
 
 
 def refine(
@@ -1233,7 +1249,7 @@ def refine(
     sampler_params = _sampler_params(sampling, extent.desired, arch=models.arch)
     sampler = w.sampler_custom_advanced(model, prompt, latent_batch, models.arch, **sampler_params)
     sampler = pack_latent_layers(w, sampler, misc)
-    out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae or extent.desired.width * extent.desired.height > 3e6)
+    out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae or force_tiled_vae(extent))
     out_image = w.nsfw_filter(out_image, sensitivity=misc.nsfw_filter)
     out_image = scale_to_target(extent, w, out_image, models)
     w.send_image(out_image)
