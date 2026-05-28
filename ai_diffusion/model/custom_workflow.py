@@ -20,23 +20,23 @@ from PyQt5.QtCore import (
     pyqtSignal,
 )
 
-from . import eventloop
-from .api import CustomStyleInput, InpaintContext, WorkflowInput
-from .client import ClientModels, ClientOutput, JobInfoOutput, OutputBatchMode, TextOutput
-from .comfy_workflow import ComfyNode, ComfyWorkflow
+from .. import eventloop
+from ..backend.api import CustomStyleInput, InpaintContext, WorkflowInput
+from ..backend.client import ClientModels, ClientOutput, JobInfoOutput, OutputBatchMode, TextOutput
+from ..backend.comfy_workflow import ComfyNode, ComfyWorkflow
+from ..backend.workflow import sampling_from_style
+from ..image import Bounds, Image, Mask
+from ..localization import translate as _
+from ..style import Styles
+from ..ui import theme
+from ..util import PluginError, base_type_match, parse_enum, user_data_dir
+from ..util import client_logger as log
 from .connection import Connection, ConnectionState
-from .image import Bounds, Image, Mask
 from .jobs import Job, JobKind, JobParams, JobQueue
-from .localization import translate as _
 from .properties import ObservableProperties, Property
-from .style import Styles
-from .ui import theme
-from .util import PluginError, base_type_match, parse_enum, user_data_dir
-from .util import client_logger as log
-from .workflow import sampling_from_style
 
 if TYPE_CHECKING:
-    from .layer import LayerManager
+    from ..layer import LayerManager
 
 
 class WorkflowSource(Enum):
@@ -372,6 +372,12 @@ def _get_choices(w: ComfyWorkflow, node: ComfyNode):
     return None
 
 
+def get_inpaint_context(node: ComfyNode):
+    assert node.type == "ETN_KritaSelection"
+    ctx = node.input("context", "entire_image").replace(" ", "_")
+    return parse_enum(InpaintContext, ctx)
+
+
 ImageGenerator = Callable[[WorkflowInput | None], Awaitable[None | Literal[False] | WorkflowInput]]
 
 
@@ -603,18 +609,17 @@ class CustomWorkspace(QObject, ObservableProperties):
         mask_bounds: Bounds | None,
         canvas_bounds: Bounds,
     ):
-        ctx = selection_node.input("context", "entire_image").replace(" ", "_")
         pad = selection_node.input("padding", 0)
         if mask and mask_bounds:
-            match parse_enum(InpaintContext, ctx):
+            match get_inpaint_context(selection_node):
                 case InpaintContext.entire_image:
                     bounds = canvas_bounds
                 case InpaintContext.automatic:
                     bounds = Bounds.pad(mask.bounds, pad)
                 case InpaintContext.mask_bounds:
-                    bounds = Bounds.pad(mask_bounds, pad)
-                case _:
-                    raise ValueError(f"Invalid inpaint context: {ctx}")
+                    bounds = Bounds.pad(mask_bounds, pad, multiple=1)
+                case other:
+                    raise ValueError(f"Invalid inpaint context: {other}")
             bounds = Bounds.clamp(bounds, canvas_bounds.extent)
             mask.bounds = mask.bounds.relative_to(bounds)
             return mask, bounds
