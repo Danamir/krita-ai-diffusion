@@ -1126,7 +1126,11 @@ def inpaint(
         w, model, prompt, cond_base.all_control, extent.initial, vae, models
     )
 
-    if params.use_inpaint_model and models.arch is Arch.sdxl:
+    if models.arch is Arch.anima:
+        latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
+        latent = w.set_latent_noise_mask(latent, inpaint_mask)
+        inpaint_model = w.anima_lllite_apply(model, in_image, inpaint_mask)
+    elif params.use_inpaint_model and models.arch is Arch.sdxl:
         prompt, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
             vae, in_image, inpaint_mask, prompt
         )

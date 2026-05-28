@@ -1590,6 +1590,20 @@ class ComfyWorkflow:
             set_cond_area="default",
         )
 
+    def anima_lllite_apply(self, model, in_image, inpaint_mask):
+        return self.add(
+            "AnimaLLLiteApply",
+            1,
+            model=model,
+            image=in_image,
+            mask=inpaint_mask,
+            lllite_name="LLLite\\anima-lllite-inpainting-v2.safetensors",
+            strength=1.0,
+            start_percent=0.0,
+            end_percent=1.0,
+            preserve_wrapper=True,
+        )
+
 
 # Node descriptions available to the ComfyUI server from /object_info query
 class ComfyObjectInfo:
