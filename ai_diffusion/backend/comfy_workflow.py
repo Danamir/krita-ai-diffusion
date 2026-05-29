@@ -397,7 +397,7 @@ class ComfyWorkflow:
         self.sample_count += steps - start_at_step
 
         if two_pass and arch.supports_split_rendering:
-            from .settings import settings
+            from ..settings import settings
             first_pass_settings = settings.first_pass_settings(arch)
 
             first_pass_sampler = first_pass_settings.sampler or sampler
@@ -646,7 +646,7 @@ class ComfyWorkflow:
             vae_name = "ae.sft"
 
             # UNET loading
-            from .util import client_logger as log
+            from ..util import client_logger as log
             unet_name = checkpoint
             for separator in ("/", "\\"):
                 if separator in checkpoint:
