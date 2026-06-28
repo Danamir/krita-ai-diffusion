@@ -35,6 +35,8 @@ flat_combo_stylesheet = f"""
     QComboBox QAbstractItemView {{ selection-color: {highlight}; }}
 """
 
+prompt_max_line_count = 40
+
 copy_to_clipboard_string = _("Copy to clipboard")  # keeping translations for future use
 
 icon_path = Path(__file__).parent.parent / "icons"
@@ -86,6 +88,8 @@ def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client
         return icon("sd-version-anima")
     elif arch is Arch.ernie:
         return icon("sd-version-ernie")
+    elif arch is Arch.krea2:
+        return icon("sd-version-krea2")
     else:
         log.warning(f"Unresolved SD version {arch}, cannot fetch icon")
         return icon("warning")

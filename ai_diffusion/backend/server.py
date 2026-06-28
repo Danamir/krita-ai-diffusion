@@ -22,8 +22,8 @@ from ..platform_tools import (
     determine_system_encoding,
     gpu_is_pascal_or_older,
     is_linux,
-    is_macos,
     is_windows,
+    platform_id,
 )
 from ..settings import ServerBackend, settings
 from ..util import client_logger as log
@@ -41,9 +41,7 @@ from .resources import (
 
 _exe = ".exe" if is_windows else ""
 
-torch_version = "2.8.0" if is_linux else "2.9.1"
-torchvision_version = "0.23.0" if is_linux else "0.24.1"
-nunchaku_version = ("1.2.0", "torch2.8") if is_linux else ("1.2.0", "torch2.9")
+nunchaku_version = ("1.2.1", "cu12.8torch2.11")
 
 
 class ServerState(Enum):
@@ -126,7 +124,12 @@ class Server:
         if python_path is not None:
             self._python_cmd = python_path / f"python{_exe}"
 
-        gpu_backends = [ServerBackend.cuda, ServerBackend.directml, ServerBackend.xpu]
+        gpu_backends = [
+            ServerBackend.cuda,
+            ServerBackend.directml,
+            ServerBackend.xpu,
+            ServerBackend.rocm,
+        ]
         backend_mismatch = (
             self._installed_backend is not None
             and self._installed_backend != self.backend
@@ -176,20 +179,21 @@ class Server:
     async def _install(self, cb: InternalCB):
         self.state = ServerState.installing
         cb("Installing", f"Installation started in {self.path}")
+        if self.backend is ServerBackend.directml:
+            raise RuntimeError("DirectML is obsolete and can no longer be installed.")
 
         network = QNetworkAccessManager()
         self._cache_dir = self.path / ".cache"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._version_file.write_text("incomplete")
 
-        has_venv = (self.path / "venv").exists()
-        has_uv = self._uv_cmd is not None
-        if not any((has_venv, has_uv)):
+        if self._uv_cmd is None:
             await try_install(self.path / "uv", self._install_uv, network, cb)
 
-        if self.comfy_dir is None or not has_venv:
+        if self.comfy_dir is None:
             python_dir = self.path / "venv"
             await install_if_missing(python_dir, self._create_venv, cb)
+
         assert self._python_cmd is not None
         await self._log_python_version()
         await determine_system_encoding(str(self._python_cmd), log)
@@ -274,27 +278,17 @@ class Server:
         await _extract_archive("ComfyUI", archive_path, comfy_dir.parent, cb)
         temp_comfy_dir = comfy_dir.parent / f"ComfyUI-{resources.comfy_version}"
 
-        torch_args = [
-            f"torch=={torch_version}",
-            f"torchvision=={torchvision_version}",
-            f"torchaudio=={torch_version}",
-        ]
-        if is_macos:  # specific versions sometimes don't work (?)
-            torch_args = ["torch", "torchvision", "torchaudio"]
-        elif self.backend is ServerBackend.cpu:
-            torch_args += ["--index-url", "https://download.pytorch.org/whl/cpu"]
-        elif self.backend is ServerBackend.cuda:
-            cuda_version = "cu128" if not gpu_is_pascal_or_older() else "cu126"
-            torch_args += ["--index-url", f"https://download.pytorch.org/whl/{cuda_version}"]
-        elif self.backend is ServerBackend.directml:
-            torch_args = ["numpy<2", "torch-directml", "torchvision", "torchaudio"]
-        elif self.backend is ServerBackend.xpu:
-            torch_args += ["--index-url", "https://download.pytorch.org/whl/xpu"]
-        await self._pip_install("PyTorch", ["-U"] + torch_args, cb)
+        req_dir = Path(__file__).parent / "requirements"
+        backend_id = self.backend.name
+        if self.backend is ServerBackend.cuda and gpu_is_pascal_or_older():
+            backend_id = "cuda126"
 
-        requirements_txt = Path(__file__).parent / "server_requirements.txt"
-        await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
+        requirements_txt = req_dir / f"{platform_id}-{backend_id}.txt"
+        await self._pip_install(
+            "ComfyUI", ["-r", str(requirements_txt), "--index-strategy", "unsafe-best-match"], cb
+        )
 
+        # Install ComfyUI version-specific dependencies like frontend/assets/templates
         requirements_txt = temp_comfy_dir / "requirements.txt"
         await self._pip_install("ComfyUI", ["-r", str(requirements_txt)], cb)
 
@@ -451,6 +445,7 @@ class Server:
 
         try:
             _clean_embedded_python(self.path, callback)
+            _clean_system_venv(self.path, self._uv_cmd, callback)
             await self.install(callback)
         except Exception as e:
             if upgrade_comfy_dir.exists():
@@ -1070,3 +1065,18 @@ def _clean_embedded_python(server_dir: Path, cb: Callback):
             remove_subdir(emb_path, origin=server_dir)
         except Exception as e:
             log.error(f"Could not remove embedded Python at {emb_path}: {e!s}")
+
+
+def _clean_system_venv(server_dir: Path, uv_cmd: Path | None, cb: Callback):
+    # Old installations used system Python + pip to create the venv.
+    # Current requirements files use uv-specific features (--extra-index-url,
+    # --index-strategy), so raw pip installation is broken.
+    # If uv is not available, remove the old venv to trigger a fresh install.
+    has_venv = (server_dir / "venv").exists()
+    if has_venv and uv_cmd is None:
+        cb(InstallationProgress("Upgrading", message="Removing old Python venv..."))
+        log.warning(f"Removing old system Python venv at {server_dir / 'venv'} (uv not available)")
+        try:
+            remove_subdir(server_dir / "venv", origin=server_dir)
+        except Exception as e:
+            log.error(f"Could not remove old Python venv at {server_dir / 'venv'}: {e!s}")

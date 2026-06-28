@@ -57,7 +57,7 @@ from .settings_widgets import (
     TextSetting,
 )
 from .style import StylePresets
-from .theme import add_header, green, grey, logo, red, yellow
+from .theme import add_header, green, grey, logo, prompt_max_line_count, red, yellow
 
 
 class InitialSetupWidget(QWidget):
@@ -718,7 +718,10 @@ class InterfaceSettings(SettingsTab):
         S = Settings
         self.add("language", ComboBoxSetting(S._language, parent=self))
         self.add("prompt_translation", ComboBoxSetting(S._prompt_translation, parent=self))
-        self.add("prompt_line_count", SpinBoxSetting(S._prompt_line_count, self, 1, 10))
+        self.add(
+            "prompt_line_count",
+            SpinBoxSetting(S._prompt_line_count, self, 1, prompt_max_line_count),
+        )
         self.add(
             "show_negative_prompt",
             SwitchSetting(S._show_negative_prompt, (_("Show"), _("Hide")), self),
