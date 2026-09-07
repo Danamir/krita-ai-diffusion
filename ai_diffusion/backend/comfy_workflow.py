@@ -664,14 +664,6 @@ class ComfyWorkflow:
                 model_output = self.add("UnetLoaderGGUF", 1, unet_name=unet_name)
             elif "nf4" in unet_name:
                 model_output = self.add("UNETLoaderNF4", 1, unet_name=unet_name)
-            elif "int8" in unet_name:
-                return self.add(
-                    "OTUNetLoaderW8A8",
-                    1,
-                    unet_name=unet_name,
-                    weight_dtype="default",
-                    model_type=self._model_type_from_filename(unet_name)
-                )
             else:
                 model_output = self.add("UNETLoader", 1, unet_name=unet_name)
 
@@ -695,14 +687,7 @@ class ComfyWorkflow:
             return self.add_cached("UnetLoaderGGUF", 1, unet_name=model_name)
         elif "nf4" in model_name:
             return self.add("UNETLoaderNF4", 1, unet_name=model_name)
-        elif "int8" in model_name:
-            return self.add(
-                "OTUNetLoaderW8A8",
-                1,
-                unet_name=model_name,
-                weight_dtype="default",
-                model_type=self._model_type_from_filename(model_name)
-            )
+
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
 
     def load_clip(self, clip_name: str, type: str):
