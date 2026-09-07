@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from enum import Enum, Flag
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
-from ..backend.api import InpaintMode
+from ..backend.api import InpaintMode, WorkflowKind
 from ..image import Bounds, ImageCollection
 from ..settings import settings
 from ..style import Style
@@ -55,6 +55,7 @@ class JobParams:
     regions: list[JobRegion] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     ref_layers: dict[str, int] | None = None  # layer name -> prompt image id
+    workflow_kind: WorkflowKind = WorkflowKind.custom
     seed: int = 0
     has_mask: bool = False
     is_layered: bool = False

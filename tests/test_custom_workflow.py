@@ -5,7 +5,7 @@ from copy import copy
 from pathlib import Path
 
 import pytest
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 from ai_diffusion.backend import workflow
 from ai_diffusion.backend.api import (
@@ -257,6 +257,15 @@ def test_workspace():
     assert workspace.metadata[0].default == 24
     assert workspace.metadata[1].name == "param3"
     assert workspace.params == {"param2": 23, "param3": 7}
+
+    doc_graph["3"] = {
+        "class_type": "ETN_Parameter",
+        "inputs": {"name": "param3", "type": "text", "default": ""},
+    }
+    workflows.set_graph(workflows.index(1), doc_graph)
+    assert workspace.validation_error == (
+        "Workflow contains duplicate parameter names: param3. Each parameter name must be unique."
+    )
 
 
 def test_workspace_no_connection():
@@ -541,7 +550,7 @@ def test_job_info_output():
 
 def img_id(image: Image):
     data = image.to_bytes()
-    hash = zlib.crc32(data)
+    hash = zlib.crc32(data.data())
     return f"{hash:08x}"
 
 

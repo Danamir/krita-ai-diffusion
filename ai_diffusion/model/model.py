@@ -7,14 +7,14 @@ import weakref
 from collections import deque
 from copy import copy
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, NamedTuple
 
-from PyQt5.QtCore import QMetaObject, QObject, Qt, QUuid, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QPainter
+from PyQt6.QtCore import QMetaObject, QObject, Qt, QUuid, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QPainter
 
 from .. import eventloop, util
 from ..backend import resolution, workflow
@@ -55,10 +55,11 @@ from ..settings import (
     ApplyRegionBehavior,
     GenerationFinishedAction,
     ImageFileFormat,
+    ServerMode,
     settings,
 )
 from ..style import Arch, Style, Styles
-from ..text import create_img_metadata, extract_layers
+from ..text import create_ai_generated_xmp, create_img_metadata, extract_layers
 from ..util import PluginError, clamp, ensure, trim_text, unique
 from ..util import client_logger as log
 from .connection import Connection, ConnectionState
@@ -335,6 +336,7 @@ class DocumentModel(QObject, ObservableProperties):
     ):
         sampling = ensure(input.sampling)
         params.has_mask = input.images is not None and input.images.hires_mask is not None
+        params.workflow_kind = input.kind
         queue_mode = queue_mode or self.queue_mode
 
         if queue_mode is QueueMode.replace:
@@ -1620,8 +1622,8 @@ def _save_job_result(model: DocumentModel, job: Job | None, index: int):
     assert job is not None, "Cannot save result, invalid job id"
     assert len(job.results) > index, "Cannot save result, invalid result index"
     assert model.document.filename, "Cannot save result, document is not saved"
-    timestamp = job.timestamp.strftime("%Y%m%d-%H%M%S")
-    cur_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = job.timestamp.astimezone().strftime("%Y%m%d-%H%M%S")
+    cur_timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     prompt = util.sanitize_prompt(job.params.name)
     path = Path(model.document.filename)
     name_template = (
@@ -1659,3 +1661,7 @@ def _save_job_result(model: DocumentModel, job: Job | None, index: int):
             quality = settings.save_image_quality_jpeg
 
         base_image.save(path, settings.save_image_format, quality)
+
+    if settings.server_mode is ServerMode.cloud:
+        xmp = create_ai_generated_xmp(job.params.workflow_kind)
+        base_image.write_xmp_metadata(path, xmp)
