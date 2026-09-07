@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, NamedTuple, TypeVar
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..files import FileFormat, FileLibrary
 from ..image import ImageCollection, Point
@@ -177,23 +177,10 @@ class MissingResources(Exception):
         return self.missing.get(arch, [])
 
 
-class Quantization(Enum):
-    none = 0
-    svdq = 1
-
-    @staticmethod
-    def from_string(s: str):
-        if s == "svdq":
-            return Quantization.svdq
-        else:
-            return Quantization.none
-
-
 class CheckpointInfo(NamedTuple):
     filename: str
     arch: Arch
     format: FileFormat = FileFormat.checkpoint
-    quantization: Quantization = Quantization.none
 
     @property
     def name(self):
@@ -204,7 +191,6 @@ class CheckpointInfo(NamedTuple):
             "filename": self.filename,
             "arch": self.arch.name,
             "format": self.format.name,
-            "quantization": self.quantization.name,
         }
 
     @staticmethod
@@ -213,7 +199,6 @@ class CheckpointInfo(NamedTuple):
             data["filename"],
             ensure(Arch.from_string(data["arch"])),
             FileFormat[data.get("format", "checkpoint")],
-            Quantization.from_string(data.get("quantization", "none")),
         )
 
     @staticmethod

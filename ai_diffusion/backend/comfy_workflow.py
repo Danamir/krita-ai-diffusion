@@ -269,7 +269,7 @@ class ComfyWorkflow:
         return id
 
     def _add_image_hashed(self, image: Image):
-        data = image.to_bytes()
+        data = image.to_bytes().data()
         hash = zlib.crc32(data)
         id = f"{hash:08x}"
         self.image_data[id] = data
@@ -757,46 +757,6 @@ class ComfyWorkflow:
 
     def load_fooocus_inpaint(self, head: str, patch: str):
         return self.add_cached("INPAINT_LoadFooocusInpaint", 1, head=head, patch=patch)
-
-    def nunchaku_load_flux_diffusion_model(self, model_path: str, cache_threshold: float):
-        return self.add_cached(
-            "NunchakuFluxDiTLoader", 1, model_path=model_path, cache_threshold=cache_threshold
-        )
-
-    def nunchaku_load_qwen_diffusion_model(self, model_name: str, num_blocks_on_gpu=1):
-        return self.add_cached(
-            "NunchakuQwenImageDiTLoader",
-            1,
-            model_name=model_name,
-            cpu_offload="auto",
-            num_blocks_on_gpu=num_blocks_on_gpu,
-            use_pin_memory="disable",
-        )
-
-    def nunchaku_load_zimage_diffusion_model(self, model_name: str, num_blocks_on_gpu=1):
-        return self.add_cached(
-            "NunchakuZImageDiTLoader",
-            1,
-            model_name=model_name,
-            cpu_offload="auto",
-            num_blocks_on_gpu=num_blocks_on_gpu,
-            use_pin_memory="disable",
-        )
-
-    def nunchaku_load_flux_lora(self, model: Output, name: str, strength: float):
-        return self.add(
-            "NunchakuFluxLoraLoader", 1, model=model, lora_name=name, lora_strength=strength
-        )
-
-    def nunchaku_load_qwen_lora(self, model: Output, name: str, strength: float):
-        return self.add(
-            "NunchakuQwenImageLoraLoader",
-            1,
-            model=model,
-            lora_name=name,
-            lora_strength=strength,
-            cpu_offload="auto"
-        )
 
     def t5_tokenizer_options(self, clip: Output, min_padding: int, min_length: int):
         return self.add(
