@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QAction,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -46,22 +47,23 @@ from PyQt5.QtWidgets import (
     QWidgetAction,
 )
 
-from ..client import filter_supported_styles, resolve_arch
-from ..connection import ConnectionState
-from ..jobs import JobKind, JobState
+from ..backend.client import filter_supported_styles, resolve_arch
+from ..backend.workflow import apply_strength, snap_to_percent
 from ..localization import translate as _
-from ..model import (
+from ..model.connection import ConnectionState
+from ..model.jobs import JobKind, JobState
+from ..model.model import (
+    DocumentModel,
     Error,
     ErrorKind,
-    Model,
     ProgressKind,
     QueueMode,
     SamplingQuality,
     Workspace,
     no_error,
 )
-from ..properties import Bind, Binding, bind, bind_combo
-from ..root import root
+from ..model.properties import Bind, Binding, bind, bind_combo
+from ..model.root import root
 from ..settings import Settings, settings
 from ..style import Style, Styles, sort_recent_styles
 from ..text import (
@@ -77,14 +79,13 @@ from ..text import (
     str_index_to_char16_index,
 )
 from ..util import ensure
-from ..workflow import apply_strength, snap_to_percent
 from . import actions, theme
 from .autocomplete import PromptAutoComplete
 from .theme import SignalBlocker
 
 
 class QueuePopup(QMenu):
-    _model: Model
+    _model: DocumentModel
     _connections: list[QMetaObject.Connection]
 
     def __init__(self, supports_batch=True, parent: QWidget | None = None):
@@ -139,11 +140,12 @@ class QueuePopup(QMenu):
 
         self._seed_label = QLabel(_("Seed"), self)
         self._layout.addWidget(self._seed_label, 2, 0)
-        self._seed_input = QSpinBox(self)
+        self._seed_input = QDoubleSpinBox(self)
         self._seed_check = QCheckBox(self)
         self._seed_check.setText(_("Fixed"))
         self._seed_input.setMinimum(0)
-        self._seed_input.setMaximum(2**31 - 1)
+        self._seed_input.setMaximum(2**32 - 1)
+        self._seed_input.setDecimals(0)
         self._seed_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._seed_input.setToolTip(
             _(
@@ -201,23 +203,25 @@ class QueuePopup(QMenu):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         Binding.disconnect_all(self._connections)
         self._model = model
-        self._randomize_seed.setEnabled(self._model.fixed_seed)
-        self._seed_input.setEnabled(self._model.fixed_seed)
-        self._batch_label.setText(str(self._model.batch_count))
+        self._randomize_seed.setEnabled(model.fixed_seed)
+        self._seed_input.setValue(model.seed)
+        self._seed_input.setEnabled(model.fixed_seed)
+        self._batch_label.setText(str(model.batch_count))
         self._connections = [
-            bind(self._model, "batch_count", self._batch_slider, "value"),
+            bind(model, "batch_count", self._batch_slider, "value"),
             model.batch_count_changed.connect(lambda v: self._batch_label.setText(str(v))),
-            bind(self._model, "seed", self._seed_input, "value"),
-            bind(self._model, "fixed_seed", self._seed_check, "checked", Bind.one_way),
+            model.seed_changed.connect(lambda: self._seed_input.setValue(self._model.seed)),
+            self._seed_input.valueChanged.connect(lambda v: setattr(self._model, "seed", int(v))),
+            bind(model, "fixed_seed", self._seed_check, "checked", Bind.one_way),
             self._seed_check.toggled.connect(lambda v: setattr(self._model, "fixed_seed", v)),
-            self._model.fixed_seed_changed.connect(self._seed_input.setEnabled),
-            self._model.fixed_seed_changed.connect(self._randomize_seed.setEnabled),
-            self._randomize_seed.clicked.connect(self._model.generate_seed),
+            model.fixed_seed_changed.connect(self._seed_input.setEnabled),
+            model.fixed_seed_changed.connect(self._randomize_seed.setEnabled),
+            self._randomize_seed.clicked.connect(model.generate_seed),
             model.resolution_multiplier_changed.connect(self._update_resolution_multiplier),
-            bind_combo(self._model, "queue_mode", self._queue_mode_combo),
+            bind_combo(model, "queue_mode", self._queue_mode_combo),
             model.jobs.count_changed.connect(self._update_job_count),
         ]
         self._update_job_count()
@@ -275,7 +279,7 @@ class QueueButton(QToolButton):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model != model:
             Binding.disconnect_all(self._connections)
             self._model = model
@@ -416,7 +420,8 @@ class StyleSelectWidget(QWidget):
             if style not in self._styles:
                 self.update_styles()
             else:
-                self._combo.setCurrentText(style.name)
+                idx = self._combo.findData(style.filename)
+                self._combo.setCurrentIndex(idx)
 
 
 class PromptHighlighter(QSyntaxHighlighter):
@@ -688,9 +693,9 @@ class TextPromptWidget(QPlainTextEdit):
 
 
 class StrengthSnapping:
-    model: Model
+    model: DocumentModel
 
-    def __init__(self, model: Model):
+    def __init__(self, model: DocumentModel):
         self.model = model
 
     def get_steps(self) -> tuple[int, int]:
@@ -739,7 +744,7 @@ class StrengthSpinBox(QSpinBox):
 
 
 class StrengthWidget(QWidget):
-    _model: Model | None = None
+    _model: DocumentModel | None = None
     _value: int = 100
 
     value_changed = pyqtSignal(float)
@@ -794,7 +799,7 @@ class StrengthWidget(QWidget):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model:
             self._model.style_changed.disconnect(self.update_suffix)
             self._model.edit_mode_changed.disconnect(self.update_suffix)

@@ -6,7 +6,7 @@ from PyQt5.QtCore import QObject, QSize, Qt
 from PyQt5.QtGui import QFontMetrics, QGuiApplication, QIcon, QPalette, QPixmap
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from ..client import Client
+from ..backend.client import Client
 from ..files import FileFormat
 from ..localization import translate as _
 from ..platform_tools import is_windows
@@ -14,7 +14,8 @@ from ..settings import Setting
 from ..style import Arch
 from ..util import client_logger as log
 
-_palette = QGuiApplication.palette()
+_app = QGuiApplication.instance()
+_palette = _app.palette() if isinstance(_app, QGuiApplication) else QPalette()
 is_dark = _palette.color(QPalette.ColorRole.Window).lightness() < 128
 
 base = _palette.color(QPalette.ColorRole.Base).name()
@@ -33,6 +34,8 @@ flat_combo_stylesheet = f"""
     QComboBox {{ border: none; background-color: transparent; padding: 1px 12px 1px 2px; }}
     QComboBox QAbstractItemView {{ selection-color: {highlight}; }}
 """
+
+prompt_max_line_count = 40
 
 copy_to_clipboard_string = _("Copy to clipboard")  # keeping translations for future use
 
@@ -53,7 +56,10 @@ def icon(name: str):
 def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client | None = None):
     if client:
         if not client.supports_arch(arch):
-            return icon("warning")
+            if arch is Arch.sdxl and client.supports_arch(Arch.illu):
+                arch = Arch.illu  # assume SDXL models are Illustrious if SDXL isn't supported
+            else:
+                return icon("warning")
         if format is FileFormat.diffusion and not client.models.for_arch(arch).has_te_vae:
             return icon("warning")
     if arch is Arch.sd15:
@@ -80,6 +86,10 @@ def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client
         return icon("sd-version-z-image")
     elif arch is Arch.anima:
         return icon("sd-version-anima")
+    elif arch is Arch.ernie:
+        return icon("sd-version-ernie")
+    elif arch is Arch.krea2:
+        return icon("sd-version-krea2")
     else:
         log.warning(f"Unresolved SD version {arch}, cannot fetch icon")
         return icon("warning")
