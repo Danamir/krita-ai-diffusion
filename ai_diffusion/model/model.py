@@ -236,7 +236,8 @@ class DocumentModel(QObject, ObservableProperties):
         strength = self.strength
         if arch is Arch.qwen_l:
             strength = 1.0
-        if strength < 1.0 or self.is_editing:
+        is_editing = self.resolve_edit_mode(strength)
+        if strength < 1.0 or is_editing:
             workflow_kind = WorkflowKind.refine
         client = self._connection.client
         image = None
@@ -269,7 +270,7 @@ class DocumentModel(QObject, ObservableProperties):
         seed = self.seed if self.fixed_seed else workflow.generate_seed()
         ref_layers: dict[str, int] | None = None
         if not dryrun:
-            conditioning, ref_layers = self._add_reference_layers(conditioning)
+            conditioning, ref_layers = self._add_reference_layers(conditioning, is_editing)
 
         original_conditioning = conditioning
         inpaint_instruction = inpaint_mode if strength == 1.0 else None
@@ -290,7 +291,7 @@ class DocumentModel(QObject, ObservableProperties):
 
             assert inpaint_mode is not None
             if inpaint_mode is InpaintMode.custom:
-                inpaint = self.inpaint.get_params(mask, self.is_editing)
+                inpaint = self.inpaint.get_params(mask, is_editing)
             else:
                 inpaint = workflow.detect_inpaint(
                     inpaint_mode, mask.bounds, arch, conditioning, strength
@@ -458,7 +459,8 @@ class DocumentModel(QObject, ObservableProperties):
     def _prepare_live_workflow(self):
         strength = self.live.strength
         workflow_kind = WorkflowKind.generate
-        if strength < 1.0 or self.is_editing:
+        is_editing = self.resolve_edit_mode(strength)
+        if strength < 1.0 or is_editing:
             workflow_kind = WorkflowKind.refine
         client = self._connection.client
         min_mask_size = 512 if self.arch is Arch.sd15 else 800
@@ -490,7 +492,7 @@ class DocumentModel(QObject, ObservableProperties):
 
         conditioning, job_regions = process_regions(regions, bounds)
         conditioning.language = self.prompt_translation_language
-        conditioning, ref_layers = self._add_reference_layers(conditioning)
+        conditioning, ref_layers = self._add_reference_layers(conditioning, is_editing)
         conditioning, loras, _ = workflow.prepare_prompts(
             conditioning, self.style, self.seed, self.arch, None, ref_layers, is_live=True
         )
@@ -940,7 +942,7 @@ class DocumentModel(QObject, ObservableProperties):
             return InpaintMode.fill
         return self.inpaint.mode
 
-    def _add_reference_layers(self, cond: ConditioningInput):
+    def _add_reference_layers(self, cond: ConditioningInput, is_editing: bool):
         def add_refs(control: list[ControlInput], layer_names: dict[str, int]):
             layers_sorted = sorted(layer_names.items(), key=lambda x: x[1])
             for layer_name, __ in layers_sorted:
@@ -950,7 +952,7 @@ class DocumentModel(QObject, ObservableProperties):
                 ctrl = ControlLayer(self, ControlMode.reference, uid, 0)
                 control.append(ctrl.to_api())
 
-        cond.edit_reference = self.is_editing
+        cond.edit_reference = is_editing
         layers = extract_layers(cond)
         add_refs(cond.control, layers)
 
@@ -1063,6 +1065,11 @@ class DocumentModel(QObject, ObservableProperties):
     @property
     def is_editing(self):
         return self.arch.is_edit or (self.can_edit and self.edit_mode)
+
+    def resolve_edit_mode(self, strength: float):
+        # Text-to-image models which also support editing only use the input image as
+        # reference for full strength. Below that it's a regular refine pass.
+        return self.is_editing and (self.arch.is_edit or strength == 1.0)
 
 
 class CustomInpaint(QObject, ObservableProperties):
@@ -1430,13 +1437,14 @@ class AnimationWorkspace(QObject, ObservableProperties):
         m = self._model
 
         kind = WorkflowKind.generate
-        if m.strength < 1.0 or m.is_editing:
+        is_editing = m.resolve_edit_mode(m.strength)
+        if m.strength < 1.0 or is_editing:
             kind = WorkflowKind.refine
         bounds = Bounds(0, 0, *m.document.extent)
         is_live = self.sampling_quality is SamplingQuality.fast
         conditioning, _ = process_regions(m.regions, bounds, self._model.layers.root, time=time)
         conditioning.language = m.prompt_translation_language
-        conditioning, ref_layers = m._add_reference_layers(conditioning)
+        conditioning, ref_layers = m._add_reference_layers(conditioning, is_editing)
         conditioning, loras, _prompt_meta = workflow.prepare_prompts(
             conditioning, m.style, seed, m.arch, None, ref_layers, is_live=is_live
         )
@@ -1457,7 +1465,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
 
     async def _generate_frame(self):
         m = self._model
-        requires_image = m.strength < 1.0 or m.is_editing
+        requires_image = m.strength < 1.0 or m.resolve_edit_mode(m.strength)
         bounds = Bounds(0, 0, *m.document.extent)
         canvas = m._get_current_image(bounds) if requires_image else bounds.extent
         seed = m.seed if m.fixed_seed else workflow.generate_seed()
@@ -1468,7 +1476,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
     def generate_batch(self):
         m = self._model
         doc = m.document
-        requires_image = m.strength < 1.0 or m.is_editing
+        requires_image = m.strength < 1.0 or m.resolve_edit_mode(m.strength)
         if requires_image and not m.layers.active.is_animated:
             m.report_error(_("The active layer does not contain an animation."))
             return
@@ -1498,7 +1506,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         for frame in range(start_frame, end_frame + 1):
             if layer.node.hasKeyframeAtTime(frame) or m.strength == 1.0:
                 canvas: Image | Extent = extent
-                if m.strength < 1.0 or m.is_editing:
+                if m.strength < 1.0 or m.resolve_edit_mode(m.strength):
                     canvas = layer.get_pixels(time=frame)
 
                 inputs = self._prepare_input(canvas, seed, frame)

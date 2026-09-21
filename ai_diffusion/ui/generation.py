@@ -1004,7 +1004,7 @@ class GenerationWidget(QWidget):
         has_regions = len(regions) > 0
         has_active_region = regions.is_linked(self.model.layers.active)
         is_region_only = has_regions and has_active_region and self.model.region_only
-        is_edit = self.model.is_editing
+        is_edit = self.model.resolve_edit_mode(self.model.strength)
         self.region_mask_button.setVisible(has_regions)
         self.region_mask_button.setEnabled(has_active_region)
         self.region_mask_button.setIcon(_region_mask_button_icons[is_region_only])

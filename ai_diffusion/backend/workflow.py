@@ -1260,7 +1260,8 @@ def refine(
     latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
     latent_batch = w.batch_latent(latent, misc.batch_count)
     latent_batch = setup_latent_layers(w, latent_batch, extent.desired, misc.layer_count)
-    prompt = encode_prompt(w, cond, clip, regions, in_image, vae, sampling=sampling)
+    ref_image = in_image if cond.edit_reference else None
+    prompt = encode_prompt(w, cond, clip, regions, ref_image, vae, sampling=sampling)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.desired, vae, models)
     prompt = apply_reference_conditioning(
         w, prompt, in_image, latent, cond, vae, models.arch, checkpoint.tiled_vae
@@ -1302,7 +1303,8 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    prompt = encode_prompt(w, cond, clip, regions, in_image, vae, sampling=sampling)
+    ref_image = in_image if cond.edit_reference else None
+    prompt = encode_prompt(w, cond, clip, regions, ref_image, vae, sampling=sampling)
 
     if inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
