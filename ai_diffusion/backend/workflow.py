@@ -484,7 +484,9 @@ def encode_prompt(
     image: Output | None = None,
     vae: Output | None = None,
 ):
-    ref_images = [image] if image is not None else []
+    ref_images: list[Output] = []
+    if clip.arch is not Arch.qwen_2_1 and image is not None:
+        ref_images.append(image)
     ref_images += [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
 
     if clip.arch is Arch.qwen_2_1:
@@ -1041,11 +1043,6 @@ def inpaint(
     cond_base = cond.copy()
     model, regions = apply_attention_mask(w, model, cond_base, clip, extent.initial)
 
-    if params.use_reference or models.arch is Arch.qwen_2_1:
-        reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or in_image
-        cond_base.control.append(
-            Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
-        )
     control_mask = ImageOutput(inpaint_mask, is_mask=True)
     if params.use_inpaint_model and models.find_control(ControlMode.inpaint):
         cond_base.control.append(inpaint_control(in_image, control_mask, models.arch))
@@ -1057,7 +1054,16 @@ def inpaint(
         ]
     fill_mask = apply_grow(w, in_mask, params)
     fill_mask = scale_to_initial(extent, w, fill_mask, models, is_mask=True)
+    reference_image = in_image
     in_image = fill_masked(w, in_image, fill_mask, params.fill, models, extent.initial)
+
+    if params.use_reference or models.arch is Arch.qwen_2_1:
+        reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or (
+            in_image if params.fill is FillMode.green else reference_image
+        )
+        cond_base.control.append(
+            Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
+        )
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
