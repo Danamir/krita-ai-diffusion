@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any
 
 from krita import DoubleSliderSpinBox
-from PyQt6.QtCore import QAbstractItemModel, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractItemModel, QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -390,6 +392,52 @@ class LineEditSetting(SettingWidgetBase):
     @value.setter
     def value(self, v):
         self._edit.setText(v)
+
+
+def _format_json(text: str):
+    try:
+        return json.dumps(json.loads(text), indent=2)
+    except json.JSONDecodeError:
+        return text
+
+
+class MultiLineTextSetting(SettingWidget):
+    """Text setting with a multi-line editor. Changes are only reported when
+    editing is finished, to avoid writing incomplete input."""
+
+    def __init__(self, setting: Setting, line_count=6, json_format=False, parent=None):
+        super().__init__(setting, parent)
+        self._json_format = json_format
+
+        self._edit = QPlainTextEdit(self)
+        self._edit.setTabChangesFocus(True)
+        self._edit.setMinimumWidth(230)
+        self._edit.setMaximumWidth(300)
+        self._edit.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        metrics = self._edit.fontMetrics()
+        self._edit.setFixedHeight(line_count * metrics.lineSpacing() + metrics.height())
+        self._edit.installEventFilter(self)
+        self.set_widget(self._edit)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._key_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._layout.setAlignment(self._key_label, Qt.AlignmentFlag.AlignTop)
+        self._layout.setAlignment(self._edit, Qt.AlignmentFlag.AlignTop)
+
+    def eventFilter(self, obj: QObject | None, event: QEvent | None):
+        if obj is self._edit and event is not None and event.type() is QEvent.Type.FocusOut:
+            if self._edit.document().isModified():
+                self._edit.document().setModified(False)
+                self._notify_value_changed()
+        return super().eventFilter(obj, event)
+
+    @property
+    def value(self):
+        return self._edit.toPlainText()
+
+    @value.setter
+    def value(self, v):
+        self._edit.setPlainText(_format_json(v) if self._json_format else v)
+        self._edit.document().setModified(False)
 
 
 _default_switch_labels = (_("On"), _("Off"))
