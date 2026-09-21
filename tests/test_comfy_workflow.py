@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_diffusion.backend.comfy_workflow import ComfyObjectInfo, ComfyWorkflow
+from ai_diffusion.backend.comfy_workflow import ComfyObjectInfo, ComfyWorkflow, Output
 
 
 @pytest.fixture(scope="module")
@@ -112,3 +112,63 @@ def test_defaults_legacy_combo(info: ComfyObjectInfo):
     assert inputs["images"] == "img"
     assert inputs["format"] == "PNG"
     assert set(inputs.keys()) == {"images", "format"}
+
+
+def test_text_encode_qwen_image_21(info: ComfyObjectInfo):
+    w = ComfyWorkflow(node_defs=info)
+    clip = w.add("None", 1)
+    img1 = w.add("None", 1)
+    img2 = w.add("None", 1)
+    vae = w.add("None", 1)
+    cond = w.text_encode_qwen_image_21(clip, "a cat", "bad", [img1, img2], vae)
+
+    assert len(w.root) == 5  # clip + images + vae + encode node
+    encode = next(node for node in w if node.type == "TextEncodeQwenImage21")
+    assert encode.inputs["clip"] == clip
+    assert encode.inputs["prompt"] == "a cat"
+    assert encode.inputs["negative_prompt"] == "bad"
+    assert encode.inputs["resolution"] == 1024
+    assert encode.inputs["vae"] == vae
+    assert encode.inputs["images.image_1"] == img1
+    assert encode.inputs["images.image_2"] == img2
+    assert "images.image_3" not in encode.inputs
+    assert "images" not in encode.inputs
+    assert cond.positive == Output(encode.id, 0)
+    assert cond.negative == Output(encode.id, 1)
+
+
+def test_text_encode_qwen_image_21_no_vae(info: ComfyObjectInfo):
+    w = ComfyWorkflow(node_defs=info)
+    clip = w.add("None", 1)
+    w.text_encode_qwen_image_21(clip, "a cat", "bad", [])
+    encode = next(node for node in w if node.type == "TextEncodeQwenImage21")
+    assert "vae" not in encode.inputs
+    assert "images.image_1" not in encode.inputs
+
+
+def test_color_match_strips_alpha(info: ComfyObjectInfo):
+    w = ComfyWorkflow(node_defs=info)
+    target = w.add("None", 1)
+    reference = w.add("None", 1)
+    mask = w.add("None", 1)
+    out = w.color_match(target, reference, mask, strength=1.0)
+
+    split = [node for node in w if node.type == "SplitImageWithAlpha"]
+    assert len(split) == 2
+    stripped = {split[0].inputs["image"], split[1].inputs["image"]}
+    assert stripped == {target, reference}
+
+    color_match = next(node for node in w if node.type == "INPAINT_ColorMatch")
+    stripped_ids = {x[0] for x in [color_match.inputs["target"], color_match.inputs["reference"]]}
+    assert stripped_ids == {node.id for node in split}
+    assert color_match.inputs["exclude_mask"] == mask
+    assert color_match.inputs["strength"] == pytest.approx(1.0)
+    assert out.node == color_match.id
+
+
+def test_color_match_skipped_for_zero_strength(info: ComfyObjectInfo):
+    w = ComfyWorkflow(node_defs=info)
+    target = w.add("None", 1)
+    out = w.color_match(target, w.add("None", 1), strength=0.0)
+    assert out == target
+    assert not any(node.type in ["SplitImageWithAlpha", "INPAINT_ColorMatch"] for node in w)
