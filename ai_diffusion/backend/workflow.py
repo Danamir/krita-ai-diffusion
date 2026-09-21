@@ -156,6 +156,8 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
     if settings.use_refiner_pass and arch is not None:
         if arch.is_sdxl_like:
             two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
+        elif arch is Arch.qwen_2_1:
+            two_pass_methods = ("generate", "refine")
         else:
             two_pass_methods = ("generate",)
 
