@@ -241,5 +241,138 @@
         "python_module": "custom_nodes.comfyui-tooling-nodes",
         "category": "krita",
         "output_node": false
+    },
+    "SplitImageWithAlpha": {
+        "input": {
+            "required": {
+                "image": [
+                    "IMAGE"
+                ]
+            }
+        },
+        "input_order": {
+            "required": [
+                "image"
+            ]
+        },
+        "output": [
+            "IMAGE",
+            "MASK"
+        ],
+        "output_is_list": [
+            false,
+            false
+        ],
+        "output_name": [
+            "image",
+            "alpha"
+        ],
+        "name": "SplitImageWithAlpha",
+        "display_name": "Split Image with Alpha",
+        "description": "",
+        "category": "image/compositing",
+        "output_node": false
+    },
+    "TextEncodeQwenImage21": {
+        "input": {
+            "required": {
+                "clip": [
+                    "CLIP"
+                ],
+                "prompt": [
+                    "STRING",
+                    {
+                        "multiline": true
+                    }
+                ],
+                "negative_prompt": [
+                    "STRING",
+                    {
+                        "multiline": true
+                    }
+                ],
+                "resolution": [
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 32
+                    }
+                ],
+                "images": [
+                    "COMFY_AUTOGROW_V3",
+                    {
+                        "dynamic": true,
+                        "template": {
+                            "input": {
+                                "required": {
+                                    "image": [
+                                        "IMAGE"
+                                    ]
+                                }
+                            },
+                            "names": [
+                                "image_1",
+                                "image_2",
+                                "image_3",
+                                "image_4",
+                                "image_5",
+                                "image_6",
+                                "image_7",
+                                "image_8",
+                                "image_9",
+                                "image_10",
+                                "image_11",
+                                "image_12",
+                                "image_13",
+                                "image_14",
+                                "image_15",
+                                "image_16"
+                            ],
+                            "min": 0
+                        }
+                    }
+                ]
+            },
+            "optional": {
+                "vae": [
+                    "VAE"
+                ]
+            }
+        },
+        "input_order": {
+            "required": [
+                "clip",
+                "prompt",
+                "negative_prompt",
+                "resolution",
+                "images"
+            ],
+            "optional": [
+                "vae"
+            ]
+        },
+        "output": [
+            "CONDITIONING",
+            "CONDITIONING",
+            "LATENT"
+        ],
+        "output_is_list": [
+            false,
+            false,
+            false
+        ],
+        "output_name": [
+            "positive",
+            "negative",
+            "latent"
+        ],
+        "name": "TextEncodeQwenImage21",
+        "display_name": "Text Encode QWEN Image 2.1",
+        "description": "Auto-encode prompt and reference images with Qwen3-VL-8B for Qwen Image 2.1",
+        "python_module": "comfy_extras.nodes_qwen",
+        "category": "conditioning/qwen",
+        "output_node": false
     }
 }
