@@ -268,7 +268,16 @@ class Settings(QObject):
     _use_refiner_pass = Setting("Use Refiner Pass", False, "Use a refiner pass for part of the steps, only affects advanced sampler")
 
     _first_pass_json = {
-        "default": {
+        "default": {},
+        "sd15": {
+            "sampler": "dpmpp_sde",
+            "ratio": 0.6,
+        },
+        "sdxl": {
+            "sampler": "dpmpp_sde",
+            "ratio": 0.6,
+        },
+        "illu": {
             "sampler": "dpmpp_sde",
             "ratio": 0.6,
         },
@@ -283,6 +292,11 @@ class Settings(QObject):
         "flux2_9b": {
             "cfg": 5.0,
             "steps": 2,
+        },
+        "qwen_2_1": {
+            "sampler": "euler_ancestral",
+            "cfg": 6.0,
+            "steps": 6,
         }
     }
     first_pass_sampler: str
