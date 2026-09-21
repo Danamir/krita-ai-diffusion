@@ -329,26 +329,71 @@ class ComfyWorkflow:
         start_at_step=0,
         cfg=7.0,
         seed=-1,
+        two_pass=False,
+        first_pass_sampler='dpmpp_sde',
     ):
         self.sample_count += steps - start_at_step
 
-        return self.add(
-            "KSamplerAdvanced",
-            1,
-            noise_seed=seed,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            model=model,
-            positive=cond.positive,
-            negative=cond.negative,
-            latent_image=latent_image,
-            steps=steps,
-            start_at_step=start_at_step,
-            end_at_step=steps,
-            cfg=cfg,
-            add_noise="enable",
-            return_with_leftover_noise="disable",
-        )
+        if two_pass:
+            first_pass_sampler = first_pass_sampler or sampler
+            if ':' in first_pass_sampler:
+                first_pass_sampler, first_pass_scheduler = first_pass_sampler.split(':')
+            else:
+                first_pass_scheduler = scheduler
+
+            latent_image = self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=seed,
+                sampler_name=first_pass_sampler,
+                scheduler=first_pass_scheduler,
+                model=model,
+                positive=cond.positive,
+                negative=cond.negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=min(start_at_step, round(steps*0.6)),
+                end_at_step=round(steps*0.6),
+                cfg=cfg,
+                add_noise="enable",
+                return_with_leftover_noise="enable",
+            )
+
+            return self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=seed,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                model=model,
+                positive=cond.positive,
+                negative=cond.negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=max(start_at_step, round(steps*0.6)),
+                end_at_step=steps,
+                cfg=cfg,
+                add_noise="disable",
+                return_with_leftover_noise="disable",
+            )
+        else:
+            return self.add(
+                "KSamplerAdvanced",
+                1,
+                noise_seed=seed,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                model=model,
+                positive=cond.positive,
+                negative=cond.negative,
+                latent_image=latent_image,
+                steps=steps,
+                start_at_step=start_at_step,
+                end_at_step=steps,
+                cfg=cfg,
+                add_noise="enable",
+                return_with_leftover_noise="disable",
+            )
 
     def sampler_custom_advanced(
         self,
@@ -363,37 +408,86 @@ class ComfyWorkflow:
         cfg=7.0,
         seed=-1,
         extent: Extent | None = None,
+        two_pass=False,
     ):
         self.sample_count += steps - start_at_step
 
-        if arch.is_flux_like:
-            positive = self.flux_guidance(cond.positive, cfg if cfg > 1 else 3.5)
-            guider = self.basic_guider(model, positive)
-        elif cfg == 1.0:
-            guider = self.basic_guider(model, cond.positive)
+        if two_pass and arch.supports_split_rendering:
+            from ..settings import settings
+            first_pass_settings = settings.first_pass_settings(arch)
+
+            first_pass_sampler = first_pass_settings.sampler or sampler
+            first_pass_cfg = first_pass_settings.cfg or cfg
+            first_pass_ratio = first_pass_settings.ratio
+            first_pass_steps = first_pass_settings.steps
+
+            if first_pass_steps is None:
+                first_pass_steps = max(2, round((steps - start_at_step) * first_pass_ratio))
+
+            sigmas = self.scheduler_sigmas(model, scheduler, steps, arch, extent)
+            second_pass_guider = self.cfg_guider(model, cond, cfg)
+            if first_pass_cfg != cfg:
+                first_pass_guider = self.cfg_guider(model, cond, first_pass_cfg)
+            else:
+                first_pass_guider = second_pass_guider
+
+            _, sigmas = self.split_sigmas(
+                sigmas, start_at_step
+            )
+
+            first_sigmas, second_sigmas = self.split_sigmas(
+                sigmas, first_pass_steps
+            )
+
+            latent = self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.random_noise(seed),
+                guider=first_pass_guider,
+                sampler=self.sampler_select(first_pass_sampler),
+                sigmas=first_sigmas,
+                latent_image=latent_image,
+            )[0]
+
+            return self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.disable_noise(),
+                guider=second_pass_guider,
+                sampler=self.sampler_select(sampler),
+                sigmas=second_sigmas,
+                latent_image=latent,
+            )[1]
+
         else:
-            guider = self.cfg_guider(model, cond, cfg)
+            if arch.is_flux_like:
+                positive = self.flux_guidance(cond.positive, cfg if cfg > 1 else 3.5)
+                guider = self.basic_guider(model, positive)
+            elif cfg == 1.0:
+                guider = self.basic_guider(model, cond.positive)
+            else:
+                guider = self.cfg_guider(model, cond, cfg)
 
-        sigmas = self.scheduler_sigmas(model, scheduler, steps, arch, extent)
-        if start_at_step > 0:
-            _, sigmas = self.split_sigmas(sigmas, start_at_step)
+            sigmas = self.scheduler_sigmas(model, scheduler, steps, arch, extent)
+            if start_at_step > 0:
+                _, sigmas = self.split_sigmas(sigmas, start_at_step)
 
-        return self.add(
-            "SamplerCustomAdvanced",
-            output_count=2,
-            noise=self.random_noise(seed),
-            guider=guider,
-            sampler=self.sampler_select(sampler),
-            sigmas=sigmas,
-            latent_image=latent_image,
-        )[1]
+            return self.add(
+                "SamplerCustomAdvanced",
+                output_count=2,
+                noise=self.random_noise(seed),
+                guider=guider,
+                sampler=self.sampler_select(sampler),
+                sigmas=sigmas,
+                latent_image=latent_image,
+            )[1]
 
     def scheduler_sigmas(
         self,
         model: Output,
         scheduler="normal",
         steps=20,
-        arch=Arch.sdxl,
+        arch: Arch = Arch.sdxl,
         extent: Extent | None = None,
     ):
         if scheduler in ("align_your_steps", "ays"):
@@ -465,6 +559,14 @@ class ComfyWorkflow:
             step=step,
         )
 
+    def split_sigmas_denoise(self, sigmas: Output, denoise=0.0):
+        return self.add(
+            "SplitSigmasDenoise",
+            output_count=2,
+            sigmas=sigmas,
+            denoise=denoise,
+        )
+
     def basic_guider(self, model: Output, positive: Output):
         return self.add("BasicGuider", 1, model=model, conditioning=positive)
 
@@ -488,6 +590,12 @@ class ComfyWorkflow:
             noise_seed=noise_seed,
         )
 
+    def disable_noise(self):
+        return self.add(
+            "DisableNoise",
+            output_count=1,
+        )
+
     def sampler_select(self, sampler_name="dpmpp_2m_sde_gpu"):
         if sampler_name == "euler_cfgpp":
             return self.add_cached(
@@ -508,18 +616,91 @@ class ComfyWorkflow:
     def model_sampling_discrete(self, model: Output, sampling: str, zsnr=False):
         return self.add("ModelSamplingDiscrete", 1, model=model, sampling=sampling, zsnr=zsnr)
 
+    def skip_layer_guidance_sd3(self, model: Output, layers="7,8,9", scale=1.0, start_percent=0.01, end_percent=0.15):
+        return self.add(
+            "SkipLayerGuidanceSD3",
+            1,
+            model=model,
+            layers=layers,
+            scale=scale,
+            start_percent=start_percent,
+            end_percent=end_percent
+        )
+
     def model_sampling_sd3(self, model: Output, shift=3.0):
         return self.add("ModelSamplingSD3", 1, model=model, shift=shift)
 
     def rescale_cfg(self, model: Output, multiplier=0.7):
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
+    @staticmethod
+    def _model_type_from_filename(filename: str, default=None):
+        if "flux2" in filename or "flux_2" in filename or "flux-2" in filename:
+            return "flux2"
+        elif "zimage" in filename or "z_image" in filename or "z-image" in filename:
+            return "z-image"
+        elif "anima" in filename:
+            return "anima"
+        elif "flux" in filename:
+            return "flux"
+        elif "qwen" in filename:
+            return "qwen"
+        elif "wan" in filename:
+            return "wan"
+        elif "sdxl" in filename:
+            return "sdxl"
+        else:
+            return default
+
     def load_checkpoint(self, checkpoint: str):
+        if "__unet__" in checkpoint:
+            # -Configuration-
+            clip_l_name = "CLIP\\clip_l.safetensors"
+            # t5xxl_name = "T5\\t5-v1_1-xxl-encoder-Q6_K.gguf"  # GGUF Q6 T5XXL
+            t5xxl_name = "T5\\t5-v1_1-xxl-encoder-Q8_0.gguf"  # GGUF Q8 T5XXL
+            # t5xxl_name = "T5\\t5xxl_fp8_e4m3fn.safetensors"  # Standard T5XXL
+            vae_name = "ae.sft"
+
+            # UNET loading
+            from ..util import client_logger as log
+            unet_name = checkpoint
+            for separator in ("/", "\\"):
+                if separator in checkpoint:
+                    unet_name = checkpoint[checkpoint.rindex(separator)+1:]
+                    break
+
+            unet_name = unet_name.replace("__unet__", "")
+            unet_name = separator.join(unet_name.split("__"))  # handle unet subdirectories
+
+            if ".gguf" in unet_name:
+                unet_name = unet_name.replace(".gguf.safetensors", ".gguf")
+                model_output = self.add("UnetLoaderGGUF", 1, unet_name=unet_name)
+            elif "nf4" in unet_name:
+                model_output = self.add("UNETLoaderNF4", 1, unet_name=unet_name)
+            else:
+                model_output = self.add("UNETLoader", 1, unet_name=unet_name)
+
+            # CLIP loading
+            model_type = "flux" if "flux" in unet_name else "sdxl"  # detect model type
+
+            if clip_l_name.endswith(".gguf") or t5xxl_name.endswith(".gguf"):
+                clip_output = self.add("DualCLIPLoaderGGUF", 1, clip_name1=clip_l_name, clip_name2=t5xxl_name, type=model_type)
+            else:
+                clip_output = self.add("DualCLIPLoader", 1, clip_name1=clip_l_name, clip_name2=t5xxl_name, type=model_type)
+
+            # VAE loading
+            vae_output = self.add("VAELoader", 1, vae_name=vae_name)
+
+            return (model_output, clip_output, vae_output)
+
         return self.add_cached("CheckpointLoaderSimple", 3, ckpt_name=checkpoint)
 
     def load_diffusion_model(self, model_name: str):
         if model_name.endswith(".gguf"):
             return self.add_cached("UnetLoaderGGUF", 1, unet_name=model_name)
+        elif "nf4" in model_name:
+            return self.add("UNETLoaderNF4", 1, unet_name=model_name)
+
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
 
     def load_clip(self, clip_name: str, type: str):
@@ -597,7 +778,7 @@ class ComfyWorkflow:
 
     def empty_latent_image(self, extent: Extent, arch: Arch, batch_size=1):
         w, h = extent.width, extent.height
-        if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage):
+        if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage, Arch.anima):
             return self.add("EmptySD3LatentImage", 1, width=w, height=h, batch_size=batch_size)
         if arch.is_flux2 or arch is Arch.ernie:
             return self.add("EmptyFlux2LatentImage", 1, width=w, height=h, batch_size=batch_size)
@@ -617,8 +798,42 @@ class ComfyWorkflow:
     def clip_set_last_layer(self, clip: Output, clip_layer: int):
         return self.add("CLIPSetLastLayer", 1, clip=clip, stop_at_clip_layer=clip_layer)
 
-    def clip_text_encode(self, clip: Output, text: str | Output):
-        return self.add("CLIPTextEncode", 1, clip=clip, text=text)
+    def clip_text_encode(self, clip: Output, text: str | Output, arch: Arch | None = None, split_conditioning=False, seed : int | None = None):
+        if arch.is_sdxl_like or arch.is_flux_like:
+            if split_conditioning and " -." not in text and "-. " not in text and "-.," not in text:
+                if " . " in text:
+                    text_g, text_l = text.split(" . ")
+                else:
+                    text_g = text
+                    text_l = ""
+            elif " . " in text and (" -." in text or "-. " in text or "-.," in text):
+                text_g = text.replace(" . ", "").replace(" -.", "").replace("-. ", "").replace("-.,", "")
+                if "," in text_g:  # deduplicate terms
+                    items_g = list(map(lambda x: x.strip(), text_g.split(",")))
+                    items_g = dict.fromkeys(items_g).keys()
+                    text_g = ", ".join(items_g)
+                text_l = text_g
+
+            else:
+                text_g = text.replace(" -.", "").replace("-. ", "").replace("-.,", "")
+                text_l = text_g
+
+            if seed is not None and text_g is not None and "__" in text_g or "{{" in text_g:
+                copy_to_l = text_g == text_l
+                text_g = self.add("ImpactWildcardProcessor", 1, wildcard_text=text_g, populated_text=text_g, mode="populate", seed=seed)
+                if copy_to_l:
+                    text_l = text_g
+                self.add("Debug Text _O", 1, text=text_g, prefix="ImpactWildcard processed text")
+
+            if arch == Arch.flux:
+                return self.add("CLIPTextEncodeFlux", 1, clip=clip, clip_l=text_l, t5xxl=text_g, guidance=3.5)
+            else:
+                return self.add("CLIPTextEncodeSDXL", 1, clip=clip, text_g=text_g, text_l=text_l, width=2028, height=2048, target_width=2048, target_height=2048, crop_w=0, crop_h=0)
+        else:
+            if seed is not None and text is not None and "__" in text or "{{" in text:
+                text = self.add("ImpactWildcardProcessor", 1, wildcard_text=text, populated_text=text, mode="populate", seed=seed)
+                self.add("Debug Text _O", 1, text=text, prefix="ImpactWildcard processed text")
+            return self.add("CLIPTextEncode", 1, clip=clip, text=text)
 
     def conditioning_area(self, conditioning: Output, area: Bounds, strength=1.0):
         return self.add(
@@ -966,6 +1181,12 @@ class ComfyWorkflow:
         )
         return ConditioningOutput(pos, neg), latent_inpaint, latent
 
+    def override_clip_device(self, clip: Output, device="cpu"):
+        return self.add("OverrideCLIPDevice", 1, clip=clip, device=device)
+
+    def override_vae_device(self, vae: Output, device="cpu"):
+        return self.add("OverrideVAEDevice", 1, vae=vae, device=device)
+
     def vae_encode(self, vae: Output, image: Output):
         return self.add("VAEEncode", 1, vae=vae, pixels=image)
 
@@ -973,6 +1194,7 @@ class ComfyWorkflow:
         return self.add("VAEEncodeForInpaint", 1, vae=vae, pixels=image, mask=mask, grow_mask_by=0)
 
     def vae_encode_tiled(self, vae: Output, image: Output):
+        vae = self.override_vae_device(vae, "cuda:0")
         return self.add(
             "VAEEncodeTiled",
             1,
@@ -991,6 +1213,7 @@ class ComfyWorkflow:
         return self.add("SplitImageWithAlpha", 1, image=image)
 
     def vae_decode_tiled(self, vae: Output, latent_image: Output):
+        vae = self.override_vae_device(vae, "cuda:0")
         return self.add(
             "VAEDecodeTiled",
             1,
@@ -1377,6 +1600,20 @@ class ComfyWorkflow:
             mask=mask,
             strength=1.0,
             set_cond_area="default",
+        )
+
+    def anima_lllite_apply(self, model, in_image, inpaint_mask):
+        return self.add(
+            "AnimaLLLiteApply",
+            1,
+            model=model,
+            image=in_image,
+            mask=inpaint_mask,
+            lllite_name="LLLite\\anima-lllite-inpainting-v2.safetensors",
+            strength=1.0,
+            start_percent=0.0,
+            end_percent=1.0,
+            preserve_wrapper=True,
         )
 
 

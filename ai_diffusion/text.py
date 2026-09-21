@@ -11,6 +11,7 @@ from .localization import translate as _
 from .model.jobs import JobParams
 from .util import PluginError
 from .util import client_logger as log
+from .settings import settings
 
 # Functions to convert between position in Python str objects (unicode) and
 # index in QString char16 arrays (used in eg. QTextCursor).
@@ -63,6 +64,20 @@ def strip_prompt_comments(prompt: str):
 def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
     if language and prompt:
         prompt = f"lang:{language} {prompt} lang:en "
+
+    if settings.split_conditioning_sdxl and (" . " in prompt or " . " in style_prompt):
+        if " . " not in prompt:
+            prompt += " . "
+        if " . " not in style_prompt:
+            style_prompt += " . "
+
+        prompt_g, prompt_l = prompt.split(" . ")
+        style_prompt_g, style_prompt_l = style_prompt.split(" . ")
+        if "{prompt}" in style_prompt_l and prompt_l.strip() == "":
+            prompt_l = prompt_g
+
+        return f"{merge_prompt(prompt_g, style_prompt_g)} . {merge_prompt(prompt_l, style_prompt_l)}"
+
     if style_prompt == "":
         return prompt
     elif "{prompt}" in style_prompt:

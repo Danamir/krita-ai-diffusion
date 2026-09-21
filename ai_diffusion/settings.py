@@ -139,6 +139,14 @@ class PerformanceSettings:
     tiled_vae: bool = False
 
 
+@dataclass
+class FirstPassSettings:
+    sampler: str = None
+    cfg: float = None
+    ratio: float = 0.6
+    steps: int = None
+
+
 class Setting:
     def __init__(self, name: str, default, desc="", help="", items=None):
         self.name = name
@@ -255,6 +263,33 @@ class Settings(QObject):
     _nsfw_filter = Setting(
         _("NSFW Filter"), 0.0, _("Attempt to filter out images with explicit content")
     )
+
+    use_refiner_pass: bool
+    _use_refiner_pass = Setting("Use Refiner Pass", False, "Use a refiner pass for part of the steps, only affects advanced sampler")
+
+    _first_pass_json = {
+        "default": {
+            "sampler": "dpmpp_sde",
+            "ratio": 0.6,
+        },
+        "zimage": {
+            "cfg": 1.8,
+            "steps": 2,
+        },
+        "flux2_4b": {
+            "cfg": 5.0,
+            "steps": 2,
+        },
+        "flux2_9b": {
+            "cfg": 5.0,
+            "steps": 2,
+        }
+    }
+    first_pass_sampler: str
+    _first_pass_sampler = Setting("First Pass Sampler", json.dumps(_first_pass_json), "First pass sampler, only used if refiner pass is activated")
+
+    split_conditioning_sdxl: bool
+    _split_conditioning_sdxl = Setting("SDXL split conditioning", False, "Split the conditioning prompts G ang L on ' . ' token for SDXL")
 
     new_seed_after_apply: bool
     _new_seed_after_apply = Setting(
@@ -578,6 +613,23 @@ class Settings(QObject):
                     log.info(f"Migrated settings from {legacy_path} to {path}")
                 except Exception as e:
                     log.warning(f"Failed to migrate settings from {legacy_path} to {path}: {e}")
+
+    def first_pass_settings(self, arch):
+        fps = FirstPassSettings()
+
+        if '{' in self.first_pass_sampler:
+            json_first_pass = json.loads(self.first_pass_sampler)
+            settings_first_pass = json_first_pass.get(arch.name, json_first_pass.get('default', None))
+
+            if settings_first_pass is not None:
+                fps.sampler = settings_first_pass.get('sampler', fps.sampler)
+                fps.cfg = settings_first_pass.get('cfg', fps.cfg)
+                fps.ratio = settings_first_pass.get('ratio', fps.ratio)
+                fps.steps = settings_first_pass.get('steps', fps.steps)
+        else:
+            fps.sampler = self.first_pass_sampler
+
+        return fps
 
 
 settings = Settings()

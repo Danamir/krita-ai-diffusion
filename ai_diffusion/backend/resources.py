@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+import re
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -125,7 +126,7 @@ class Arch(Enum):
         if string == "qwen-image21":
             return Arch.qwen_2_1
         if string == "qwen-image" and "edit" in filename:
-            if "2509" in filename or "2511" in filename:
+            if re.match(r".*\D2\d{3}\D.*", filename):  # 2xxx pattern
                 return Arch.qwen_e_p
             else:
                 return Arch.qwen_e
@@ -197,6 +198,10 @@ class Arch(Enum):
     @property
     def supports_cfg(self):
         return self not in [Arch.flux, Arch.flux_k]
+
+    @property
+    def supports_split_rendering(self):
+        return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v, Arch.zimage, Arch.flux2_4b, Arch.flux2_9b]
 
     @property
     def is_edit(self):  # edit models make changes to input images
@@ -297,7 +302,7 @@ class ResourceKind(Enum):
 
 
 class UpscalerName(Enum):
-    default = "4x_NMKD-Superscale-SP_178000_G.pth"
+    default = "UltraSharp 4x.pth"
     quality = "HAT_SRx4_ImageNet-pretrain.pth"
     sharp = "Real_HAT_GAN_sharper.pth"
     fast_2x = "OmniSR_X2_DIV2K.safetensors"
@@ -821,7 +826,7 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen"): ["qwen_2.5_vl_7b", "qwen2.5-vl-7b", "qwen_2", "qwen-2", "qwen"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_4b"): ["qwen_3_4b", "qwen3-4b", "qwen3_4b", "qwen_3", "qwen-3"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_8b"): ["qwen_3_8b", "qwen3-8b", "qwen3_8b"],
-    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_06b"): ["qwen_3_06b", "qwen3-06b", "qwen3_06b"],
+    resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3_06b"): ["qwen_3_06b", "qwen_3-06b", "qwen3-06b", "qwen3_06b"],
     resource_id(ResourceKind.text_encoder, Arch.all, "ministral"): ["ministral-3-3b", "ministral"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3vl_4b"): ["qwen3vl_4b", "qwen_3vl_4b", "qwen3-vl-4b"],
     resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3vl_8b"): ["qwen3vl_8b", "qwen_3vl_8b", "qwen3-vl-8b"],

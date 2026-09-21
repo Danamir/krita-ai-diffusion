@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import inspect
 from copy import copy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
@@ -78,7 +79,45 @@ def sampling_from_style(style: Style, strength: float, is_live: bool):
     return result
 
 
+def apply_strength_increase(
+    strength: float, steps: int, min_steps: int = 0, steps_increase: tuple = (0, 1)
+) -> tuple[int, int]:
+    strengths = []
+    start_at_step = round(steps * (1 - strength))
+
+    for i in steps_increase:
+        true_steps = steps + i
+        start_at_step = round(true_steps * (1 - strength))
+
+        if min_steps and true_steps - start_at_step < min_steps:
+            true_steps = min(math.floor(min_steps / strength) + i, steps + steps_increase[-1])
+            start_at_step = true_steps - min_steps
+
+        real_strength = (true_steps - start_at_step) / true_steps
+
+        strengths.append({
+            "steps": true_steps,
+            "start_at_step": start_at_step,
+            "real_strength": real_strength,
+            "delta_strength": abs(real_strength - strength),
+        })
+
+    delta_strength = None
+    for st in strengths:
+        if delta_strength is None or st["delta_strength"] < delta_strength:
+            steps = st["steps"]
+            start_at_step = st["start_at_step"]
+            delta_strength = st["delta_strength"]
+
+    return steps, start_at_step
+
+
 def apply_strength(strength: float, steps: int, min_steps: int = 0) -> tuple[int, int]:
+    if steps <= 10:
+        return apply_strength_increase(
+            strength, steps, min_steps=min_steps, steps_increase=(0, 1, 2)
+        )
+
     start_at_step = round(steps * (1 - strength))
 
     if min_steps and steps - start_at_step < min_steps:
@@ -100,7 +139,7 @@ def snap_to_percent(steps: int, start_at_step: int, max_steps: int) -> int | Non
     return round((steps - start_at_step) * 100 / steps)
 
 
-def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | None = None):
+def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | None = None, arch: Arch | None = None):
     params: dict[str, Any] = {
         "sampler": sampling.sampler,
         "scheduler": sampling.scheduler,
@@ -112,6 +151,20 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
     }
     if strength is not None:
         params["steps"], params["start_at_step"] = apply_strength(strength, sampling.total_steps)
+
+    # inject two pass param
+    if settings.use_refiner_pass and arch is not None:
+        if arch.is_sdxl_like:
+            two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
+        else:
+            two_pass_methods = ("generate",)
+
+        parent_frame = inspect.currentframe().f_back
+        if parent_frame is not None:
+
+            if parent_frame.f_code.co_name in two_pass_methods:
+                params["two_pass"] = True
+
     return params
 
 
@@ -184,6 +237,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         model, clip = w.load_lora(model, clip, lora.name, lora.strength, lora.strength)
 
     if arch is Arch.sd3:
+        model = w.skip_layer_guidance_sd3(model)
         model = w.model_sampling_sd3(model)
 
     if checkpoint.v_prediction_zsnr:
@@ -329,6 +383,7 @@ class Clip(NamedTuple):
 class TextPrompt:
     text: str
     language: str
+    seed: int | None = None
     # Cached values to avoid re-encoding the same text for multiple regions and passes
     _output: Output | None = None
     _clip: Clip | None = None  # can be different due to Lora hooks
@@ -361,7 +416,7 @@ class TextPrompt:
             elif clip.arch is Arch.qwen_e_p and images:
                 self._output = w.text_encode_qwen_image_edit_plus(clip.model, None, images, text)
             else:
-                self._output = w.clip_text_encode(clip.model, text)
+                self._output = w.clip_text_encode(clip.model, text, arch=clip.arch, split_conditioning=settings.split_conditioning_sdxl, seed=self.seed)
 
             if text == "" and clip.arch.is_sdxl_like:
                 self._output = w.conditioning_zero_out(self._output)
@@ -483,9 +538,13 @@ def encode_prompt(
     regions: Output | None,
     image: Output | None = None,
     vae: Output | None = None,
+    sampling: SamplingInput | None = None,
 ):
     ref_images = [image] if image is not None else []
     ref_images += [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
+
+    if sampling is not None:
+            cond.positive.seed = sampling.seed
 
     if clip.arch is Arch.qwen_2_1:
         positive = cond.positive.final_text(w, cond.style_prompt)
@@ -843,7 +902,7 @@ def scale_refine_and_decode(
     latent = vae_encode(w, vae, upscale, tiled_vae)
     params = _sampler_params(sampling, extent.desired, strength=0.4)
 
-    prompt = encode_prompt(w, cond, clip, regions, vae=vae)
+    prompt = encode_prompt(w, cond, clip, regions, vae=vae, sampling=sampling)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.desired, vae, models)
     prompt = apply_reference_conditioning(w, prompt, upscale, latent, cond, vae, arch, tiled_vae)
     result = w.sampler_custom_advanced(model, prompt, latent, arch, **params)
@@ -876,15 +935,17 @@ def generate(
     model, clip, vae = load_checkpoint_with_lora(w, checkpoint, models.all)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
+    if models.arch is Arch.flux:
+        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
     latent = w.empty_latent_image(extent.initial, models.arch, misc.batch_count)
-    prompt = encode_prompt(w, cond, clip, regions, vae=vae)
+    prompt = encode_prompt(w, cond, clip, regions, vae=vae, sampling=sampling)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.initial, vae, models)
     prompt = apply_reference_conditioning(
         w, prompt, None, None, cond, vae, models.arch, checkpoint.tiled_vae
     )
-    sample_params = _sampler_params(sampling, extent.initial)
+    sample_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(model, prompt, latent, models.arch, **sample_params)
     out_image = scale_refine_and_decode(
         extent, w, cond, sampling, out_latent, model_orig, clip, vae, models, checkpoint.tiled_vae
@@ -1030,6 +1091,9 @@ def inpaint(
     )
     initial_bounds = extent.convert(target_bounds, "target", "initial")
 
+    if models.arch is Arch.flux:
+        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
+
     in_image = w.load_image(ensure(images.initial_image))
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.hires_mask))
@@ -1061,12 +1125,16 @@ def inpaint(
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
-    prompt = encode_prompt(w, cond_base, clip, regions, vae=vae)
+    prompt = encode_prompt(w, cond_base, clip, regions, vae=vae, sampling=sampling)
     model, prompt = apply_control(
         w, model, prompt, cond_base.all_control, extent.initial, vae, models
     )
 
-    if params.use_inpaint_model and models.arch is Arch.sdxl:
+    if models.arch is Arch.anima:
+        latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
+        latent = w.set_latent_noise_mask(latent, inpaint_mask)
+        inpaint_model = w.anima_lllite_apply(model, in_image, inpaint_mask)
+    elif params.use_inpaint_model and models.arch is Arch.sdxl:
         prompt, latent_inpaint, latent = w.vae_encode_inpaint_conditioning(
             vae, in_image, inpaint_mask, prompt
         )
@@ -1087,7 +1155,7 @@ def inpaint(
     )
 
     latent = w.batch_latent(latent, misc.batch_count)
-    sampler_params = _sampler_params(sampling, extent.initial)
+    sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
     )
@@ -1101,7 +1169,7 @@ def inpaint(
         upscale_mask = cropped_mask
         if crop_upscale_extent != target_bounds.extent:
             upscale_mask = w.scale_mask(cropped_mask, crop_upscale_extent)
-        sampler_params = _sampler_params(sampling, upscale_extent.desired, strength=0.4)
+        sampler_params = _sampler_params(sampling, upscale_extent.desired, strength=0.4, arch=models.arch)
         upscale_model = w.load_upscale_model(upscaler)
         upscale = vae_decode(w, vae, out_latent, checkpoint.tiled_vae)
         upscale = w.crop_image(upscale, initial_bounds)
@@ -1116,7 +1184,7 @@ def inpaint(
 
         model, regions = apply_attention_mask(w, model, cond_upscale, clip, shape)
         model = apply_regional_ip_adapter(w, model, cond_upscale.regions, shape, models)
-        prompt_up = encode_prompt(w, cond_upscale, clip, regions, vae=vae)
+        prompt_up = encode_prompt(w, cond_upscale, clip, regions, vae=vae, sampling=sampling)
 
         if params.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
             hires_image = ImageOutput(images.hires_image)
@@ -1137,7 +1205,7 @@ def inpaint(
         cropped_extent = ScaledExtent(
             desired_extent, desired_extent, desired_extent, target_bounds.extent
         )
-        out_image = vae_decode(w, vae, out_latent, checkpoint.tiled_vae)
+        out_image = vae_decode(w, vae, out_latent, checkpoint.tiled_vae or force_tiled_vae(desired_extent))
         out_image = w.color_match(out_image, in_image, inpaint_mask, misc.color_match)
         out_image = scale(
             extent.initial, extent.desired, extent.refinement_scaling, w, out_image, models
@@ -1150,6 +1218,22 @@ def inpaint(
     out_masked = w.apply_mask(out_image, compositing_mask)
     w.send_image(out_masked)
     return w
+
+
+def force_tiled_vae(extent: ScaledExtent | Extent):
+    if extent is None:
+        return False
+
+    # Bypass force tiled vae
+    return False
+
+    # Old values for low VRAM
+    if isinstance(extent, ScaledExtent):
+        return extent.desired.width * extent.desired.height > 3e6
+    elif isinstance(extent, Extent):
+        return extent.width * extent.height > 3e6
+
+    return False
 
 
 def refine(
@@ -1166,20 +1250,22 @@ def refine(
     model = apply_ip_adapter(w, model, cond.control, models)
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
+    if models.arch is Arch.flux:
+        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
     in_image = w.load_image(image)
     in_image = scale_to_initial(extent, w, in_image, models)
     latent = vae_encode(w, vae, in_image, checkpoint.tiled_vae)
     latent_batch = w.batch_latent(latent, misc.batch_count)
     latent_batch = setup_latent_layers(w, latent_batch, extent.desired, misc.layer_count)
-    prompt = encode_prompt(w, cond, clip, regions, in_image, vae)
+    prompt = encode_prompt(w, cond, clip, regions, in_image, vae, sampling=sampling)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.desired, vae, models)
     prompt = apply_reference_conditioning(
         w, prompt, in_image, latent, cond, vae, models.arch, checkpoint.tiled_vae
     )
-    sampler_params = _sampler_params(sampling, extent.desired)
+    sampler_params = _sampler_params(sampling, extent.desired, arch=models.arch)
     sampler = w.sampler_custom_advanced(model, prompt, latent_batch, models.arch, **sampler_params)
     sampler = pack_latent_layers(w, sampler, misc)
-    out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae)
+    out_image = vae_decode(w, vae, sampler, checkpoint.tiled_vae or force_tiled_vae(extent))
     out_image = w.nsfw_filter(out_image, sensitivity=misc.nsfw_filter)
     out_image = scale_to_target(extent, w, out_image, models)
     w.send_image(out_image)
@@ -1202,6 +1288,8 @@ def refine_region(
     model = w.differential_diffusion(model)
     model = apply_ip_adapter(w, model, cond.control, models)
     model_orig = copy(model)
+    if models.arch is Arch.flux:
+        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
 
@@ -1211,7 +1299,7 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
-    prompt = encode_prompt(w, cond, clip, regions, in_image, vae)
+    prompt = encode_prompt(w, cond, clip, regions, in_image, vae, sampling=sampling)
 
     if inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
@@ -1231,7 +1319,7 @@ def refine_region(
         inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
-    sampler_params = _sampler_params(sampling, extent.initial)
+    sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
     )
@@ -1391,9 +1479,9 @@ def upscale_tiled(
         tile_cond = cond.copy()
         regions = [tiled_region(r, i, bounds) for r in tile_cond.regions]
         tile_cond.regions = [r for r in regions if r is not None]
-        tile_model, regions = apply_attention_mask(w, model, tile_cond, clip)
+        tile_model, regions = apply_attention_mask(w, model, tile_cond, clip, no_reshape)
         tile_model = apply_regional_ip_adapter(w, tile_model, tile_cond.regions, no_reshape, models)
-        prompt = encode_prompt(w, tile_cond, clip, regions, vae=vae)
+        prompt = encode_prompt(w, tile_cond, clip, regions, vae=vae, sampling=sampling)
 
         control = [tiled_control(c, i) for c in tile_cond.all_control]
         tile_model, prompt = apply_control(w, tile_model, prompt, control, no_reshape, vae, models)
