@@ -714,7 +714,7 @@ class ComfyWorkflow:
         negative_prompt: str | Output,
         images: list[Output],
         vae: Output | None = None,
-        resolution: int = 1024,
+        resolution: int = 0,
     ):
         args: dict[str, Input] = {
             "clip": clip,
