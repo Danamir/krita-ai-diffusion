@@ -630,6 +630,9 @@ class ComfyWorkflow:
     def model_sampling_sd3(self, model: Output, shift=3.0):
         return self.add("ModelSamplingSD3", 1, model=model, shift=shift)
 
+    def model_sampling_aura_flow(self, model: Output, shift=3.0, sampling="flow"):
+        return self.add("ModelSamplingAuraFlow", 1, model=model, shift=shift, sampling=sampling)
+
     def rescale_cfg(self, model: Output, multiplier=0.7):
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
