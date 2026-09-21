@@ -1,18 +1,34 @@
 from __future__ import annotations
-from math import sqrt
-from PyQt5.QtGui import QImage, QImageWriter, QImageReader, QPixmap, QIcon, QPainter, QColorSpace
-from PyQt5.QtGui import qRgba, qRed, qGreen, qBlue, qAlpha, qGray
-from PyQt5.QtCore import Qt, QByteArray, QBuffer, QRect, QSize, QFile, QIODevice
-from typing import Callable, Iterable, SupportsIndex, Tuple, NamedTuple, Union, Optional
-from itertools import product
-from pathlib import Path
-
-from .settings import settings, ImageFileFormat
-from .platform_tools import is_linux
-from .util import clamp, ensure, client_logger as log
 
 import struct
 import zlib
+from collections.abc import Callable, Iterable
+from enum import Enum
+from math import sqrt
+from pathlib import Path
+from typing import NamedTuple, SupportsIndex
+
+from PyQt6.QtCore import QBuffer, QByteArray, QFile, QIODevice, QRect, QSize, Qt
+from PyQt6.QtGui import (
+    QColorSpace,
+    QIcon,
+    QImage,
+    QImageReader,
+    QImageWriter,
+    QPainter,
+    QPixmap,
+    qAlpha,
+    qBlue,
+    qGray,
+    qGreen,
+    qRed,
+    qRgba,
+)
+
+from .platform_tools import is_linux
+from .settings import ImageFileFormat, settings
+from .util import clamp, ensure
+from .util import client_logger as log
 
 
 def multiple_of(number, multiple):
@@ -70,17 +86,21 @@ class Extent(NamedTuple):
         return Extent(qsize.width(), qsize.height())
 
     @staticmethod
-    def largest(a: "Extent", b: "Extent"):
+    def largest(a: Extent, b: Extent):
         return a if a.width * a.height > b.width * b.height else b
 
     @staticmethod
-    def ratio(a: "Extent", b: "Extent"):
+    def min(a: Extent, b: Extent):
+        return Extent(min(a.width, b.width), min(a.height, b.height))
+
+    @staticmethod
+    def ratio(a: Extent, b: Extent):
         return sqrt(a.pixel_count / b.pixel_count)
 
     def __add__(self, other):
         return Extent(self.width + other.width, self.height + other.height)
 
-    def __sub__(self, other: "Extent"):
+    def __sub__(self, other: Extent):
         return Extent(self.width - other.width, self.height - other.height)
 
     def __mul__(self, scale: float | SupportsIndex):
@@ -100,7 +120,7 @@ class Point(NamedTuple):
         x, y = other[0], other[1]
         return Point(self.x + x, self.y + y)
 
-    def __sub__(self, other: "Point"):
+    def __sub__(self, other: Point):
         return Point(self.x - other.x, self.y - other.y)
 
     def __mul__(self, other):
@@ -151,17 +171,17 @@ class Bounds(NamedTuple):
         return x >= 0 and x < self.width and y >= 0 and y < self.height
 
     @staticmethod
-    def scale(b: "Bounds", scale: float):
+    def scale(b: Bounds, scale: float):
         if scale == 1:
             return b
 
         def apply(x):
-            return int(round(x * scale))
+            return round(x * scale)
 
         return Bounds(apply(b.x), apply(b.y), apply(b.width), apply(b.height))
 
     @staticmethod
-    def pad(bounds: "Bounds", padding: int, min_size=0, multiple=8, square=False):
+    def pad(bounds: Bounds, padding: int, min_size=0, multiple=8, square=False):
         """Grow bounds by adding `padding` evenly on all side. Add additional padding if the area
         is still smaller than `min_size` and ensure the result is a multiple of `multiple`.
         If `square` is set, works towards making width and height balanced.
@@ -184,7 +204,7 @@ class Bounds(NamedTuple):
         return Bounds(new_x, new_y, new_width, new_height)
 
     @staticmethod
-    def clamp(bounds: "Bounds", extent: Extent):
+    def clamp(bounds: Bounds, extent: Extent):
         """Clamp mask bounds to be inside an image region. Bounds extent should remain unchanged,
         unless it is larger than the image extent.
         """
@@ -201,7 +221,7 @@ class Bounds(NamedTuple):
         return Bounds(x, y, width, height)
 
     @staticmethod
-    def restrict(bounds: "Bounds", within: "Bounds"):
+    def restrict(bounds: Bounds, within: Bounds):
         """Restrict bounds to be inside another bounds."""
         x = max(within.x, bounds.x)
         y = max(within.y, bounds.y)
@@ -210,7 +230,7 @@ class Bounds(NamedTuple):
         return Bounds(x, y, width, height)
 
     @staticmethod
-    def expand(bounds: "Bounds", include: "Bounds"):
+    def expand(bounds: Bounds, include: Bounds):
         """Expand bounds to include another bounds."""
         x = min(bounds.x, include.x)
         y = min(bounds.y, include.y)
@@ -219,7 +239,7 @@ class Bounds(NamedTuple):
         return Bounds(x, y, width, height)
 
     @staticmethod
-    def apply_crop(bounds: "Bounds", image_bounds: "Bounds"):
+    def apply_crop(bounds: Bounds, image_bounds: Bounds):
         """Adjust bounds area after the image has been cropped."""
         x = bounds.x - image_bounds.x
         y = bounds.y - image_bounds.y
@@ -227,19 +247,19 @@ class Bounds(NamedTuple):
         return Bounds.clamp(result, image_bounds.extent)
 
     @staticmethod
-    def at_least(bounds: "Bounds", min_size: int):
+    def at_least(bounds: Bounds, min_size: int):
         """Return bounds with width and height being at least `min_size`."""
         return Bounds(bounds.x, bounds.y, max(bounds.width, min_size), max(bounds.height, min_size))
 
     @staticmethod
-    def minimum_size(bounds: "Bounds", min_size: int, max_extent: Extent):
+    def minimum_size(bounds: Bounds, min_size: int, max_extent: Extent):
         """Return bounds extended to a minimum size if they still fit."""
         if any(x < min_size for x in max_extent):
             return None  # doesn't fit, image too small
         return Bounds.clamp(Bounds.at_least(bounds, min_size), max_extent)
 
     @staticmethod
-    def intersection(a: "Bounds", b: "Bounds"):
+    def intersection(a: Bounds, b: Bounds):
         x = max(a.x, b.x)
         y = max(a.y, b.y)
         width = min(a.x + a.width, b.x + b.width) - x
@@ -247,7 +267,7 @@ class Bounds(NamedTuple):
         return Bounds(x, y, max(0, width), max(0, height))
 
     @staticmethod
-    def union(a: "Bounds", b: "Bounds"):
+    def union(a: Bounds, b: Bounds):
         x = min(a.x, b.x)
         y = min(a.y, b.y)
         width = max(a.x + a.width, b.x + b.width) - x
@@ -258,7 +278,7 @@ class Bounds(NamedTuple):
     def area(self):
         return self.width * self.height
 
-    def relative_to(self, reference: "Bounds"):
+    def relative_to(self, reference: Bounds):
         """Return bounds relative to another bounds."""
         return Bounds(self.x - reference.x, self.y - reference.y, self.width, self.height)
 
@@ -271,14 +291,26 @@ def extent_equal(a: QImage, b: QImage):
     return a.width() == b.width() and a.height() == b.height()
 
 
-_qt_supports_webp = None
+_qt_supports_webp: bool | None = None
 
 
-def qt_supports_webp():
+def qt_supports_webp(extent: Extent | None = None):
+    # Qt6's VP8L encoder produces a degenerate 36-byte file for images smaller than
+    # this threshold that its own decoder cannot read back. 64x64 is safely above it.
+    if extent is not None and (extent.width < 64 or extent.height < 64):
+        return False
+
+    # Check if the qt6-image-formats package is installed, which adds WEBP support
     global _qt_supports_webp
     if _qt_supports_webp is None:
         _qt_supports_webp = QByteArray(b"webp") in QImageWriter.supportedImageFormats()
     return _qt_supports_webp
+
+
+class BlendMode(Enum):
+    alpha = 1  # alpha compositing (src over dst)
+    keep = 2  # keep dst alpha, replace RGB (dst atop src)
+    replace = 3  # replace dst with src
 
 
 class Image:
@@ -286,7 +318,7 @@ class Image:
         self._qimage = qimage
 
     @staticmethod
-    def load(filepath: Union[str, Path]):
+    def load(filepath: str | Path):
         image = QImage()
         success = image.load(str(filepath))
         assert success, f"Failed to load image {filepath}"
@@ -300,16 +332,35 @@ class Image:
         return img
 
     @staticmethod
-    def from_packed_bytes(data: QByteArray, extent: Extent, channels=4):
-        assert channels == 4 or channels == 1
+    def from_packed_bytes(data: QByteArray, extent: Extent, channels: int | None = None):
+        if channels is None:
+            channels = 4 if len(data) == extent.pixel_count * 4 else 1
+        assert channels in {4, 1}
+        expected_size = extent.pixel_count * channels
+        if len(data) != expected_size:
+            raise ValueError(
+                f"Can't read image: data size {len(data)} does not match expected size {expected_size}."
+                " Only 8-bit/channel image formats are supported."
+            )
         stride = extent.width * channels
         format = QImage.Format.Format_ARGB32 if channels == 4 else QImage.Format.Format_Grayscale8
-        qimg = QImage(data, extent.width, extent.height, stride, format)
-        return Image(qimg)
+        qimg = QImage(data.data(), extent.width, extent.height, stride, format)
+        return Image(qimg.copy())
 
     @staticmethod
-    def copy(image: "Image"):
+    def copy(image: Image):
         return Image(QImage(image._qimage))
+
+    @staticmethod
+    def flatten(layer_stack: Iterable[Image]):
+        base = None
+        for layer in layer_stack:
+            if base is None:
+                base = Image.copy(layer)
+            else:
+                base.draw_image(layer)
+        assert base is not None, "No images passed to flatten"
+        return base
 
     @property
     def width(self):
@@ -342,7 +393,7 @@ class Image:
         return Image.from_bytes(bytes)
 
     @staticmethod
-    def from_bytes(data: QBuffer | QByteArray | memoryview, format: str | None = None):
+    def from_bytes(data: QBuffer | QByteArray | memoryview | bytes, format: str | None = None):
         if isinstance(data, QBuffer):
             buffer = data
         else:
@@ -359,7 +410,7 @@ class Image:
         if loader.read(img):
             return Image(img)
         else:
-            raise Exception(f"Failed to load image from buffer: {loader.errorString()}")
+            raise RuntimeError(f"Failed to load image from buffer: {loader.errorString()}")
 
     @staticmethod
     def from_pil(pil_image):
@@ -370,7 +421,7 @@ class Image:
         return Image(qimage)
 
     @staticmethod
-    def scale(img: "Image", target: Extent):
+    def scale(img: Image, target: Extent):
         if isinstance(img, DummyImage):
             return DummyImage(target)
         if img.extent == target:
@@ -381,15 +432,15 @@ class Image:
         return Image(scaled)
 
     @staticmethod
-    def scale_to_fit(img: "Image", target: Extent):
+    def scale_to_fit(img: Image, target: Extent):
         return Image.scale(img, img.extent.scale_keep_aspect(target))
 
     @staticmethod
-    def crop(img: "Image", bounds: Bounds):
+    def crop(img: Image, bounds: Bounds):
         return Image(img._qimage.copy(*bounds))
 
     @staticmethod
-    def _mask_op(lhs: "Image", rhs: "Image", mode: QPainter.CompositionMode):
+    def _mask_op(lhs: Image, rhs: Image, mode: QPainter.CompositionMode):
         assert extent_equal(lhs._qimage, rhs._qimage)
         assert lhs.is_mask and rhs.is_mask
         result = lhs._qimage.copy()
@@ -404,59 +455,99 @@ class Image:
         return Image(result)
 
     @staticmethod
-    def save_png_w_itxt(img_path: Union[str, Path], png_data: bytes, keyword: str, text: str):
+    def save_png_w_itxt(img_path: str | Path, png_data: bytes, keyword: str, text: str):
         if png_data[:8] != b"\x89PNG\r\n\x1a\n":
             raise ValueError("Not a valid PNG file")
 
         offset = 8
+        result = bytearray(png_data[:8])
         ihdr_inserted = False
+        keyword_bytes = keyword.encode("latin1")
+        text_bytes = text.encode("utf-8")
+        itxt_data = (
+            keyword_bytes
+            + b"\x00"
+            + b"\x00"  # compression flag: 0 (not compressed)
+            + b"\x00"  # compression method: 0
+            + b"\x00"  # language tag: empty
+            + b"\x00"  # translated keyword: empty
+            + text_bytes
+        )
+        itxt_chunk = (
+            struct.pack(">I", len(itxt_data))
+            + b"iTXt"
+            + itxt_data
+            + struct.pack(">I", zlib.crc32(b"iTXt" + itxt_data) & 0xFFFFFFFF)
+        )
 
-        with open(img_path, "wb") as f:
-            # Write PNG header
-            f.write(png_data[:8])
+        while offset < len(png_data):
+            length = struct.unpack(">I", png_data[offset : offset + 4])[0]
+            chunk_end = offset + 12 + length
+            chunk_type = png_data[offset + 4 : offset + 8]
+            result += png_data[offset:chunk_end]
+            offset = chunk_end
+            if not ihdr_inserted and chunk_type == b"IHDR":
+                result += itxt_chunk
+                ihdr_inserted = True
 
-            while offset < len(png_data):
-                length = struct.unpack(">I", png_data[offset : offset + 4])[0]
-                chunk_type = png_data[offset + 4 : offset + 8]
-                chunk_data = png_data[offset + 8 : offset + 8 + length]
-                crc = png_data[offset + 8 + length : offset + 12 + length]
-                offset += 12 + length
+        Path(img_path).write_bytes(result)
 
-                # Write original chunk
-                f.write(struct.pack(">I", length))
-                f.write(chunk_type)
-                f.write(chunk_data)
-                f.write(crc)
+    @staticmethod
+    def read_png_text(img_path: str | Path) -> dict[str, str]:
+        """Read tEXt/zTXt/iTXt chunks from a PNG file, keyed by keyword.
 
-                if not ihdr_inserted and chunk_type == b"IHDR":
-                    # Insert iTXt chunk after IHDR
-                    keyword_bytes = keyword.encode("latin1")
-                    text_bytes = text.encode("utf-8")
-                    itxt_data = (
-                        keyword_bytes
-                        + b"\x00"
-                        + b"\x00"  # compression flag: 0 (not compressed)
-                        + b"\x00"  # compression method: 0
-                        + b"\x00"  # language tag: empty
-                        + b"\x00"  # translated keyword: empty
-                        + text_bytes
-                    )
-                    f.write(struct.pack(">I", len(itxt_data)))
-                    f.write(b"iTXt")
-                    f.write(itxt_data)
-                    f.write(struct.pack(">I", zlib.crc32(b"iTXt" + itxt_data) & 0xFFFFFFFF))
-                    ihdr_inserted = True
+        QImageReader.text() collapses newlines in PNG text chunks, which destroys the line
+        structure of prompts written by other tools. Parsing the chunks directly keeps the
+        text byte-for-byte as it was written.
+        """
+        result: dict[str, str] = {}
+        data = Path(img_path).read_bytes()
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            return result
+
+        offset = 8
+        while offset + 8 <= len(data):
+            length = struct.unpack(">I", data[offset : offset + 4])[0]
+            chunk_type = data[offset + 4 : offset + 8]
+            chunk_data = data[offset + 8 : offset + 8 + length]
+            offset += 12 + length  # length + type + data + crc
+
+            if chunk_type == b"IEND":
+                break
+            if chunk_type not in (b"tEXt", b"zTXt", b"iTXt"):
+                continue
+
+            try:
+                keyword, rest = chunk_data.split(b"\x00", 1)
+                if chunk_type == b"tEXt":
+                    text = rest.decode("utf-8", errors="replace")
+                elif chunk_type == b"zTXt":
+                    # rest = compression method (1 byte) + compressed text
+                    text = zlib.decompress(rest[1:]).decode("utf-8", errors="replace")
+                else:  # iTXt
+                    # rest = flag + method + language\0 + translated keyword\0 + text
+                    compressed = rest[0] == 1
+                    _, _, tail = rest[2:].split(b"\x00", 2)
+                    if compressed:
+                        tail = zlib.decompress(tail)
+                    text = tail.decode("utf-8", errors="replace")
+                result[keyword.decode("latin1")] = text
+            except Exception as e:
+                log.warning(f"Skipping malformed PNG text chunk in {img_path}: {e}")
+                continue  # keep reading the rest of the file
+
+        return result
 
     @classmethod
-    def mask_subtract(cls, lhs: "Image", rhs: "Image"):
+    def mask_subtract(cls, lhs: Image, rhs: Image):
         return cls._mask_op(rhs, lhs, QPainter.CompositionMode.CompositionMode_SourceOut)
 
     @classmethod
-    def mask_add(cls, lhs: "Image", rhs: "Image"):
+    def mask_add(cls, lhs: Image, rhs: Image):
         return cls._mask_op(lhs, rhs, QPainter.CompositionMode.CompositionMode_SourceOver)
 
     @staticmethod
-    def compare(img_a: "Image", img_b: "Image"):
+    def compare(img_a: Image, img_b: Image):
         assert extent_equal(img_a._qimage, img_b._qimage)
         import numpy as np
 
@@ -472,7 +563,7 @@ class Image:
         else:
             return qGray(c)
 
-    def set_pixel(self, x: int, y: int, color: Tuple[int, int, int, int]):
+    def set_pixel(self, x: int, y: int, color: tuple[int, int, int, int]):
         # Note: this is slow, only used for testing
         r, g, b, a = color
         self._qimage.setPixel(x, y, qRgba(r, g, b, a))
@@ -504,11 +595,11 @@ class Image:
             return buffer
         else:
             ptr = ensure(self._qimage.constBits(), "Accessing data of invalid image")
-            return QByteArray(ptr.asstring(self._qimage.byteCount()))
+            return QByteArray(ptr.asstring(self._qimage.sizeInBytes()))
 
     @property
     def size(self):  # in bytes
-        return self._qimage.byteCount()
+        return self._qimage.sizeInBytes()
 
     def to_array(self):
         import numpy as np
@@ -526,7 +617,7 @@ class Image:
         self, buffer: QIODevice, format=ImageFileFormat.png, override_quality: int | None = None
     ):
         # Compression takes time for large images and blocks the UI, might be worth to thread.
-        if not qt_supports_webp():
+        if not qt_supports_webp(self.extent):
             format = format.no_webp_fallback
         format_str = format.extension
         quality = override_quality if override_quality is not None else format.quality
@@ -537,12 +628,12 @@ class Image:
             info = f"[{self.width}x{self.height} format={self._qimage.format()}] -> {format_str}@{quality}"
             if is_linux and format_str == "webp":
                 log.warning(
-                    "To enable support for writing webp images, you may need to install the 'qt5-imageformats' package."
+                    "To enable support for writing webp images, you may need to install the 'qt6-imageformats' package."
                 )
                 global _qt_supports_webp
                 _qt_supports_webp = False
                 self.write(buffer, format.no_webp_fallback)
-            raise Exception(f"Failed to write image to buffer: {writer.errorString()} {info}")
+            raise RuntimeError(f"Failed to write image to buffer: {writer.errorString()} {info}")
 
     def to_bytes(self, format=ImageFileFormat.png):
         byte_array = QByteArray()
@@ -563,14 +654,41 @@ class Image:
     def to_icon(self):
         return QIcon(self.to_pixmap())
 
+    def to_packed_bytes(self):
+        self.to_krita_format()
+        w, h = self.extent
+        c = 4 if self.is_rgba else 1
+        bits = self._qimage.constBits()
+        assert bits is not None, "Accessing data of invalid image"
+        ptr = bits.asarray(w * h * c)
+        buf = bytearray()
+        for i in range(h):
+            row_start = i * self._qimage.bytesPerLine()
+            buf += bytes(ptr[row_start : row_start + w * c])
+        return QByteArray(bytes(buf))
+
+    def to_pil(self):
+        from PIL import Image as PILImage
+
+        self.to_numpy_format()
+        w, h = self.extent
+        c = 4 if self.is_rgba else 1
+        bits = self._qimage.constBits()
+        assert bits is not None, "Accessing data of invalid image"
+        ptr = bits.asarray(w * h * c)
+        mode = "RGBA" if self.is_rgba else "L"
+        return PILImage.frombuffer(mode, (w, h), ptr, "raw", mode, 0, 1)  # type: ignore
+
     def to_mask(self, bounds: Bounds | None = None):
         assert self.is_mask
         return Mask(bounds or Bounds(0, 0, *self.extent), self._qimage)
 
-    def draw_image(self, image: "Image", offset: tuple[int, int] = (0, 0), keep_alpha=False):
+    def draw_image(self, image: Image, offset: tuple[int, int] = (0, 0), blend=BlendMode.alpha):
         mode = QPainter.CompositionMode.CompositionMode_SourceOver
-        if keep_alpha:
+        if blend == BlendMode.keep:
             mode = QPainter.CompositionMode.CompositionMode_SourceAtop
+        elif blend == BlendMode.replace:
+            mode = QPainter.CompositionMode.CompositionMode_Source
         painter = QPainter(self._qimage)
         painter.setCompositionMode(mode)
         painter.drawImage(*offset, image._qimage)
@@ -578,24 +696,110 @@ class Image:
 
     def save(
         self,
-        filepath: Union[str, Path],
+        filepath: str | Path,
         format: ImageFileFormat | None = None,
         quality: int | None = None,
     ):
         fmt = format or ImageFileFormat.from_extension(filepath)
         file = QFile(str(filepath))
         if not file.open(QFile.OpenModeFlag.WriteOnly):
-            raise Exception(f"Failed to open {filepath} for writing: {file.errorString()}")
+            raise RuntimeError(f"Failed to open {filepath} for writing: {file.errorString()}")
         try:
             self.write(file, fmt, quality)
         finally:
             file.close()
 
     def save_png_with_metadata(
-        self, filepath: Union[str, Path], metadata_text: str, format: ImageFileFormat | None = None
+        self, filepath: str | Path, metadata_text: str, format: ImageFileFormat | None = None
     ):
-        png_bytes = bytes(self.to_bytes(format or ImageFileFormat.png))
+        png_bytes = self.to_bytes(format or ImageFileFormat.png).data()
         self.save_png_w_itxt(filepath, png_bytes, "parameters", metadata_text)
+
+    def write_xmp_metadata(self, filepath: str | Path, xmp: str):
+        path = Path(filepath)
+        match path.suffix.lower():
+            case ".png":
+                self.save_png_w_itxt(path, path.read_bytes(), "XML:com.adobe.xmp", xmp)
+            case ".jpg" | ".jpeg":
+                self._write_jpeg_xmp(path, xmp.encode("utf-8"))
+            case ".webp":
+                self._write_webp_xmp(path, xmp.encode("utf-8"))
+            case _:
+                raise ValueError(f"Unsupported image format for XMP metadata: {path.suffix}")
+
+    @staticmethod
+    def _write_jpeg_xmp(path: Path, xmp: bytes):
+        header = b"http://ns.adobe.com/xap/1.0/\x00"
+        segment = header + xmp
+        if len(segment) > 65533:
+            raise ValueError("XMP metadata is too large for JPEG")
+        data = path.read_bytes()
+        if not data.startswith(b"\xff\xd8"):
+            raise ValueError("Not a valid JPEG file")
+
+        result = bytearray(data[:2])
+        offset = 2
+        while offset < len(data):
+            if data[offset] != 0xFF or offset + 4 > len(data):
+                result += data[offset:]
+                break
+            marker = data[offset + 1]
+            if marker in {0xD9, 0xDA}:
+                result += data[offset:]
+                break
+            length = struct.unpack(">H", data[offset + 2 : offset + 4])[0]
+            end = offset + 2 + length
+            if end > len(data):
+                raise ValueError("Invalid JPEG segment length")
+            is_xmp = marker == 0xE1 and data[offset + 4 : end].startswith(header)
+            if not is_xmp:
+                result += data[offset:end]
+            offset = end
+
+        xmp_segment = b"\xff\xe1" + struct.pack(">H", len(segment) + 2) + segment
+        path.write_bytes(data[:2] + xmp_segment + result[2:])
+
+    def _write_webp_xmp(self, path: Path, xmp: bytes):
+        data = path.read_bytes()
+        if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            raise ValueError("Not a valid WebP file")
+
+        chunks: list[tuple[bytes, bytes]] = []
+        offset = 12
+        has_vp8x = False
+        while offset + 8 <= len(data):
+            kind = data[offset : offset + 4]
+            size = struct.unpack("<I", data[offset + 4 : offset + 8])[0]
+            end = offset + 8 + size
+            if end > len(data):
+                raise ValueError("Invalid WebP chunk length")
+            chunk = data[offset + 8 : end]
+            offset = end + size % 2
+            if kind == b"XMP ":
+                continue
+            if kind == b"VP8X":
+                if len(chunk) != 10:
+                    raise ValueError("Invalid WebP VP8X chunk")
+                flags = bytearray(chunk)
+                flags[0] |= 0x04
+                chunk = bytes(flags)
+                has_vp8x = True
+            chunks.append((kind, chunk))
+
+        if not has_vp8x:
+            vp8x = bytearray(10)
+            vp8x[0] = 0x04
+            vp8x[4:7] = (self.width - 1).to_bytes(3, "little")
+            vp8x[7:10] = (self.height - 1).to_bytes(3, "little")
+            chunks.insert(0, (b"VP8X", bytes(vp8x)))
+        chunks.append((b"XMP ", xmp))
+
+        body = bytearray(b"WEBP")
+        for kind, chunk in chunks:
+            body += kind + struct.pack("<I", len(chunk)) + chunk
+            if len(chunk) % 2:
+                body += b"\x00"
+        path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
 
     def debug_save(self, name):
         if settings.debug_image_folder:
@@ -640,12 +844,12 @@ class DummyImage(Image):
 class ImageCollection:
     _items: list[Image]
 
-    def __init__(self, items: Optional[Iterable[Image]] = None):
+    def __init__(self, items: Iterable[Image] | None = None):
         self._items = []
         if items is not None:
             self.append(items)
 
-    def append(self, items: Union[Image, Iterable[Image]]):
+    def append(self, items: Image | Iterable[Image]):
         if isinstance(items, ImageCollection):
             self._items.extend(items)
         elif isinstance(items, Image):
@@ -669,7 +873,7 @@ class ImageCollection:
     def remove(self, index: int):
         return self._items.pop(index)
 
-    def save(self, filepath: Union[Path, str]):
+    def save(self, filepath: Path | str):
         filepath = Path(filepath)
         suffix = filepath.suffix
         filepath = filepath.with_suffix("")
@@ -729,7 +933,7 @@ class ImageCollection:
 
 
 class Mask:
-    def __init__(self, bounds: Bounds, data: Union[QImage, QByteArray]):
+    def __init__(self, bounds: Bounds, data: QImage | QByteArray):
         self.bounds = bounds
         if isinstance(data, QImage):
             self.image: QImage = data
@@ -743,23 +947,24 @@ class Mask:
         return Mask(bounds, QByteArray(bytes(bounds.width * bounds.height)))
 
     @staticmethod
-    def rectangle(bounds: Bounds, feather=0):
+    def rectangle(bounds: Bounds, context: Bounds):
         # Note: for testing only, where Krita selection is not available
-        m = [255 for i in range(bounds.width * bounds.height)]
-        if feather > 0:
-            for x, y in product(range(bounds.width), range(bounds.height)):
-                l = min(0, x - feather) * -1
-                t = min(0, y - feather) * -1
-                r = max(0, x + feather + 1 - bounds.width)
-                b = max(0, y + feather + 1 - bounds.height)
-                alpha = (
-                    64 * l // feather + 64 * t // feather + 64 * r // feather + 64 * b // feather
-                )
-                m[y * bounds.width + x] = 255 - alpha
-        return Mask(bounds, QByteArray(bytes(m)))
+        m = []
+        for y in range(context.height):
+            for x in range(context.width):
+                if (
+                    x >= bounds.x
+                    and x < bounds.x + bounds.width
+                    and y >= bounds.y
+                    and y < bounds.y + bounds.height
+                ):
+                    m.append(255)
+                else:
+                    m.append(0)
+        return Mask(context, QByteArray(bytes(m)))
 
     @staticmethod
-    def load(filepath: Union[str, Path]):
+    def load(filepath: str | Path):
         mask = QImage()
         success = mask.load(str(filepath))
         assert success, f"Failed to load mask {filepath}"
@@ -768,7 +973,7 @@ class Mask:
         return Mask(Bounds(0, 0, mask.width(), mask.height()), mask)
 
     @staticmethod
-    def crop(mask: "Mask", bounds: Bounds):
+    def crop(mask: Mask, bounds: Bounds):
         return Mask(bounds, mask.image.copy(*bounds))
 
     def value(self, x: int, y: int):
@@ -780,10 +985,10 @@ class Mask:
         e = self.bounds.extent
         return [self.value(x, y) for y in range(e.height) for x in range(e.width)]
 
-    def to_image(self, extent: Optional[Extent] = None):
+    def to_image(self, extent: Extent | None = None):
         if extent is None:
             return Image(self.image)
-        img = QImage(extent.width, extent.height, QImage.Format_Grayscale8)
+        img = QImage(extent.width, extent.height, QImage.Format.Format_Grayscale8)
         img.fill(0)
         painter = QPainter(img)
         painter.drawImage(self.bounds.x, self.bounds.y, self.image)

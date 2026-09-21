@@ -1,5 +1,5 @@
 name: Lint, Typecheck and Test
-on: [push, pull_request]
+on: [pull_request]
 
 jobs:
   check:
@@ -13,7 +13,7 @@ jobs:
       - name: Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
       - name: Dependencies
         run: pip install -r requirements.txt          
@@ -29,17 +29,39 @@ jobs:
         run: ruff check --output-format=github
   
   test:
-    runs-on: ubuntu-22.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
+      # PyQt6.QtGui import requires libEGL.so.1 (even with QT_QPA_PLATFORM=offscreen)
+      - name: Packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
       - name: Checkout
         uses: actions/checkout@v3
         with:
           submodules: true
+      - name: Free Disk Space (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
       - name: Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
       - name: Dependencies
         run: pip install -r requirements.txt

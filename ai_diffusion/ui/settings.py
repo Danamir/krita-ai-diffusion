@@ -1,46 +1,137 @@
 from __future__ import annotations
-from krita import Krita
 
-from typing import Optional
-from PyQt5.QtWidgets import (
-    QVBoxLayout,
-    QHBoxLayout,
+from typing import cast
+
+from krita import Krita
+from PyQt6.QtCore import QMetaObject, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QFontDatabase,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+)
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QPushButton,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QLineEdit,
+    QMessageBox,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
-    QRadioButton,
-    QComboBox,
+    QStyle,
+    QStyleOption,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
-    QMessageBox,
-    QCheckBox,
-    QToolButton,
 )
-from PyQt5.QtCore import Qt, QMetaObject, QSize, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QGuiApplication, QCursor, QFontMetrics
 
-from ..client import Client, User, MissingResources
-from ..cloud_client import CloudClient
-from ..resources import Arch, ResourceId
-from ..settings import Settings, ServerMode, PerformancePreset, settings, ImageFileFormat
-from ..server import Server
+from .. import __version__, eventloop, util
+from ..backend import resources
+from ..backend.client import Client, MissingResources, User
+from ..backend.cloud_client import CloudClient
+from ..backend.resources import Arch, ResourceId
+from ..backend.server import Server, ServerState
+from ..localization import Localization
+from ..localization import translate as _
+from ..model.connection import ConnectionState, apply_performance_preset
+from ..model.properties import Binding
+from ..model.root import collect_diagnostics, root
+from ..model.updates import UpdateState
+from ..settings import ImageFileFormat, PerformancePreset, ServerMode, Settings, settings
 from ..style import Style
-from ..root import root
-from ..connection import ConnectionState, apply_performance_preset
-from ..updates import UpdateState
-from ..properties import Binding
-from ..localization import Localization, translate as _
-from .. import resources, eventloop, util, __version__
 from .server import ServerWidget
-from .settings_widgets import SpinBoxSetting, SliderSetting, SwitchSetting
-from .settings_widgets import SettingsTab, ComboBoxSetting, FileListSetting
+from .settings_widgets import (
+    ComboBoxSetting,
+    FileListSetting,
+    SettingsTab,
+    SliderSetting,
+    SpinBoxSetting,
+    SwitchSetting,
+)
 from .style import StylePresets
-from .theme import add_header, logo, red, yellow, green, grey
+from .theme import add_header, green, grey, logo, prompt_max_line_count, red, yellow
+
+
+class InitialSetupWidget(QWidget):
+    finished = pyqtSignal(ServerMode)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 0)
+        self.setLayout(layout)
+
+        label_title = QLabel("<b>" + _("Welcome to Image Generation in Krita") + "</b>", self)
+        label_sub = QLabel(
+            _(
+                "To create images, the plugin needs to connect to a backend server. Please choose one of the options below (you can always switch later)."
+            ),
+            self,
+        )
+        label_sub.setWordWrap(True)
+        layout.addWidget(label_title)
+        layout.addWidget(label_sub)
+        layout.addSpacing(20)
+
+        def add_option(title: str, desc_text: str, button_text: str, mode: ServerMode):
+            header = QLabel("<b>" + title + "</b>", self)
+            desc = QLabel(desc_text, self)
+            desc.setMaximumWidth(600)
+            desc.setWordWrap(True)
+            button = QPushButton(button_text, self)
+            button.setMinimumHeight(int(1.3 * button.sizeHint().height()))
+            button.setMaximumWidth(300)
+            button.clicked.connect(self._choose(mode))
+            layout.addWidget(header)
+            layout.addWidget(desc)
+            layout.addWidget(button)
+            layout.addSpacing(16)
+
+        add_option(
+            _("Option {number}", number=1) + ": " + _("Online Service"),
+            _(
+                "Generate images via {link}. Create an account to get started. No local installation or powerful hardware needed.",
+                link="<a href='https://www.interstice.cloud'>interstice.cloud</a>",
+            ),
+            _("Login or Sign up"),
+            ServerMode.cloud,
+        )
+        add_option(
+            _("Option {number}", number=2) + ": " + _("Local Managed Server"),
+            _(
+                "Install and run a local ComfyUI server on your machine. Installation and updates are performed automatically by the plugin. Requires a compatible GPU (NVIDIA with at least 6GB VRAM recommended)."
+            ),
+            _("Start Installation"),
+            ServerMode.managed,
+        )
+        add_option(
+            _("Option {number}", number=3) + ": " + _("Custom ComfyUI"),
+            _(
+                "Connect to an existing installation of ComfyUI. It can be on the same machine, or a remote machine over the network. You are responsible to setup ComfyUI and install required custom nodes and models."
+            )
+            + "<br><a href='https://docs.interstice.cloud/comfyui-setup'>ComfyUI Setup Guide</a>",
+            _("Connect via URL"),
+            ServerMode.external,
+        )
+        layout.addStretch()
+
+    def _choose(self, mode: ServerMode):
+        def handler():
+            settings.server_mode = mode
+            settings.save()
+            self.finished.emit(mode)
+
+        return handler
 
 
 class UserWidget(QFrame):
@@ -77,6 +168,23 @@ class UserWidget(QFrame):
         image_remaining_layout.addWidget(QLabel(_("Image tokens remaining:"), self), 0)
         image_remaining_layout.addWidget(self._tokens_remaining, 1)
         layout.addLayout(image_remaining_layout)
+        layout.addSpacing(8)
+
+        buy_layout = QHBoxLayout()
+        layout.addLayout(buy_layout)
+
+        self._buy_tokens5000_button = QPushButton(_("Buy Tokens") + " (5000)", self)
+        self._buy_tokens5000_button.clicked.connect(lambda: self._buy_tokens("5000"))
+        buy_layout.addWidget(self._buy_tokens5000_button, 1)
+
+        self._buy_tokens15000_button = QPushButton(_("Buy Tokens") + " (15000)", self)
+        self._buy_tokens15000_button.clicked.connect(lambda: self._buy_tokens("15000"))
+        buy_layout.addWidget(self._buy_tokens15000_button, 1)
+
+        self._account_button = QPushButton(_("View Account"), self)
+        self._account_button.setMinimumWidth(200)
+        self._account_button.clicked.connect(self._view_account)
+        layout.addWidget(self._account_button)
 
         self._logout_button = QPushButton(_("Sign out"), self)
         self._logout_button.setMinimumWidth(200)
@@ -107,6 +215,12 @@ class UserWidget(QFrame):
         self._images_generated.setText(str(user.images_generated))
         self._tokens_remaining.setText(str(user.credits))
 
+    def _view_account(self):
+        QDesktopServices.openUrl(QUrl(CloudClient.default_web_url + "/user"))
+
+    def _buy_tokens(self, amount: str):
+        QDesktopServices.openUrl(QUrl(f"{CloudClient.default_web_url}/checkout/tokens{amount}"))
+
     def _logout(self):
         eventloop.run(self._disconnect_and_logout())
 
@@ -126,11 +240,13 @@ class CloudWidget(QWidget):
         self.setLayout(layout)
 
         service_url = CloudClient.default_web_url
-        service_url_text = service_url.removeprefix("https://").removesuffix("/")
-        service_label = QLabel(f"<a href='{service_url}'>{service_url_text}</a>", self)
-        service_label.setStyleSheet("font-size: 12pt")
-        service_label.setTextFormat(Qt.TextFormat.RichText)
+        service_url_text = (
+            service_url.removeprefix("https://").removeprefix("www.").removesuffix("/")
+        )
+        header = QLabel(f"<b>{service_url_text}</b>", self)
+        service_label = QLabel(f"<a href='{service_url}'>Visit Website</a>", self)
         service_label.setOpenExternalLinks(True)
+        layout.addWidget(header)
         layout.addWidget(service_label)
 
         self._connection_status = QLabel(self)
@@ -203,42 +319,193 @@ class CloudWidget(QWidget):
         if connection.state in [ConnectionState.auth_missing, ConnectionState.auth_error]:
             connection.sign_in()
         else:
-            connection.connect()
+            if client := connection.create_client(settings):
+                connection.connect(client)
 
     def _sign_out(self):
         settings.access_token = ""
         settings.save()
 
 
+_server_mode_text = {
+    ServerMode.undefined: "Undefined",
+    ServerMode.cloud: _("Online Service"),
+    ServerMode.managed: _("Local Managed Server"),
+    ServerMode.external: _("Custom Server"),
+}
+_server_mode_status = {
+    "signed_out": (_("Signed out"), grey),
+    "not_installed": (_("Not installed"), grey),
+    "not_running": (_("Not running"), grey),
+    "not_connected": (_("Not connected"), grey),
+    "connecting": (_("Connecting"), yellow),
+    "connected": (_("Connected"), green),
+    "error": (_("Error"), red),
+}
+
+
+class ServerModeButton(QPushButton):
+    toggled = pyqtSignal(ServerMode)
+
+    def __init__(self, mode: ServerMode, status: str, parent=None):
+        self._text = _server_mode_text[mode]
+        super().__init__(self._text, parent)
+        self.mode = mode
+        self._status = status
+        self._is_checked = False
+
+        font = QFontMetrics(self.font())
+        self._text_width = font.horizontalAdvance(self._text)
+        max_width = max(font.horizontalAdvance(s[0]) for s in _server_mode_status.values())
+        self.setMinimumWidth(self._text_width + max_width + 32)
+        self.setFixedHeight(int(1.3 * self.sizeHint().height()))
+
+        self.clicked.connect(self._toggle)
+
+    def _toggle(self):
+        self.toggled.emit(self.mode)
+
+    def setChecked(self, a0: bool):
+        self._is_checked = a0
+        self.update()
+
+    def isChecked(self) -> bool:
+        return self._is_checked
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, status: str):
+        self._status = status
+        self.update()
+
+    def paintEvent(self, a0):
+        status_text, color = _server_mode_status.get(self._status, (_("Unknown"), red))
+        opt = QStyleOption()
+        opt.initFrom(self)
+        painter = QPainter(self)
+        style = util.ensure(self.style())
+        if self.isChecked():
+            opt.state |= QStyle.StateFlag.State_Sunken
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelButtonCommand, opt, painter, self)
+
+        rect = self.rect().adjusted(8, 0, -8, 0)
+        bold = self.font()
+        bold.setBold(True)
+        painter.setFont(bold)
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._text
+        )
+        painter.setPen(QColor(color))
+        painter.setFont(self.font())
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, status_text
+        )
+        painter.end()
+
+
+class ServerModeSelect(QWidget):
+    changed = pyqtSignal(ServerMode)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(layout)
+
+        self._cloud_button = ServerModeButton(ServerMode.cloud, "signed_out", self)
+        self._managed_button = ServerModeButton(ServerMode.managed, "not_installed", self)
+        self._external_button = ServerModeButton(ServerMode.external, "not_connected", self)
+
+        for button in (self._cloud_button, self._managed_button, self._external_button):
+            button.toggled.connect(self._change_mode)
+
+        layout.addWidget(self._cloud_button)
+        layout.addWidget(self._managed_button)
+        layout.addWidget(self._external_button)
+        layout.addStretch()
+
+    def _change_mode(self, mode: ServerMode):
+        self.mode = mode
+        self.changed.emit(mode)
+
+    @property
+    def mode(self):
+        if self._cloud_button.isChecked():
+            return ServerMode.cloud
+        elif self._managed_button.isChecked():
+            return ServerMode.managed
+        elif self._external_button.isChecked():
+            return ServerMode.external
+        return ServerMode.undefined
+
+    @mode.setter
+    def mode(self, mode: ServerMode):
+        self._cloud_button.setChecked(mode is ServerMode.cloud)
+        self._managed_button.setChecked(mode is ServerMode.managed)
+        self._external_button.setChecked(mode is ServerMode.external)
+
+    def update_status(self, state: ConnectionState, server_state: ServerState):
+        self._cloud_button.status = "signed_out"
+        self._external_button.status = "not_connected"
+        match server_state:
+            case ServerState.not_installed:
+                self._managed_button.status = "not_installed"
+            case ServerState.stopped:
+                self._managed_button.status = "not_running"
+            case _:
+                self._managed_button.status = "not_connected"
+
+        match self.mode, state, server_state:
+            case ServerMode.cloud, ConnectionState.auth_missing | ConnectionState.auth_error, _:
+                self._cloud_button.status = "signed_out"
+            case ServerMode.cloud, ConnectionState.auth_pending, _:
+                self._cloud_button.status = "connecting"
+            case ServerMode.cloud, ConnectionState.connected, _:
+                self._cloud_button.status = "connected"
+            case ServerMode.cloud, ConnectionState.error, _:
+                self._cloud_button.status = "error"
+            case ServerMode.managed, _, ServerState.starting:
+                self._managed_button.status = "connecting"
+            case ServerMode.managed, ConnectionState.connecting, _:
+                self._managed_button.status = "connecting"
+            case ServerMode.managed, ConnectionState.connected, ServerState.running:
+                self._managed_button.status = "connected"
+            case ServerMode.managed, ConnectionState.error, _:
+                self._managed_button.status = "error"
+            case ServerMode.external, ConnectionState.disconnected, _:
+                self._external_button.status = "disconnected"
+            case ServerMode.external, ConnectionState.connecting, _:
+                self._external_button.status = "connecting"
+            case ServerMode.external, ConnectionState.connected, _:
+                self._external_button.status = "connected"
+            case ServerMode.external, ConnectionState.error, _:
+                self._external_button.status = "error"
+
+
 class ConnectionSettings(SettingsTab):
     def __init__(self, server: Server):
         super().__init__(_("Server Configuration"))
+        self._server = server
 
-        self._server_cloud = QRadioButton(_("Online Service"), self)
-        self._server_managed = QRadioButton(_("Local Managed Server"), self)
-        self._server_external = QRadioButton(_("Custom Server (local or remote)"), self)
-        info_cloud = QLabel(_("Generate images via GPU Cloud Service"), self)
-        info_managed = QLabel(
-            _("Let the Krita plugin install and run a local server on your machine"), self
-        )
-        info_external = QLabel(
-            _("Connect to a running ComfyUI instance which you set up and maintain yourself"), self
-        )
-        for button in (self._server_cloud, self._server_managed, self._server_external):
-            button.setStyleSheet("font-weight:bold")
-            button.toggled.connect(self._change_server_mode)
-        for label in (info_cloud, info_managed, info_external):
-            label.setContentsMargins(20, 0, 0, 0)
+        self._server_mode = ServerModeSelect(self)
+        self._server_mode.changed.connect(self._change_server_mode)
 
+        self._setup_widget = InitialSetupWidget(self)
         self._cloud_widget = CloudWidget(self)
         self._server_widget = ServerWidget(server, self)
         self._connection_widget = QWidget(self)
         self._server_stack = QStackedWidget(self)
+        self._server_stack.addWidget(self._setup_widget)
         self._server_stack.addWidget(self._cloud_widget)
         self._server_stack.addWidget(self._server_widget)
         self._server_stack.addWidget(self._connection_widget)
 
         connection_layout = QVBoxLayout()
+        connection_layout.setContentsMargins(0, 0, 0, 0)
         self._connection_widget.setLayout(connection_layout)
 
         add_header(connection_layout, Settings._server_url)
@@ -260,21 +527,6 @@ class ConnectionSettings(SettingsTab):
         )
         self._supported_workloads.setOpenExternalLinks(True)
 
-        self._client_id = QWidget(self._connection_widget)
-        client_id_layout = QHBoxLayout(self._client_id)
-        client_id_layout.setContentsMargins(0, 0, 0, 0)
-        self._client_id_label = QLabel(self._client_id)
-        self._client_id_label.setStyleSheet(f"font-style: italic; color: {grey};")
-        self._client_id_button = QToolButton(self._client_id)
-        self._client_id_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._client_id_button.setIcon(Krita.instance().icon("edit-copy"))
-        self._client_id_button.setToolTip(_("Copy to clipboard"))
-        self._client_id_button.setAutoRaise(True)
-        self._client_id_button.clicked.connect(self._copy_client_id)
-        client_id_layout.addWidget(self._client_id_label)
-        client_id_layout.addWidget(self._client_id_button)
-        client_id_layout.addStretch()
-
         anchor = _("View log files")
         open_log_button = QLabel(f"<a href='file://{util.log_dir}'>{anchor}</a>", self)
         open_log_button.setToolTip(str(util.log_dir))
@@ -286,43 +538,31 @@ class ConnectionSettings(SettingsTab):
 
         connection_layout.addLayout(status_layout)
         connection_layout.addWidget(self._supported_workloads)
-        connection_layout.addWidget(self._client_id)
         connection_layout.addStretch()
 
-        self._layout.addWidget(self._server_managed)
-        self._layout.addWidget(info_managed)
-        self._layout.addWidget(self._server_external)
-        self._layout.addWidget(info_external)
-        self._layout.addWidget(self._server_cloud)
-        self._layout.addWidget(info_cloud)
+        self._layout.addWidget(self._server_mode)
         self._layout.addWidget(self._server_stack)
+
+        self.update_server_status()
+        self._update_server_mode(settings.server_mode)
 
         root.connection.state_changed.connect(self.update_server_status)
         root.connection.error_changed.connect(self.update_server_status)
-        self.update_server_status()
+        root.connection.progress_changed.connect(self.update_server_status)
+        self._setup_widget.finished.connect(self._setup_finished)
+        self._server_widget.state_changed.connect(self.update_server_status)
 
-    @property
-    def server_mode(self):
-        if self._server_cloud.isChecked():
-            return ServerMode.cloud
-        elif self._server_managed.isChecked():
-            return ServerMode.managed
-        elif self._server_external.isChecked():
-            return ServerMode.external
-        else:
-            return ServerMode.undefined
+    def _setup_finished(self, mode: ServerMode):
+        self._server_mode.mode = mode
+        self._update_server_mode(mode)
 
-    @server_mode.setter
-    def server_mode(self, mode: ServerMode):
-        if self.server_mode != mode:
-            self._server_cloud.setChecked(mode is ServerMode.cloud)
-            self._server_managed.setChecked(mode is ServerMode.managed)
-            self._server_external.setChecked(mode is ServerMode.external)
+    def _update_server_mode(self, mode: ServerMode):
+        self._server_mode.setVisible(mode is not ServerMode.undefined)
         widget = {
             ServerMode.cloud: self._cloud_widget,
             ServerMode.managed: self._server_widget,
             ServerMode.external: self._connection_widget,
-            ServerMode.undefined: self._connection_widget,
+            ServerMode.undefined: self._setup_widget,
         }[mode]
         self._server_stack.setCurrentWidget(widget)
 
@@ -330,38 +570,40 @@ class ConnectionSettings(SettingsTab):
         self._server_widget.update_ui()
 
     def _read(self):
-        self.server_mode = settings.server_mode
+        self._server_mode.mode = settings.server_mode
+        self._server_mode.update_status(root.connection.state, self._server.state)
+        self._update_server_mode(settings.server_mode)
         self._server_url.setText(settings.server_url)
 
     def _write(self):
-        settings.server_mode = self.server_mode
+        settings.server_mode = self._server_mode.mode
         settings.server_url = self._server_url.text()
 
-    def _change_server_mode(self, checked: bool):
-        if self._server_cloud.isChecked():
-            self.server_mode = ServerMode.cloud
-        elif self._server_managed.isChecked():
-            self.server_mode = ServerMode.managed
-        elif self._server_external.isChecked():
-            self.server_mode = ServerMode.external
+    def _change_server_mode(self):
+        self._update_server_mode(self._server_mode.mode)
         self.write()
 
     def _connect(self):
-        root.connection.connect()
+        if client := root.connection.create_client(settings):
+            root.connection.connect(client)
 
     def update_server_status(self):
         connection = root.connection
+        self._server_mode.update_status(connection.state, self._server.state)
         self._cloud_widget.update_connection_state(connection.state)
-        self._connect_button.setEnabled(connection.state != ConnectionState.connecting)
-        self._client_id.setVisible(False)
+        self._connect_button.setEnabled(True)
         if connection.state == ConnectionState.connected:
             self._connection_status.setText(_("Connected"))
             self._connection_status.setStyleSheet(f"color: {green}; font-weight:bold")
-            self._client_id_label.setText(f"Client ID: {settings.comfyui_client_id}")
-            self._client_id.setVisible(True)
         elif connection.state == ConnectionState.connecting:
             self._connection_status.setText(_("Connecting"))
             self._connection_status.setStyleSheet(f"color: {yellow}; font-weight:bold")
+            self._connect_button.setEnabled(False)
+        elif connection.state == ConnectionState.discover_models:
+            progress = f" ({connection.progress[0]}/{connection.progress[1]})"
+            self._connection_status.setText(_("Discovering models") + progress)
+            self._connection_status.setStyleSheet(f"color: {yellow}; font-weight:bold")
+            self._connect_button.setEnabled(False)
         elif connection.state == ConnectionState.disconnected:
             self._connection_status.setText(_("Disconnected"))
             self._connection_status.setStyleSheet(f"color: {grey}; font-style:italic")
@@ -388,15 +630,14 @@ class ConnectionSettings(SettingsTab):
         text = ""
         if isinstance(res.missing, list):
             text = (
-                _("The following ComfyUI custom nodes are missing")
+                _("The following ComfyUI custom nodes are missing or too old")
                 + ":<ul>"
-                + "\n".join(
-                    (f"<li>{p.name} <a href='{p.url}'>{p.url}</a></li>" for p in res.missing)
-                )
+                + "\n".join(f"<li>{p.name} <a href='{p.url}'>{p.url}</a></li>" for p in res.missing)
                 + "</ul>"
                 + _(
                     "Please install or update the custom node package, then restart the server and try again."
                 )
+                + _("If nodes are still missing, check the ComfyUI output at startup for errors.")
                 + "<br>"
             )
         else:
@@ -404,9 +645,9 @@ class ConnectionSettings(SettingsTab):
             basic = util.unique(basic, key=lambda m: m.string)
             if len(basic) > 0:
                 text = _("Missing common models (required)") + ":\n<ul>"
-                text += "\n".join((f"<li>{model_name(m, True)}</li>" for m in basic))
+                text += "\n".join(f"<li>{model_name(m, True)}</li>" for m in basic)
                 text += "</ul>"
-            text += _("Detected base models:") + "\n<ul>"
+            text += _("Detected workloads for the following base models:") + "\n<ul>"
             for arch, missing in res.missing.items():
                 if arch in [Arch.all, Arch.illu_v]:
                     continue
@@ -431,10 +672,6 @@ class ConnectionSettings(SettingsTab):
         self._supported_workloads.setStyleSheet(style)
         self._supported_workloads.setText(text)
 
-    def _copy_client_id(self):
-        if clipboard := QGuiApplication.clipboard():
-            clipboard.setText(settings.comfyui_client_id)
-
     def _open_logs(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(util.log_dir)))
 
@@ -444,9 +681,10 @@ class DiffusionSettings(SettingsTab):
         super().__init__(_("Diffusion Settings"))
 
         S = Settings
-        self.add("selection_grow", SliderSetting(S._selection_grow, self, 0, 25, "{} %"))
-        self.add("selection_feather", SliderSetting(S._selection_feather, self, 0, 25, "{} %"))
-        self.add("selection_padding", SliderSetting(S._selection_padding, self, 0, 25, "{} %"))
+        self.add("selection_feather", SliderSetting(S._selection_feather, self, 0, 25, suffix="%"))
+        self.add("selection_blend", SliderSetting(S._selection_blend, self, 0, 100, suffix=" px"))
+        self.add("selection_padding", SliderSetting(S._selection_padding, self, 0, 25, suffix=" %"))
+        self.add("color_match", SwitchSetting(S._color_match, parent=self))
         self.add("nsfw_filter", ComboBoxSetting(S._nsfw_filter, parent=self))
 
         nsfw_settings = [(_("Disabled"), 0.0), (_("Basic"), 0.65), (_("Strict"), 0.8)]
@@ -476,21 +714,26 @@ class InterfaceSettings(SettingsTab):
         S = Settings
         self.add("language", ComboBoxSetting(S._language, parent=self))
         self.add("prompt_translation", ComboBoxSetting(S._prompt_translation, parent=self))
-        self.add("prompt_line_count", SpinBoxSetting(S._prompt_line_count, self, 1, 10))
+        self.add(
+            "prompt_line_count",
+            SpinBoxSetting(S._prompt_line_count, self, 1, prompt_max_line_count),
+        )
         self.add(
             "show_negative_prompt",
             SwitchSetting(S._show_negative_prompt, (_("Show"), _("Hide")), self),
         )
         self.add("show_steps", SwitchSetting(S._show_steps, parent=self))
+        self.add("recent_styles_count", SpinBoxSetting(S._recent_styles_count, self, 0, 10))
 
         self.add("tag_files", FileListSetting(S._tag_files, files=self._tag_files(), parent=self))
-        self._layout.addWidget(self._widgets["tag_files"].list_widget)
-        self._widgets["tag_files"].add_button(
+        tag_files = cast(FileListSetting, self._widgets["tag_files"])
+        self._layout.addWidget(tag_files.list_widget)
+        tag_files.add_button(
             Krita.instance().icon("reload-preset"),
             _("Look for new tag files"),
             self._update_tag_files,
         )
-        self._widgets["tag_files"].add_button(
+        tag_files.add_button(
             Krita.instance().icon("document-open"),
             _("Open folder where custom tag files can be placed"),
             self._open_tag_folder,
@@ -539,7 +782,8 @@ class InterfaceSettings(SettingsTab):
         return list(files)
 
     def _update_tag_files(self):
-        self._widgets["tag_files"].reset_files(self._tag_files())
+        tag_files = cast(FileListSetting, self._widgets["tag_files"])
+        tag_files.reset_files(self._tag_files())
 
     def _open_tag_folder(self):
         user_tag_folder = util.user_data_dir / "tags"
@@ -547,7 +791,7 @@ class InterfaceSettings(SettingsTab):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(user_tag_folder)))
 
     def update_translation(self, client: Client | None):
-        translation: ComboBoxSetting = self._widgets["prompt_translation"]
+        translation = cast(ComboBoxSetting, self._widgets["prompt_translation"])
         languages = [("Disabled", "")]
         if client:
             languages += [(lang.name, lang.code) for lang in client.features.languages]
@@ -624,9 +868,9 @@ class PerformanceSettings(SettingsTab):
 
         self._advanced = QWidget(self)
         self._advanced.setEnabled(settings.performance_preset is PerformancePreset.custom)
-        self._advanced.setContentsMargins(0, 0, 0, 0)
         self._layout.addWidget(self._advanced)
         advanced_layout = QVBoxLayout()
+        advanced_layout.setContentsMargins(8, 0, 0, 4)
         self._advanced.setLayout(advanced_layout)
 
         self._batch_size = SliderSetting(Settings._batch_size, self._advanced, 1, 16)
@@ -634,7 +878,7 @@ class PerformanceSettings(SettingsTab):
         advanced_layout.addWidget(self._batch_size)
 
         self._resolution_multiplier = SliderSetting(
-            Settings._resolution_multiplier, self._advanced, 0.3, 1.5, "{:.1f}x"
+            Settings._resolution_multiplier, self._advanced, 0.3, 1.5, suffix="x", decimals=1
         )
         self._resolution_multiplier.value_changed.connect(self.write)
         advanced_layout.addWidget(self._resolution_multiplier)
@@ -759,6 +1003,18 @@ class AboutSettings(SettingsTab):
         self._update_button.setMinimumWidth(font_height * 6)
         self._update_button.clicked.connect(self._run_update)
 
+        sys_header = QLabel(_("System Information"), self)
+        sys_header.setFont(large)
+        sys_desc = QLabel(_("Please attach this information when reporting issues!"), self)
+        sys_desc.setFont(italic)
+        sys_button = QPushButton(_("Collect Diagnostics"), self)
+        sys_button.setMinimumWidth(font_height * 6)
+        sys_button.clicked.connect(self._collect_diagnostics)
+        anchor = _("View log files")
+        open_log_button = QLabel(f"<a href='file://{util.log_dir}'>{anchor}</a>", self)
+        open_log_button.setToolTip(str(util.log_dir))
+        open_log_button.linkActivated.connect(self._open_logs)
+
         doc_header = QLabel(_("Documentation and Support"), self)
         doc_header.setFont(large)
 
@@ -786,6 +1042,11 @@ class AboutSettings(SettingsTab):
         update_layout.addWidget(self._update_button)
         update_layout.addStretch()
         self._layout.addLayout(update_layout)
+        self._layout.addSpacing(20)
+        self._layout.addWidget(sys_header)
+        self._layout.addWidget(sys_desc)
+        self._layout.addWidget(sys_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._layout.addWidget(open_log_button)
         self._layout.addSpacing(20)
         self._layout.addWidget(doc_header)
         self._layout.addSpacing(5)
@@ -849,11 +1110,36 @@ class AboutSettings(SettingsTab):
     def _write(self):
         settings.auto_update = self._update_checkbox.isChecked()
 
+    def _collect_diagnostics(self):
+        diagnostics = collect_diagnostics()
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(diagnostics)
+
+        window = QDialog(self)
+        window.setWindowTitle(_("Diagnostics Information"))
+        layout = QVBoxLayout()
+        text = QTextEdit(window)
+        text.setReadOnly(True)
+        text.setText(diagnostics)
+        text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.SmallestReadableFont))
+        if clipboard is not None:
+            msg = _("System information has been copied to the clipboard.")
+            layout.addWidget(QLabel("✔️ " + msg))
+        layout.addSpacing(6)
+        layout.addWidget(text)
+        window.setLayout(layout)
+        window.resize(min(self.width(), 800), 640)
+        window.exec()
+
+    def _open_logs(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(util.log_dir)))
+
 
 _links_text = """
 <a href='https://www.interstice.cloud'>Website</a><br><br>
 <a href='https://docs.interstice.cloud'>Handbook: Guides and Tips</a><br><br>
-<a href='https://github.com/Acly/krita-ai-diffusion'>GitHub</a><br><br>
+<a href='https://github.com/Acly/krita-ai-diffusion'>GitHub</a>
 """
 
 _contact_text = """
@@ -867,7 +1153,7 @@ class SettingsDialog(QDialog):
     _instance = None
 
     @classmethod
-    def instance(cls) -> "SettingsDialog":
+    def instance(cls) -> SettingsDialog:
         assert cls._instance is not None
         return cls._instance
 
@@ -876,10 +1162,11 @@ class SettingsDialog(QDialog):
         type(self)._instance = self
 
         self.setWindowTitle(_("Configure Image Diffusion"))
-        self.setMinimumSize(QSize(840, 480))
+        self.setMinimumSize(QSize(960, 480))
         if screen := QGuiApplication.screenAt(QCursor.pos()):
             size = screen.availableSize()
-            self.resize(QSize(max(900, int(size.width() * 0.6)), int(size.height() * 0.8)))
+            min_w = min(size.width(), QFontMetrics(self.font()).horizontalAdvance("M") * 100)
+            self.resize(QSize(min_w, int(size.height() * 0.8)))
 
         layout = QHBoxLayout()
         self.setLayout(layout)
@@ -956,7 +1243,7 @@ class SettingsDialog(QDialog):
         settings.save()
         self.read()
 
-    def show(self, style: Optional[Style] = None):
+    def show(self, style: Style | None = None):
         self.read()
         self.connection.update_ui()
         super().show()
@@ -971,7 +1258,7 @@ class SettingsDialog(QDialog):
 
     def _update_connection(self):
         self.connection.update_server_status()
-        if root.connection.state == ConnectionState.connected:
+        if root.connection.state is ConnectionState.connected:
             self.interface.update_translation(root.connection.client)
             self.performance.update_client_info()
 

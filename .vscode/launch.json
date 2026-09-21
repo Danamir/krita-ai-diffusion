@@ -24,7 +24,7 @@
                 "pathMappings": [
                     {
                         "localRoot": "${workspaceFolder}",
-                        "remoteRoot": "~/.local/share/krita/pykrita"
+                        "remoteRoot": "${env:HOME}/.local/share/krita/pykrita"
                     }
                 ]
             }
@@ -44,6 +44,16 @@
                 "tests"
             ],
             "cwd": "${workspaceFolder}",
+        },
+        {
+            "name": "Design",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/design.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
         }
     ]
 }

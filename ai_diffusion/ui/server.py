@@ -1,42 +1,48 @@
 from __future__ import annotations
+
+from collections.abc import Iterable
+from copy import copy
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtWidgets import (
-    QWidget,
+
+from krita import Krita
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QHBoxLayout,
-    QVBoxLayout,
-    QGridLayout,
     QFileDialog,
     QFrame,
+    QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QToolButton,
     QScrollArea,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
-from ai_diffusion.network import DownloadProgress
-from krita import Krita
 
-from ..settings import Settings, ServerMode, settings
-from ..style import Arch
-from ..resources import ModelRequirements, ModelResource, CustomNode
-from ..server import Server, ServerBackend, ServerState
-from ..connection import ConnectionState
-from ..root import root
+from .. import eventloop, util
+from ..backend import resources, server
+from ..backend.comfy_client import ComfyClient
+from ..backend.network import DownloadProgress
+from ..backend.resources import CustomNode, ModelResource, ResourceId
+from ..backend.server import Server, ServerBackend, ServerState
 from ..localization import translate as _
+from ..model.connection import ConnectionState
+from ..model.root import root
 from ..platform_tools import get_cuda_devices
+from ..settings import Settings, settings
+from ..style import Arch
 from ..util import ensure
-from .. import eventloop, resources, server, util
-from .theme import SignalBlocker, add_header, set_text_clipped, green, grey, red, yellow, highlight
+from .theme import SignalBlocker, add_header, green, grey, highlight, red, set_text_clipped, yellow
 
 
 class PackageState(Enum):
@@ -61,7 +67,7 @@ class PackageGroupWidget(QWidget):
         self,
         name: str,
         packages: list[str] | list[ModelResource] | list[CustomNode],
-        description: Optional[str] = None,
+        description: str | None = None,
         is_expanded=True,
         is_checkable=False,
         parent=None,
@@ -104,7 +110,7 @@ class PackageGroupWidget(QWidget):
         self._update_visibility()
 
     def _update_item_visibility(self, item: PackageItem):
-        supported = self._backend_supports(item)
+        supported = _backend_supports(self.backend, item)
         item.label.setVisible(supported and self._header.isChecked())
         item.status.setVisible(supported and self._header.isChecked())
 
@@ -130,6 +136,7 @@ class PackageGroupWidget(QWidget):
         )
         item.label.setContentsMargins(20, 0, 0, 0)
         if self.is_checkable:
+            assert isinstance(item.status, QCheckBox)
             item.status.setChecked(False)
             item.status.toggled.connect(self._handle_checkbox_toggle)
         self._layout.addWidget(item.label, self._layout.rowCount(), 0)
@@ -153,6 +160,7 @@ class PackageGroupWidget(QWidget):
     def _update(self):
         for item in self._items:
             self._update_item_visibility(item)
+            self._update_workload(item)
             if item.state is PackageState.installed:
                 item.status.setText(_("Installed"))
                 item.status.setStyleSheet(f"color:{green}")
@@ -160,16 +168,16 @@ class PackageGroupWidget(QWidget):
                 item.status.setText(_("Not installed"))
                 item.status.setStyleSheet("")
             if self.is_checkable:
-                self._update_workload(item)
                 if item.state is PackageState.selected:
                     item.status.setText(_("Not installed"))
                     item.status.setStyleSheet("")
                 elif item.state is PackageState.disabled:
-                    if not self._backend_supports(item):
+                    if not _backend_supports(self.backend, item):
                         item.status.setText(_("Not supported"))
                     else:
                         item.status.setText(_("Workload not selected"))
                     item.status.setStyleSheet(f"color:{grey}")
+                assert isinstance(item.status, QCheckBox)
                 with SignalBlocker(item.status):
                     item.status.setChecked(
                         item.state in [PackageState.selected, PackageState.installed]
@@ -177,27 +185,23 @@ class PackageGroupWidget(QWidget):
                     item.status.setEnabled(item.state is not PackageState.disabled)
         self._update_status()
 
-    def _backend_supports(self, item: PackageItem):
-        if isinstance(item.package, ModelResource):
-            req = item.package.requirements
-            has_fp4 = any(major >= 10 for major, minor in get_cuda_devices())  # Blackwell and later
-            if self.backend is ServerBackend.cuda and has_fp4:
-                return req not in [ModelRequirements.no_cuda, ModelRequirements.cuda]
-            elif self.backend is ServerBackend.cuda:
-                return req not in [ModelRequirements.no_cuda, ModelRequirements.cuda_fp4]
-            else:
-                return req not in [ModelRequirements.cuda, ModelRequirements.cuda_fp4]
-        return True
-
     def _workload_matches(self, item: PackageItem):
+        archs_with_workload = (
+            Arch.sd15,
+            Arch.sdxl,
+            Arch.flux,
+            Arch.flux_k,
+            Arch.flux2_4b,
+            Arch.zimage,
+        )
         return (
             not isinstance(item.package, ModelResource)
             or item.package.arch in self.workloads
-            or item.package.arch not in Arch.list()
+            or item.package.arch not in archs_with_workload
         )
 
     def _update_workload(self, item: PackageItem):
-        enabled = self._backend_supports(item) and self._workload_matches(item)
+        enabled = _backend_supports(self.backend, item) and self._workload_matches(item)
         if not enabled and item.state in [PackageState.selected, PackageState.available]:
             item.state = PackageState.disabled
         elif enabled and item.state is PackageState.disabled:
@@ -205,12 +209,12 @@ class PackageGroupWidget(QWidget):
 
     @property
     def package_names(self):
-        return [self._package_name(item.package) for item in self._items]
+        return [self._package_id(item.package) for item in self._items]
 
     @property
     def selected_packages(self):
         return [
-            self._package_name(item.package)
+            self._package_id(item.package)
             for item in self._items
             if item.state is PackageState.selected
         ]
@@ -242,12 +246,13 @@ class PackageGroupWidget(QWidget):
         self._update()
 
     def _update_status(self):
-        available = sum(item.state is PackageState.available for item in self._items)
-        if all(item.state is PackageState.installed for item in self._items):
+        items = [i for i in self._items if _backend_supports(self.backend, i)]
+        available = sum(item.state is PackageState.available for item in items)
+        if all(item.state is PackageState.installed for item in items):
             self._status.setText(_("All installed"))
             self._status.setStyleSheet(f"color:{green}")
         elif self.is_checkable:
-            selected = sum(item.state is PackageState.selected for item in self._items)
+            selected = sum(item.state is PackageState.selected for item in items)
             if selected > 0:
                 self._status.setText(
                     f"{selected} of {selected + available} " + _("packages selected")
@@ -263,26 +268,570 @@ class PackageGroupWidget(QWidget):
     def _handle_checkbox_toggle(self):
         for item in self._items:
             if item.state in [PackageState.available, PackageState.selected]:
+                assert isinstance(item.status, QCheckBox)
                 item.state = (
                     PackageState.selected if item.status.isChecked() else PackageState.available
                 )
-        self._update_status()
+        self._update()
         self.changed.emit()
 
     def _package_name(self, package: str | ModelResource | CustomNode):
         return package if isinstance(package, str) else package.name
 
+    def _package_id(self, package: str | ModelResource | CustomNode):
+        if isinstance(package, ModelResource):
+            return package.id.string
+        return self._package_name(package)
+
+
+def _backend_supports(backend: ServerBackend, item: PackageItem | ModelResource):
+    if isinstance(item, PackageItem) and isinstance(item.package, ModelResource):
+        item = item.package
+    return (
+        not isinstance(item, ModelResource)
+        or item.requirements is not resources.ModelRequirements.cuda
+        or backend is ServerBackend.cuda
+    )
+
+
+def _filter_by_arch(models: Iterable[ModelResource], archs: Arch | Iterable[Arch]):
+    archs = (archs,) if isinstance(archs, Arch) else archs
+    return [m.id.string for m in models if m.arch in archs]
+
+
+def _enabled_workloads(selected: list[str], required: Iterable[ModelResource], server: Server):
+    workloads = {arch: True for arch in Arch}
+    for m in required:
+        if not (m.id.string in selected or server.is_installed(m)):
+            workloads[m.arch] = False
+    if not workloads[Arch.all]:
+        workloads = {k: False for k in workloads}
+    return workloads
+
+
+class CustomPackageTab(QWidget):
+    title = _("Individual Packages")
+    workloads = (Arch.sd15, Arch.sdxl, Arch.flux, Arch.flux2_4b, Arch.zimage)
+    workload_models = resources.required_models
+
+    selected_models_changed = pyqtSignal()
+
+    def __init__(self, server: Server, parent=None):
+        super().__init__(parent)
+        self._server = server
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        self._required_group = PackageGroupWidget(
+            _("Core components"),
+            ["Python", "ComfyUI", _("Custom nodes"), _("Required models")],
+            is_expanded=False,
+            parent=self,
+        )
+        layout.addWidget(self._required_group)
+
+        self._workload_group = PackageGroupWidget(
+            _("Workloads"),
+            [_("Stable Diffusion 1.5"), _("Stable Diffusion XL"), "Flux", "Flux 2", "Z-Image"],
+            description=(
+                _("Choose a Diffusion base model to install its basic requirements.")
+                + " <a href='https://docs.interstice.cloud/base-models'>"
+                + _("Read more about workloads.")
+                + "</a>"
+            ),
+            is_checkable=True,
+            parent=self,
+        )
+        self._workload_group.changed.connect(self._change_workload)
+        layout.addWidget(self._workload_group)
+
+        optional_models = resources.default_checkpoints + resources.optional_models
+        self._packages: dict[str, PackageGroupWidget] = {
+            "upscalers": PackageGroupWidget(
+                _("Upscalers (super-resolution)"),
+                resources.upscale_models,
+                is_checkable=True,
+                parent=self,
+            ),
+            "sd15": PackageGroupWidget(
+                _("Stable Diffusion 1.5 models"),
+                [m for m in optional_models if m.arch is Arch.sd15],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "sdxl": PackageGroupWidget(
+                _("Stable Diffusion XL models"),
+                [m for m in optional_models if m.arch is Arch.sdxl],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "illu": PackageGroupWidget(
+                _("Illustrious/NoobAI XL models"),
+                [m for m in optional_models if m.arch in [Arch.illu, Arch.illu_v]],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "flux": PackageGroupWidget(
+                _("Flux models"),
+                [m for m in optional_models if m.arch in [Arch.flux, Arch.flux_k, Arch.chroma]],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "flux2": PackageGroupWidget(
+                _("Flux 2 models"),
+                [m for m in optional_models if m.arch.is_flux2],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+            "zimage": PackageGroupWidget(
+                _("Z-Image models"),
+                [m for m in optional_models if m.arch is Arch.zimage],
+                is_checkable=True,
+                is_expanded=False,
+                parent=self,
+            ),
+        }
+
+        for group in ["upscalers", "sd15", "sdxl", "illu", "flux", "flux2", "zimage"]:
+            self._packages[group].changed.connect(self._change_models)
+            layout.addWidget(self._packages[group])
+
+        layout.addStretch()
+
+        self.update_installed()
+
+    def update_installed(self):
+        has_missing_nodes = any(
+            node.name in self._server.missing_resources for node in resources.required_custom_nodes
+        )
+        has_missing_models = any(
+            model.id.string in self._server.missing_resources
+            for model in resources.required_models
+            if model.arch is Arch.all
+        )
+        installed_status = [
+            self._server.has_python,
+            self._server.has_comfy,
+            not has_missing_nodes,
+            not has_missing_models,
+        ]
+        self._required_group.set_installed(installed_status)
+
+        self._workload_group.set_installed([
+            self._server.all_installed(_filter_by_arch(self.workload_models, arch))
+            for arch in self.workloads
+        ])
+
+        installed_workloads = self._selected_workloads(installed=True)
+        for widget in self._packages.values():
+            widget.workloads = installed_workloads
+            widget.backend = self._server.backend
+            widget.set_installed([self._server.is_installed(p) for p in widget.package_names])
+
+    def update_backend(self):
+        for widget in self._packages.values():
+            widget.backend = self._server.backend
+
+    def _update_workloads(self):
+        workloads = self._selected_workloads(installed=True)
+        for widget in self._packages.values():
+            widget.workloads = workloads
+
+    def _change_models(self):
+        self.selected_models_changed.emit()
+
+    def _change_workload(self):
+        self._update_workloads()
+        self.selected_models_changed.emit()
+
+    def _selected_workloads(self, installed=False):
+        check = (PackageState.selected,)
+        if installed:
+            check = (PackageState.selected, PackageState.installed)
+        selected_or_installed = [state in check for state in self._workload_group.values]
+        return [arch for arch, selected in zip(self.workloads, selected_or_installed) if selected]
+
+    @property
+    def selected_models(self):
+        selected_workloads = [Arch.all] + self._selected_workloads(installed=False)
+        workload_models = _filter_by_arch(self.workload_models, selected_workloads)
+        optional_models = [
+            model for widget in self._packages.values() for model in widget.selected_packages
+        ]
+        return workload_models + optional_models
+
+    @selected_models.setter
+    def selected_models(self, value: list[str]):
+        workloads = _enabled_workloads(value, self.workload_models, self._server)
+        new_states = copy(self._workload_group.values)
+        for i, arch in enumerate(self.workloads):
+            if new_states[i] is not PackageState.installed:
+                if workloads[arch]:
+                    new_states[i] = PackageState.selected
+                else:
+                    new_states[i] = PackageState.available
+        if new_states != self._workload_group.values:
+            self._workload_group.values = new_states
+            self._update_workloads()
+
+        for widget in self._packages.values():
+            selected = [p for p in widget.package_names if p in value]
+            states: list[PackageState] = []
+            for state, pkg in zip(widget.values, widget.package_names):
+                if state is PackageState.installed:
+                    states.append(PackageState.installed)
+                elif pkg in selected:
+                    states.append(PackageState.selected)
+                else:
+                    states.append(PackageState.available)
+            if states != widget.values:
+                widget.values = states
+
+
+class ModelPropsWidget(QWidget):
+    def __init__(
+        self, size: int, vram: int, speed: int, fidelity: int, understanding: int, parent=None
+    ):
+        super().__init__(parent)
+
+        layout = QHBoxLayout()
+        layout.setSpacing(4)
+        self.setLayout(layout)
+
+        size_label = QLabel(f"Install: <b>{size} GB</b>", self)
+        size_label.setToolTip(_("Minimum download and installation size"))
+        layout.addWidget(size_label)
+
+        vram_label = QLabel(f"VRAM: <b>{vram} GB</b>", self)
+        vram_label.setToolTip(_("Minimum recommended GPU VRAM to run"))
+        layout.addWidget(vram_label)
+
+        text = {
+            -2: _("Very Slow"),
+            -1: _("Slow"),
+            0: _("Average"),
+            1: _("Fast"),
+            2: _("Very Fast"),
+        }[speed]
+        col = {-2: red, -1: red, 0: yellow, 1: green, 2: green}[speed]
+        speed_label = QLabel(f"Speed: <span style='color:{col}'><b>{text}</b></span>", self)
+        speed_label.setToolTip(_("How fast the model generates images"))
+        layout.addWidget(speed_label)
+
+        text = {
+            -1: _("Low"),
+            0: _("Average"),
+            1: _("High"),
+            2: _("Very High"),
+        }[fidelity]
+        col = {-1: red, 0: yellow, 1: green, 2: green}[fidelity]
+        fidelity_label = QLabel(f"Fidelity: <span style='color:{col}'><b>{text}</b></span>", self)
+        fidelity_label.setToolTip(_("Visual quality of the generated images"))
+        layout.addWidget(fidelity_label)
+
+        text = {
+            -1: _("Poor"),
+            0: _("Average"),
+            1: _("Good"),
+            2: _("Excellent"),
+        }[understanding]
+        col = {-1: red, 0: yellow, 1: green, 2: green}[understanding]
+        understanding_label = QLabel(
+            f"Understanding: <span style='color:{col}'><b>{text}</b></span>", self
+        )
+        understanding_label.setToolTip(_("How well the model understands and follows text prompts"))
+        layout.addWidget(understanding_label)
+
+
+class ModelCheckBox:
+    def __init__(self, label: str, arch: Arch, model_ids: str | tuple, layout: QVBoxLayout):
+        self.label = label
+        self.arch = arch
+        self.model_ids = model_ids
+        self.widget = QCheckBox(label)
+        self._state = PackageState.available
+
+        layout.addWidget(self.widget)
+        self.widget.toggled.connect(self._update_state)
+
+    def _update_state(self):
+        if self.state is PackageState.available and self.widget.isChecked():
+            self.state = PackageState.selected
+        elif self.state is PackageState.selected and not self.widget.isChecked():
+            self.state = PackageState.available
+
+    def model_id(self, backend: ServerBackend) -> str:
+        if isinstance(self.model_ids, str):
+            return self.model_ids
+        for id in self.model_ids:
+            res = resources.find_resource(ResourceId.parse(id))
+            if res and _backend_supports(backend, res):
+                return id
+        return self.model_ids[0]
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value: PackageState):
+        self._state = value
+        with SignalBlocker(self.widget):
+            if value is PackageState.installed:
+                self.widget.setStyleSheet(f"color:{green}")
+                self.widget.setEnabled(False)
+                self.widget.setChecked(True)
+            else:
+                self.widget.setStyleSheet("")
+                self.widget.setEnabled(True)
+                self.widget.setChecked(value is PackageState.selected)
+
+
+class WorkloadsTab(QWidget):
+    title = _("Workloads")
+    workloads = (Arch.sdxl, Arch.illu, Arch.flux2_4b, Arch.zimage, Arch.flux, Arch.sd15)
+    workload_models = resources.required_models + resources.recommended_models
+
+    selected_models_changed = pyqtSignal()
+
+    def __init__(self, server: Server, parent=None):
+        super().__init__(parent)
+        self._server = server
+        self._models: list[ModelCheckBox] = []
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        self._pkg_sdxl = QWidget(self)
+        layout.addWidget(self._pkg_sdxl)
+
+        sdxl_layout = QVBoxLayout(self._pkg_sdxl)
+        sdxl_header = QLabel("<b>SDXL - Stable Diffusion XL</b>", self._pkg_sdxl)
+        sdxl_layout.addWidget(sdxl_header)
+        sdxl_props = ModelPropsWidget(
+            size=22, vram=6, speed=1, fidelity=1, understanding=0, parent=self
+        )
+        sdxl_layout.addWidget(sdxl_props)
+        desc = (
+            _("Flexible base model with a huge ecosystem. Great for iterating on images quickly.")
+            + "<br>"
+            + _("Choose models below depending on the content of your images:")
+        )
+        sdxl_desc = QLabel(desc, self._pkg_sdxl)
+        sdxl_desc.setWordWrap(True)
+        sdxl_layout.addWidget(sdxl_desc)
+        self._models += [
+            ModelCheckBox(
+                "RealVis XL - " + _("for Photography and realistic images"),
+                Arch.sdxl,
+                "checkpoint-realvis-sdxl",
+                sdxl_layout,
+            ),
+            ModelCheckBox(
+                "ZavyChroma XL - " + _("for Illustrations and digital art"),
+                Arch.sdxl,
+                "checkpoint-zavychroma-sdxl",
+                sdxl_layout,
+            ),
+            ModelCheckBox(
+                "Nova Anime XL - " + _("for Anime and illustration"),
+                Arch.illu,
+                "checkpoint-nova-illu",
+                sdxl_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_flux2 = QWidget(self)
+        layout.addWidget(self._pkg_flux2)
+
+        flux2_layout = QVBoxLayout(self._pkg_flux2)
+        flux2_header = QLabel("<b>FLUX 2</b>", self._pkg_flux2)
+        flux2_layout.addWidget(flux2_header)
+        flux2_props = ModelPropsWidget(
+            size=7, vram=8, speed=1, fidelity=1, understanding=1, parent=self
+        )
+        flux2_layout.addWidget(flux2_props)
+        desc = _(
+            "Versatile model with sharp details. Can generate and edit images with instructions. Sometimes struggles with image continuity."
+        )
+        flux2_desc = QLabel(desc, self._pkg_flux2)
+        flux2_desc.setWordWrap(True)
+        flux2_layout.addWidget(flux2_desc)
+        self._models += [
+            ModelCheckBox(
+                "Flux.2 [klein] 4B - " + _("Compact generation and edit model"),
+                Arch.flux2_4b,
+                ("checkpoint-fp8-flux2_4b", "checkpoint-q6_k-flux2_4b"),
+                flux2_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_zimage = QWidget(self)
+        layout.addWidget(self._pkg_zimage)
+
+        zimage_layout = QVBoxLayout(self._pkg_zimage)
+        zimage_header = QLabel("<b>Z-Image</b>", self._pkg_zimage)
+        zimage_layout.addWidget(zimage_header)
+        zimage_props = ModelPropsWidget(
+            size=12, vram=12, speed=0, fidelity=2, understanding=1, parent=self
+        )
+        zimage_layout.addWidget(zimage_props)
+        desc = _(
+            "Powerful and efficient model for stronger hardware. Good understanding of natural language (Chinese and English). The Turbo variant is fast and heavily tuned for realistic results."
+        )
+        zimage_desc = QLabel(desc, self._pkg_zimage)
+        zimage_desc.setWordWrap(True)
+        zimage_layout.addWidget(zimage_desc)
+        self._models += [
+            ModelCheckBox(
+                "Z-Image Turbo - " + _("for Photography and realistic images"),
+                Arch.zimage,
+                "checkpoint-turbo_fp8-zimage",
+                zimage_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_flux = QWidget(self)
+        layout.addWidget(self._pkg_flux)
+
+        flux_layout = QVBoxLayout(self._pkg_flux)
+        flux_header = QLabel("<b>FLUX 1</b>", self._pkg_flux)
+        flux_layout.addWidget(flux_header)
+        flux_props = ModelPropsWidget(
+            size=26, vram=10, speed=-1, fidelity=2, understanding=1, parent=self
+        )
+        flux_layout.addWidget(flux_props)
+        desc = _(
+            "Strong base model with consistent high-quality compositions and details. Good understanding of natural language (English). Limited flexibility for art styles."
+        )
+        flux_desc = QLabel(desc, self._pkg_flux)
+        flux_desc.setWordWrap(True)
+        flux_layout.addWidget(flux_desc)
+        self._models += [
+            ModelCheckBox(
+                "Flux Krea - " + _("General-purpose model for photography and illustration"),
+                Arch.flux,
+                "checkpoint-flux_dev-flux",
+                flux_layout,
+            ),
+            ModelCheckBox(
+                "Flux Kontext - " + _("Specialized model for instruction-based editing"),
+                Arch.flux,
+                "checkpoint-flux_kontext-flux",
+                flux_layout,
+            ),
+        ]
+
+        self.add_separator(layout)
+
+        self._pkg_sd15 = QWidget(self)
+        layout.addWidget(self._pkg_sd15)
+        sd15_layout = QVBoxLayout(self._pkg_sd15)
+        sd15_header = QLabel("<b>SD 1.5 - Stable Diffusion 1.5</b>", self._pkg_sd15)
+        sd15_layout.addWidget(sd15_header)
+        sd15_props = ModelPropsWidget(
+            size=16, vram=4, speed=2, fidelity=-1, understanding=-1, parent=self
+        )
+        sd15_layout.addWidget(sd15_props)
+        desc = (
+            _(
+                "Older base model with good flexibility and many extensions available. Great for live painting and systems without powerful hardware. Not recommended for generating full images from text."
+            )
+            + "<br>"
+            + _("Choose models below depending on the content of your images:")
+        )
+        sd15_desc = QLabel(desc, self._pkg_sd15)
+        sd15_desc.setWordWrap(True)
+        sd15_layout.addWidget(sd15_desc)
+        self._models += [
+            ModelCheckBox(
+                "Serenity - " + _("for Photography and realistic images"),
+                Arch.sd15,
+                "checkpoint-serenity-sd15",
+                sd15_layout,
+            ),
+            ModelCheckBox(
+                "DreamShaper - " + _("for Illustrations and digital art"),
+                Arch.sd15,
+                "checkpoint-dreamshaper-sd15",
+                sd15_layout,
+            ),
+        ]
+
+        layout.addStretch()
+
+        self.update_installed()
+        for m in self._models:
+            m.widget.toggled.connect(self._change_models)
+
+    @staticmethod
+    def add_separator(layout: QVBoxLayout):
+        line_sep = QFrame()
+        line_sep.setFrameShape(QFrame.Shape.HLine)
+        line_sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(line_sep)
+
+    def update_installed(self):
+        workload_installed = _enabled_workloads([], self.workload_models, self._server)
+        for m in self._models:
+            id = m.model_id(self._server.backend)
+            if workload_installed[m.arch] and self._server.is_installed(id):
+                m.state = PackageState.installed
+            elif m.state is PackageState.installed:
+                m.state = PackageState.available
+
+    def _change_models(self):
+        self.selected_models_changed.emit()
+
+    @property
+    def selected_models(self):
+        result: list[str] = []
+        archs = {Arch.all}
+        for m in self._models:
+            if m.state is PackageState.selected:
+                result.append(m.model_id(self._server.backend))
+                archs.add(m.arch)
+        result.extend(
+            m.id.string
+            for m in self.workload_models
+            if m.arch in archs and not self._server.is_installed(m)
+        )
+        return result
+
+    @selected_models.setter
+    def selected_models(self, value: list[str]):
+        workloads = _enabled_workloads(value, self.workload_models, self._server)
+        for m in self._models:
+            if m.state is not PackageState.installed:
+                if m.model_id(self._server.backend) in value and workloads[m.arch]:
+                    m.state = PackageState.selected
+                else:
+                    m.state = PackageState.available
+
 
 class ServerWidget(QWidget):
-    _server: Server
-    _error = ""
-    _packages: dict[str, PackageGroupWidget]
+    state_changed = pyqtSignal()
 
     def __init__(self, srv: Server, parent=None):
         super().__init__(parent)
         self._server = srv
+        self._error = ""
+        self._selected_models: list[str] = []
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         add_header(layout, Settings._server_path)
 
@@ -323,7 +872,7 @@ class ServerWidget(QWidget):
 
         self._manage_button = QToolButton(self)
         self._manage_button.setText(_("Manage"))
-        self._manage_button.setPopupMode(QToolButton.InstantPopup)
+        self._manage_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._manage_button.setMinimumWidth(150)
 
         menu = QMenu(self)
@@ -357,102 +906,25 @@ class ServerWidget(QWidget):
         launch_layout.addLayout(buttons_layout, 0)
         layout.addLayout(launch_layout)
 
-        package_list = QWidget(self)
-        package_layout = QVBoxLayout()
-        package_layout.setContentsMargins(0, 0, 0, 0)
-        package_list.setLayout(package_layout)
+        self._custom_tab = CustomPackageTab(srv, self)
+        self._custom_tab.selected_models_changed.connect(self._update_selections)
 
-        scroll = QScrollArea(self)
-        scroll.setWidget(package_list)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameStyle(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        layout.addWidget(scroll, 1)
+        self._workloads_tab = WorkloadsTab(srv, self)
+        self._workloads_tab.selected_models_changed.connect(self._update_workload_models)
 
-        self._required_group = PackageGroupWidget(
-            _("Core components"),
-            ["Python", "ComfyUI", _("Custom nodes"), _("Required models")],
-            is_expanded=False,
-            parent=self,
-        )
-        package_layout.addWidget(self._required_group)
+        tabs = QTabWidget(self)
+        for tab in [self._workloads_tab, self._custom_tab]:
+            scroll = QScrollArea(tabs)
+            scroll.setWidget(tab)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameStyle(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            tabs.addTab(scroll, tab.title)
 
-        self._workload_group = PackageGroupWidget(
-            _("Workloads"),
-            [_("Stable Diffusion 1.5"), _("Stable Diffusion XL"), "Flux"],
-            description=(
-                _("Choose a Diffusion base model to install its basic requirements.")
-                + " <a href='https://docs.interstice.cloud/base-models'>"
-                + _("Read more about workloads.")
-                + "</a>"
-            ),
-            is_checkable=True,
-            parent=self,
-        )
-        self._workload_group.changed.connect(self.change_workload)
-        package_layout.addWidget(self._workload_group)
-
-        optional_models = resources.default_checkpoints + resources.optional_models
-        self._packages = {
-            "upscalers": PackageGroupWidget(
-                _("Upscalers (super-resolution)"),
-                resources.upscale_models,
-                is_checkable=True,
-                parent=self,
-            ),
-            "sd15": PackageGroupWidget(
-                _("Stable Diffusion 1.5 models"),
-                [m for m in optional_models if m.arch is Arch.sd15],
-                description=_("Select at least one diffusion model. Control models are optional."),
-                is_checkable=True,
-                is_expanded=False,
-                parent=self,
-            ),
-            "sdxl": PackageGroupWidget(
-                _("Stable Diffusion XL models"),
-                [m for m in optional_models if m.arch is Arch.sdxl],
-                description=_("Select at least one diffusion model. Control models are optional."),
-                is_checkable=True,
-                is_expanded=False,
-                parent=self,
-            ),
-            "illu": PackageGroupWidget(
-                _("Illustrious/NoobAI XL models"),
-                [m for m in optional_models if m.arch in [Arch.illu, Arch.illu_v]],
-                description=_("Select at least one diffusion model. Control models are optional."),
-                is_checkable=True,
-                is_expanded=False,
-                parent=self,
-            ),
-            "flux": PackageGroupWidget(
-                _("Flux models"),
-                [m for m in optional_models if m.arch in [Arch.flux, Arch.flux_k, Arch.chroma]],
-                description=_("Select at least one diffusion model. Control models are optional."),
-                is_checkable=True,
-                is_expanded=False,
-                parent=self,
-            ),
-        }
-        # Pre-select a recommended set of models if the server hasn't been installed yet
-        if not self._server.has_comfy:
-            self._workload_group.values = [PackageState.available, PackageState.selected]
-            sdxl_packages = self._packages["sdxl"]
-            sdxl_packages.expand()
-            sdxl_packages.workload = Arch.sdxl
-            state = [PackageState.selected for _ in sdxl_packages.values]
-            state[-2] = PackageState.available  # Stencil is optional
-            state[-1] = PackageState.available  # Face model is optional
-            sdxl_packages.values = state
-
-        for group in ["upscalers", "sd15", "sdxl", "illu", "flux"]:
-            self._packages[group].changed.connect(self.update_ui)
-            package_layout.addWidget(self._packages[group])
-
-        package_layout.addStretch()
+        layout.addWidget(tabs, 1)
 
         root.connection.state_changed.connect(self.update_ui)
         self.update_ui()
-        self.update_required()
 
     def _change_location(self):
         if settings.server_path != self._location_edit.text():
@@ -461,7 +933,9 @@ class ServerWidget(QWidget):
             settings.server_path = self._location_edit.text()
             settings.save()
             self.update_ui()
-            self.update_required()
+            self._custom_tab.update_installed()
+            self._workloads_tab.update_installed()
+            self.state_changed.emit()
 
     def _select_location(self):
         path = self._server.path
@@ -471,7 +945,7 @@ class ServerWidget(QWidget):
             path = Path(Settings._server_path.default)
             path.mkdir(parents=True, exist_ok=True)
         path = QFileDialog.getExistingDirectory(
-            self, _("Select Directory"), str(path), QFileDialog.ShowDirsOnly
+            self, _("Select Directory"), str(path), QFileDialog.Option.ShowDirsOnly
         )
         if path:
             path = Path(path)
@@ -490,7 +964,9 @@ class ServerWidget(QWidget):
             settings.server_backend = backend
             settings.save()
             self._server.check_install()
+            self._custom_tab.update_backend()
             self.update_ui()
+            self.state_changed.emit()
 
     def _open_logs(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(util.log_dir)))
@@ -504,7 +980,7 @@ class ServerWidget(QWidget):
                 self,
                 _("No CUDA Devices Found"),
                 question,
-                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             return answer == QMessageBox.StandardButton.Yes
@@ -530,12 +1006,14 @@ class ServerWidget(QWidget):
         try:
             url = await self._server.start()
             self.update_ui()
+            self.state_changed.emit()
             self._status_label.setText(_("Server running - Connecting..."))
             self._status_label.setStyleSheet(f"color:{yellow};font-weight:bold")
-            await root.connection._connect(url, ServerMode.managed)
+            await root.connection._connect(ComfyClient(url))
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
+        self.state_changed.emit()
 
     async def _stop(self):
         self._launch_button.setEnabled(False)
@@ -546,8 +1024,9 @@ class ServerWidget(QWidget):
                 await root.connection.disconnect()
             await self._server.stop()
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
+        self.state_changed.emit()
 
     async def _install(self):
         try:
@@ -558,18 +1037,20 @@ class ServerWidget(QWidget):
 
             if self._server.state in [ServerState.not_installed, ServerState.missing_resources]:
                 await self._server.install(self._handle_progress)
-                await self._server.download_required(self._handle_progress)
-            self.update_required()
+            self._custom_tab.update_installed()
 
-            models_to_install = self.update_optional()
-            if len(models_to_install) > 0:
-                await self._server.download(models_to_install, self._handle_progress)
+            if len(self.selected_models) > 0:
+                await self._server.download(self.selected_models, self._handle_progress)
+
+            self.selected_models = []
+            self._custom_tab.update_installed()
+            self._workloads_tab.update_installed()
             self.update_ui()
 
             await self._start()
 
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
 
     async def _upgrade(self):
@@ -582,7 +1063,7 @@ class ServerWidget(QWidget):
             await self._start()
 
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         self.update_ui()
 
     async def _prepare_for_install(self):
@@ -627,6 +1108,7 @@ class ServerWidget(QWidget):
             self._progress_bar.setTextVisible(False)
 
     def verify_models(self):
+        self._error = ""
         eventloop.run(self._verify_models())
 
     async def _verify_models(self):
@@ -647,83 +1129,87 @@ class ServerWidget(QWidget):
                 ])
 
                 msg_box = QMessageBox(
-                    QMessageBox.Warning,
+                    QMessageBox.Icon.Warning,
                     _("Verification Failed"),
                     _("The following files failed verification:")
                     + f"\n\n{failed_files}\n\n"
                     + _("Would you like to delete and re-download these files?"),
-                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     self,
                 )
 
-                if msg_box.exec_() == QMessageBox.Yes:
+                if msg_box.exec() == QMessageBox.StandardButton.Yes:
                     await self._server.fix_models(bad_models, self._handle_progress)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self._progress_bar.setVisible(False)
             self._progress_info.setVisible(False)
             self.update_ui()
 
     def reinstall(self):
+        self._error = ""
         eventloop.run(self._reinstall())
 
     async def _reinstall(self):
         msg_box = QMessageBox(
-            QMessageBox.Question,
+            QMessageBox.Icon.Question,
             _("Confirm Reinstallation"),
             _(
                 "This will reinstall the server components while keeping your downloaded models. Continue?"
             ),
-            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             self,
         )
 
-        if msg_box.exec_() != QMessageBox.Yes:
+        if msg_box.exec() != QMessageBox.StandardButton.Yes:
             return
 
         await self._prepare_for_install()
         try:
             await self._server.uninstall(self._handle_progress, delete_models=False)
             await self._server.install(self._handle_progress)
-            await self._server.download_required(self._handle_progress)
+            if len(self.selected_models) > 0:
+                await self._server.download(self.selected_models, self._handle_progress)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self.update_ui()
 
     def uninstall(self):
+        self._error = ""
         eventloop.run(self._uninstall())
 
     async def _uninstall(self):
         msg_box = QMessageBox(
-            QMessageBox.Warning,
+            QMessageBox.Icon.Warning,
             _("Confirm Deletion"),
             _("WARNING: This will delete the entire server installation INCLUDING ALL MODELS!")
             + "\n\n"
             + _("This action cannot be undone.")
             + "\n\n"
             + _("Are you absolutely sure you want to continue?"),
-            QMessageBox.Cancel,
+            QMessageBox.StandardButton.Cancel,
             self,
         )
-        msg_box.addButton(_("Delete"), QMessageBox.DestructiveRole)
-        msg_box.setDefaultButton(QMessageBox.Cancel)
-        if msg_box.exec_() != 0:  # Destructive role returns 0
+        msg_box.addButton(_("Delete"), QMessageBox.ButtonRole.DestructiveRole)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if msg_box.exec() != 0:  # Destructive role returns 0
             return
 
         await self._prepare_for_install()
         try:
             await self._server.uninstall(self._handle_progress, delete_models=True)
         except Exception as e:
-            self.show_error(str(e))
+            self.show_error(e)
         finally:
             self._progress_bar.setVisible(False)
             self._progress_info.setVisible(False)
             self.update_ui()
 
     def update_ui(self):
-        self._location_edit.setText(settings.server_path)
+        if self._location_edit.text() != settings.server_path:
+            self._location_edit.setText(settings.server_path)
         backends = ServerBackend.supported()
         try:
             index = backends.index(settings.server_backend)
@@ -754,9 +1240,10 @@ class ServerWidget(QWidget):
             self._launch_button.setEnabled(False)
             self._manage_button.setEnabled(False)
         elif state is ServerState.update_required:
-            self._status_label.setText(
-                _("Upgrade required") + f": v{self._server.version} -> v{resources.version}"
-            )
+            text = _("Upgrade required") + f": v{self._server.version} -> v{resources.version}"
+            if self._server.version == "incomplete":
+                text = _("Previous installation is incomplete")
+            self._status_label.setText(text)
             self._status_label.setStyleSheet(f"color:{yellow};font-weight:bold")
             self._launch_button.setText(_("Upgrade"))
         elif state is ServerState.stopped:
@@ -799,85 +1286,50 @@ class ServerWidget(QWidget):
                 )
                 self._status_label.setStyleSheet(f"color:{red};font-weight:bold")
                 self._launch_button.setEnabled(False)
+            elif not self._server.has_comfy and len(self.selected_models) == 0:
+                self._status_label.setText(_("Please select models for installation"))
+                self._status_label.setStyleSheet(f"color:{yellow};font-weight:bold")
+                self._launch_button.setEnabled(False)
             else:
                 self._launch_button.setEnabled(True)
 
         self.show_error(self._error)
 
-    def show_error(self, error: str):
-        self._error = error
+    def show_error(self, error: str | Exception):
+        if isinstance(error, Exception):
+            self._error = str(error) or repr(error)
+        else:
+            self._error = error
         if self._error:
             error_text = "<b>Error:</b> " + self._error.replace("\n", "<br>")
             self._status_label.setText(error_text)
             self._status_label.setStyleSheet(f"color:{red}")
 
-    def change_workload(self):
-        if self._workload_group.values[0] is PackageState.selected:
-            self._packages["sd15"].expand()
-        if self._workload_group.values[2] is PackageState.selected:
-            self._packages["flux"].expand()
+    def _update_selections(self):
+        self.selected_models = self._custom_tab.selected_models
         self.update_ui()
 
-    def update_required(self):
-        has_missing_nodes = any(
-            node.name in self._server.missing_resources for node in resources.required_custom_nodes
-        )
-        has_missing_models = any(
-            model.name in self._server.missing_resources
-            for model in resources.required_models
-            if model.arch is Arch.all
-        )
-        installed_status = [
-            self._server.has_python,
-            self._server.has_comfy,
-            not has_missing_nodes,
-            not has_missing_models,
-        ]
-        self._required_group.set_installed(installed_status)
-
-    def update_optional(self):
-        workloads = [
-            [m for m in resources.required_models if m.arch is Arch.sd15],
-            [m for m in resources.required_models if m.arch is Arch.sdxl],
-            [m for m in resources.required_models if m.arch is Arch.flux],
-        ]
-        self._workload_group.set_installed([self._server.all_installed(w) for w in workloads])
-        to_install = [
-            m.name
-            for workload, state in zip(workloads, self._workload_group.values)
-            if state is PackageState.selected
-            for m in workload
-        ]
-
-        for widget in self._packages.values():
-            widget.workloads = self.selected_workloads
-            widget.backend = self._server.backend
-            widget.set_installed([self._server.is_installed(p) for p in widget.package_names])
-
-        to_install += [p for widget in self._packages.values() for p in widget.selected_packages]
-        return to_install
+    def _update_workload_models(self):
+        self.selected_models = self._workloads_tab.selected_models
+        self.update_ui()
 
     @property
     def requires_install(self):
         state = self._server.state
-        checkpoints_to_install = self.update_optional()
         install_required = state in [ServerState.not_installed, ServerState.missing_resources]
         install_optional = (
-            state in [ServerState.stopped, ServerState.running] and len(checkpoints_to_install) > 0
+            state in [ServerState.stopped, ServerState.running] and len(self.selected_models) > 0
         )
         return install_required or install_optional
 
     @property
-    def selected_workloads(self):
-        selected_or_installed = [
-            state in [PackageState.selected, PackageState.installed]
-            for state in self._workload_group.values
-        ]
-        result = []
-        if selected_or_installed[0]:
-            result.append(Arch.sd15)
-        if selected_or_installed[1]:
-            result.append(Arch.sdxl)
-        if selected_or_installed[2]:
-            result.append(Arch.flux)
-        return result
+    def selected_models(self):
+        return self._selected_models
+
+    @selected_models.setter
+    def selected_models(self, value: list[str]):
+        self._selected_models = value
+        if self._custom_tab.selected_models != value:
+            self._custom_tab.selected_models = value
+        if self._workloads_tab.selected_models != value:
+            self._workloads_tab.selected_models = value

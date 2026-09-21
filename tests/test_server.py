@@ -1,45 +1,52 @@
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from PyQt5.QtNetwork import QNetworkAccessManager
 import asyncio
-import pytest
 import shutil
 import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from ai_diffusion import network, server, resources
+import pytest
+from PyQt6.QtNetwork import QNetworkAccessManager
+
+from ai_diffusion.backend import network, resources, server
+from ai_diffusion.backend.resources import VerificationState
+from ai_diffusion.backend.server import (
+    InstallationProgress,
+    Server,
+    ServerBackend,
+    ServerState,
+    model_dirs,
+)
+from ai_diffusion.platform_tools import get_cuda_devices
 from ai_diffusion.style import Arch
-from ai_diffusion.server import Server, ServerState, ServerBackend, InstallationProgress
-from ai_diffusion.server import model_dirs
-from ai_diffusion.resources import VerificationState
-from .config import test_dir, server_dir
 
-workload_sd15 = [p.name for p in resources.required_models if p.arch is Arch.sd15]
-workload_sd15 += [resources.default_checkpoints[0].name]
+from .config import server_dir
+from .conftest import qtapp
+
+workload_sd15 = [p.id.string for p in resources.required_models if p.arch in (Arch.all, Arch.sd15)]
+workload_sd15 += [resources.default_checkpoints[0].id.string]
 
 
 @pytest.mark.parametrize("mode", ["from_scratch", "resume"])
-def test_download(qtapp, mode):
-    async def main():
-        net = QNetworkAccessManager()
-        with TemporaryDirectory() as tmp:
-            url = "https://files.interstice.cloud/plugin/krita_ai_diffusion-1.25.0.zip"
-            path = Path(tmp) / "test.zip"
-            if mode == "resume":
-                part = Path(tmp) / "test.zip.part"
-                part.touch()
-                part.write_bytes(b"1234567890")
-            got_finished = False
-            async for progress in network.download(net, url, path):
-                if progress and progress.total > 0:
-                    assert progress.value >= 0 and progress.value <= 1
-                    assert progress.received <= progress.total
-                    assert progress.speed >= 0
-                    got_finished = got_finished or progress.value == 1
-                elif progress and progress.total == 0:
-                    assert progress.value == -1
-            assert got_finished and path.exists() and path.stat().st_size > 0
-
-    qtapp.run(main())
+@qtapp
+async def test_download(mode):
+    net = QNetworkAccessManager()
+    with TemporaryDirectory() as tmp:
+        url = "https://files.interstice.cloud/plugin/krita_ai_diffusion-1.25.0.zip"
+        path = Path(tmp) / "test.zip"
+        if mode == "resume":
+            part = Path(tmp) / "test.zip.part"
+            part.touch()
+            part.write_bytes(b"1234567890")
+        got_finished = False
+        async for progress in network.download(net, url, path):
+            if progress and progress.total > 0:
+                assert progress.value >= 0 and progress.value <= 1
+                assert progress.received <= progress.total
+                assert progress.speed >= 0
+                got_finished = got_finished or progress.value == 1
+            elif progress and progress.total == 0:
+                assert progress.value == -1
+        assert got_finished and path.exists() and path.stat().st_size > 0
 
 
 def clear_test_server():
@@ -48,7 +55,14 @@ def clear_test_server():
     server_dir.mkdir(exist_ok=True)
 
 
-def test_install_and_run(qtapp, pytestconfig, local_download_server):
+def get_backend():
+    if len(get_cuda_devices()) > 0:
+        return ServerBackend.cuda
+    return ServerBackend.cpu
+
+
+@qtapp
+async def test_install_and_run(pytestconfig, local_download_server):
     """Test installing and running ComfyUI server from scratch.
     * Takes a while, only runs with --test-install
     * Starts and downloads from local file server instead of huggingface/civitai
@@ -62,7 +76,7 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
 
     clear_test_server()
 
-    server = Server(str(server_dir), ServerBackend.cpu)
+    server = Server(str(server_dir), get_backend())
     assert server.state in [ServerState.not_installed, ServerState.missing_resources]
 
     last_stage = ""
@@ -79,59 +93,52 @@ def test_install_and_run(qtapp, pytestconfig, local_download_server):
             last_stage = report.stage
             print(report.stage)
 
-    async def main():
-        await server.install(handle_progress)
-        assert server.state is ServerState.missing_resources
-        await server.download_required(handle_progress)
-        assert server.state is ServerState.missing_resources
-        await server.download(workload_sd15, handle_progress)
-        assert server.state is ServerState.stopped and server.version == resources.version
+    await server.install(handle_progress)
+    assert server.state is ServerState.missing_resources
+    await server.download(workload_sd15, handle_progress)
+    assert server.state is ServerState.stopped and server.version == resources.version
 
-        url = await server.start(port=8191)
-        assert server.state is ServerState.running
-        assert url == "127.0.0.1:8191"
+    url = await server.start(port=8191)
+    assert server.state is ServerState.running
+    assert url == "127.0.0.1:8191"
 
-        await server.stop()
-        assert server.state is ServerState.stopped
+    await server.stop()
+    assert server.state is ServerState.stopped
 
-        version_file = server_dir / ".version"
-        assert version_file.exists()
-        with version_file.open("w", encoding="utf-8") as f:
-            f.write("1.0.42")
-        server.check_install()
-        assert server.state is ServerState.update_required
-        await server.upgrade(handle_progress)
-        assert server.state is ServerState.stopped and server.version == resources.version
-
-    qtapp.run(main())
+    version_file = server_dir / ".version"
+    assert version_file.exists()
+    with version_file.open("w", encoding="utf-8") as f:
+        f.write("1.0.42")
+    server.check_install()
+    assert server.state is ServerState.update_required
+    await server.upgrade(handle_progress)
+    assert server.state is ServerState.stopped and server.version == resources.version
 
 
-def test_run_external(qtapp, pytestconfig):
+@qtapp
+async def test_run_external(pytestconfig):
     if not pytestconfig.getoption("--test-install"):
         pytest.skip("Only runs with --test-install")
     if not (server_dir / "ComfyUI").exists():
         pytest.skip("ComfyUI installation not found")
 
-    server = Server(str(server_dir), ServerBackend.cpu)
+    server = Server(str(server_dir), get_backend())
     assert server.has_python
     assert server.state in [ServerState.stopped, ServerState.missing_resources]
 
-    async def main():
-        url = await server.start(port=8192)
-        assert server.state is ServerState.running
-        assert url == "127.0.0.1:8192"
+    url = await server.start(port=8192)
+    assert server.state is ServerState.running
+    assert url == "127.0.0.1:8192"
 
-        await server.stop()
-        assert server.state is ServerState.stopped
-
-    qtapp.run(main())
+    await server.stop()
+    assert server.state is ServerState.stopped
 
 
 def test_extra_model_dirs(pytestconfig):
     if not pytestconfig.getoption("--test-install"):
         pytest.skip("Only runs with --test-install")
 
-    server = Server(str(server_dir), ServerBackend.cpu)
+    server = Server(str(server_dir), get_backend())
     # Requires test_install_and_run to setup the server
     assert server.state in [ServerState.stopped]
 
@@ -139,11 +146,12 @@ def test_extra_model_dirs(pytestconfig):
         assert (server_dir / "models" / dir).exists()
 
 
-def test_verify_and_fix(qtapp, pytestconfig, local_download_server):
+@qtapp
+async def test_verify_and_fix(pytestconfig, local_download_server):
     if not pytestconfig.getoption("--test-install"):
         pytest.skip("Only runs with --test-install")
 
-    server = Server(str(server_dir), ServerBackend.cpu)
+    server = Server(str(server_dir), get_backend())
     # Requires test_install_and_run to setup the server
     assert server.state in [ServerState.stopped]
 
@@ -158,52 +166,48 @@ def test_verify_and_fix(qtapp, pytestconfig, local_download_server):
     def handle_progress(report: InstallationProgress):
         print(report.stage, report.message)
 
-    async def main():
-        verify_result = await server.verify(handle_progress)
-        assert len(verify_result) == 1
-        mismatch = verify_result[0]
-        assert mismatch.state is VerificationState.mismatch
-        assert mismatch.file.path == model_file.files[0].path
-        assert server.state is ServerState.stopped
+    verify_result = await server.verify(handle_progress)
+    assert len(verify_result) == 1
+    mismatch = verify_result[0]
+    assert mismatch.state is VerificationState.mismatch
+    assert mismatch.file.path == model_file.files[0].path
+    assert server.state is ServerState.stopped
 
-        await server.fix_models(verify_result, handle_progress)
-        fixed_result = await server.verify(handle_progress)
-        assert len(fixed_result) == 0
-        assert server.state is ServerState.stopped
-
-    qtapp.run(main())
+    await server.fix_models(verify_result, handle_progress)
+    fixed_result = await server.verify(handle_progress)
+    assert len(fixed_result) == 0
+    assert server.state is ServerState.stopped
 
 
-def test_uninstall(qtapp, pytestconfig, local_download_server):
+@qtapp
+async def test_uninstall(pytestconfig, local_download_server):
     if not pytestconfig.getoption("--test-install"):
         pytest.skip("Only runs with --test-install")
 
-    temp_server_dir = test_dir / "temp_server"
+    temp_server_dir = server_dir.parent / "temp-server"
     if temp_server_dir.exists():
         shutil.rmtree(temp_server_dir, ignore_errors=True)
-    server = Server(str(temp_server_dir), ServerBackend.cpu)
+    server = Server(str(temp_server_dir), get_backend())
     assert server.state is ServerState.not_installed
 
     def handle_progress(report: InstallationProgress):
         print(report.stage, report.message)
 
-    async def main():
-        await server.install(handle_progress)
-        await server.download_required(handle_progress)
-        await server.uninstall(handle_progress)
-        assert server.state is ServerState.not_installed
-        assert (temp_server_dir / "models").exists()
-        assert server.comfy_dir is None
+    await server.install(handle_progress)
+    await server.download(workload_sd15, handle_progress)
+    await server.uninstall(handle_progress)
+    assert server.state is ServerState.not_installed
+    assert (temp_server_dir / "models").exists()
+    assert server.comfy_dir is None
 
-        server.state = ServerState.stopped
-        await server.uninstall(handle_progress, delete_models=True)
-        assert server.state is ServerState.not_installed
-        assert not temp_server_dir.exists()
-
-    qtapp.run(main())
+    server.state = ServerState.stopped
+    await server.uninstall(handle_progress, delete_models=True)
+    assert server.state is ServerState.not_installed
+    assert not temp_server_dir.exists()
 
 
-def test_install_if_missing(qtapp):
+@qtapp
+async def test_install_if_missing():
     installed = False
 
     async def install_func(target: Path):
@@ -212,39 +216,32 @@ def test_install_if_missing(qtapp):
         target.mkdir()
         (target / "file").touch()
 
-    async def main():
-        nonlocal installed
+    with TemporaryDirectory() as tmp:
+        target = Path(tmp) / "test"
+        await server.install_if_missing(target, install_func, target)
+        assert installed and (target / "file").exists()
 
-        with TemporaryDirectory() as tmp:
-            target = Path(tmp) / "test"
-            await server.install_if_missing(target, install_func, target)
-            assert installed and (target / "file").exists()
-
-            installed = False
-            await server.install_if_missing(target, install_func, target)
-            assert not installed
-
-    qtapp.run(main())
+        installed = False
+        await server.install_if_missing(target, install_func, target)
+        assert not installed
 
 
-def test_try_install(qtapp):
+@qtapp
+async def test_try_install():
     async def install_func(target: Path):
         target.mkdir()
-        raise Exception("test")
+        raise ValueError("test")
 
-    async def main():
-        with TemporaryDirectory() as tmp:
-            target = Path(tmp) / "test"
-            with pytest.raises(Exception):
-                await server.install_if_missing(target, install_func, target)
-            assert not target.exists()
+    with TemporaryDirectory() as tmp:
+        target = Path(tmp) / "test"
+        with pytest.raises(ValueError):
+            await server.install_if_missing(target, install_func, target)
+        assert not target.exists()
 
-            target.mkdir()
-            with pytest.raises(Exception):
-                await server.try_install(target, install_func, target)
-            assert target.exists()
-
-    qtapp.run(main())
+        target.mkdir()
+        with pytest.raises(FileExistsError):
+            await server.try_install(target, install_func, target)
+        assert target.exists()
 
 
 @pytest.mark.parametrize("scenario", ["default", "target-empty", "target-exists", "source-missing"])
@@ -289,14 +286,12 @@ def test_safe_remove_dir(scenario):
             assert scenario != "regular-file"
 
 
-def test_python_version(qtapp):
-    async def main():
-        python_executable = Path(sys.executable)
-        py, major, minor = await server.get_python_version(python_executable)
-        assert py.startswith("Python 3.")
-        assert major is not None and minor is not None and major >= 3 and minor >= 9
-
-    qtapp.run(main())
+@qtapp
+async def test_python_version():
+    python_executable = Path(sys.executable)
+    py, major, minor = await server.get_python_version(python_executable)
+    assert py.startswith("Python 3.")
+    assert major is not None and minor is not None and major >= 3 and minor >= 9
 
 
 common_errors = {

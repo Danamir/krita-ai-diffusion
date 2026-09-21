@@ -12,14 +12,16 @@ uv
 
 # Testing
 aiohttp
+anyio
 truststore
 python-dotenv
 markdown
 numpy
 pytest
 pytest-asyncio
+psutil
 tqdm
-PyQt5
+PyQt6
 Pillow
 
 # Service

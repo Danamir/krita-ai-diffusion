@@ -3,16 +3,17 @@ ComfyUI with all required custom nodes and models.
 """
 
 import asyncio
-import sys
 import shutil
 import subprocess
-import requests
-from pathlib import Path
+import sys
 from itertools import chain
+from pathlib import Path
+
+import requests
 
 sys.path.append(str(Path(__file__).parent.parent))
 import ai_diffusion
-from ai_diffusion import resources
+from ai_diffusion.backend import resources
 
 version = f"v{ai_diffusion.__version__}"
 root_dir = Path(__file__).parent.parent
@@ -23,8 +24,11 @@ comfy_dir = docker_dir / "ComfyUI"
 def copy_scripts():
     repo_dir = docker_dir / "krita-ai-diffusion"
     for source_file, target_dir in [
-        (root_dir / "ai_diffusion" / "resources.py", repo_dir / "ai_diffusion"),
-        (root_dir / "ai_diffusion" / "platform.py", repo_dir / "ai_diffusion"),
+        (
+            root_dir / "ai_diffusion" / "backend" / "resources.py",
+            repo_dir / "ai_diffusion" / "backend",
+        ),
+        (root_dir / "ai_diffusion" / "platform_tools.py", repo_dir / "ai_diffusion"),
         (
             root_dir / "ai_diffusion" / "presets" / "models.json",
             repo_dir / "ai_diffusion" / "presets",
@@ -69,8 +73,12 @@ def upgrade_python_dependencies():
         "ComfyUI/custom_nodes/comfyui-tooling-nodes/requirements.txt",
         "ComfyUI/custom_nodes/ComfyUI-GGUF/requirements.txt",
         "ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt",
-        "ComfyUI/custom_nodes/ComfyUI-nunchaku/requirements.txt",
-        "--no-deps",
+        "--python-platform",
+        "x86_64-unknown-linux-gnu",
+        "--python-version",
+        "3.12",
+        "--index-strategy",
+        "unsafe-best-match",
         "--upgrade",
         "-o",
         "requirements.txt",

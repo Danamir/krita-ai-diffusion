@@ -1,27 +1,30 @@
 from __future__ import annotations
+
 import asyncio
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any
 from time import time
-from PyQt5.QtCore import QObject, QByteArray
-from PyQt5.QtGui import QImageReader
-from PyQt5.QtWidgets import QMessageBox
+from typing import Any
 
-from .api import InpaintMode, FillMode
-from .image import ImageCollection
-from .model import Model, InpaintContext
-from .custom_workflow import CustomWorkspace
-from .control import ControlLayer, ControlLayerList
-from .region import RootRegion, Region
-from .jobs import Job, JobKind, JobParams, JobQueue
-from .style import Style, Styles
-from .properties import serialize, deserialize
-from .settings import settings
-from .localization import translate as _
-from .util import client_logger as log, encode_json
+from PyQt6.QtCore import QByteArray, QObject
+from PyQt6.QtGui import QImageReader
+from PyQt6.QtWidgets import QMessageBox
+
 from . import eventloop
+from .backend.api import FillMode, InpaintMode
+from .image import Image, ImageCollection
+from .localization import translate as _
+from .model.control import ControlLayer, ControlLayerList
+from .model.custom_workflow import CustomWorkspace
+from .model.jobs import Job, JobKind, JobParams, JobQueue
+from .model.model import DocumentModel, InpaintContext
+from .model.properties import deserialize, serialize
+from .model.region import Region, RootRegion
+from .settings import settings
+from .style import Style, Styles
+from .util import client_logger as log
+from .util import encode_json
 
 # Version of the persistence format, increment when there are breaking changes
 version = 1
@@ -52,7 +55,7 @@ class RecentlyUsedSync:
             log.warning(f"Failed to load default document settings: {type(e)} {e}")
             return RecentlyUsedSync()
 
-    def track(self, model: Model):
+    def track(self, model: DocumentModel):
         try:
             if _find_annotation(model.document, "ui.json") is None:
                 model.style = Styles.list().find(self.style) or Styles.list().default
@@ -114,7 +117,7 @@ class _HistoryResult:
 class ModelSync:
     """Synchronizes the model with the document's annotations."""
 
-    def __init__(self, model: Model):
+    def __init__(self, model: DocumentModel):
         self._model = model
         self._history: list[_HistoryResult] = []
         self._memory_used: dict[int, int] = {}  # slot -> memory used for images in bytes
@@ -160,7 +163,7 @@ class ModelSync:
         state_bytes = QByteArray(state_str.encode("utf-8"))
         model.document.annotate("ui.json", state_bytes)
 
-    def _load(self, model: Model, state_bytes: bytes):
+    def _load(self, model: DocumentModel, state_bytes: bytes):
         state = json.loads(state_bytes.decode("utf-8"))
         model.try_set_preview_layer(state.get("preview_layer", ""))
         _deserialize(model, state)
@@ -191,7 +194,7 @@ class ModelSync:
                 self._memory_used[item.slot] = images_bytes.size()
                 self._slot_index = max(self._slot_index, item.slot + 1)
 
-    def _track(self, model: Model):
+    def _track(self, model: DocumentModel):
         model.modified.connect(self._save_later)
         model.inpaint.modified.connect(self._save_later)
         model.upscale.modified.connect(self._save_later)
@@ -204,6 +207,7 @@ class ModelSync:
         model.jobs.result_used.connect(self._save_later)
         model.jobs.selection_changed.connect(self._save_later)
         self._track_regions(model.regions)
+        self._track_regions(model.edit_regions)
 
     def _track_control(self, control: ControlLayer):
         self._save()
@@ -328,6 +332,8 @@ def _deserialize_custom(custom: CustomWorkspace, data: dict[str, Any], document_
     graph = data.get("graph", None)
     if workflow_id and graph:
         custom.set_graph(workflow_id, graph, document_name)
+        if params := data.get("params"):  # old documents, replaced by workflow_params
+            custom.workflow_params[workflow_id] = params
 
 
 def _find_annotation(document, name: str):
@@ -339,20 +345,33 @@ def _find_annotation(document, name: str):
     return None
 
 
-def import_prompt_from_file(model: Model):
+def _read_image_text(filename: str) -> dict[str, str]:
+    """Text chunks of an image, keyed by keyword ('parameters', 'prompt', ...).
+
+    PNGs are parsed directly: QImageReader collapses newlines in text chunks, which would
+    flatten a multi-line prompt into a single paragraph. Other formats fall back to Qt.
+    """
+    if filename.lower().endswith(".png"):
+        if text := Image.read_png_text(filename):
+            return text
+    reader = QImageReader(filename)
+    return {key: reader.text(key) for key in reader.textKeys()}
+
+
+def import_prompt_from_file(model: DocumentModel):
     exts = (".png", ".jpg", ".jpeg", ".webp")
     filename = model.document.filename
     if model.regions.positive == "" and model.regions.negative == "" and filename.endswith(exts):
         try:
-            reader = QImageReader(filename)
+            image_text = _read_image_text(filename)
             # A1111
-            if text := reader.text("parameters"):
+            if text := image_text.get("parameters"):
                 if "Negative prompt:" in text:
                     positive, negative = text.split("Negative prompt:", 1)
                     model.regions.positive = positive.strip()
                     model.regions.negative = negative.split("Steps:", 1)[0].strip()
             # ComfyUI
-            elif text := reader.text("prompt"):
+            elif text := image_text.get("prompt"):
                 prompt: dict[str, dict] = json.loads(text)
                 for node in prompt.values():
                     if node["class_type"] in _comfy_sampler_types:

@@ -1,75 +1,94 @@
 from __future__ import annotations
-from typing import Any, Callable, cast
 
-from PyQt5.QtWidgets import (
+from collections.abc import Callable
+from itertools import chain
+from typing import Any, ClassVar, cast
+
+from krita import DoubleSliderSpinBox, Krita
+from PyQt6.QtCore import QEvent, QMetaObject, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import (
     QAction,
-    QSlider,
-    QWidget,
-    QPlainTextEdit,
-    QLabel,
-    QMenu,
-    QSpinBox,
-    QToolButton,
-    QComboBox,
-    QHBoxLayout,
-    QSizePolicy,
-    QStyle,
-    QStyleOption,
-    QWidgetAction,
-    QCheckBox,
-    QGridLayout,
-    QPushButton,
-    QFrame,
-    QScrollBar,
-)
-from PyQt5.QtGui import (
     QCloseEvent,
+    QColor,
     QDesktopServices,
-    QGuiApplication,
+    QEnterEvent,
     QFontMetrics,
+    QGuiApplication,
+    QIcon,
     QKeyEvent,
+    QKeySequence,
     QMouseEvent,
-    QPalette,
-    QTextCursor,
+    QPaintDevice,
     QPainter,
     QPaintEvent,
-    QKeySequence,
+    QPalette,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
 )
-from PyQt5.QtCore import Qt, QMetaObject, QSize, pyqtSignal, QEvent, QUrl
-from krita import Krita
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollBar,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QStyle,
+    QStyleOption,
+    QToolButton,
+    QWidget,
+    QWidgetAction,
+)
 
-from ..style import Style, Styles
-from ..root import root
-from ..client import filter_supported_styles, resolve_arch
-from ..properties import Binding, Bind, bind, bind_combo
-from ..jobs import JobState, JobKind
-from ..model import (
-    Model,
-    Workspace,
-    SamplingQuality,
-    ProgressKind,
-    ErrorKind,
-    Error,
-    no_error,
-    QueueMode,
-)
-from ..text import edit_attention, select_on_cursor_pos
+from ..backend.client import filter_supported_styles, resolve_arch
+from ..backend.workflow import apply_strength, snap_to_percent
 from ..localization import translate as _
-from ..util import ensure
-from ..workflow import apply_strength, snap_to_percent
+from ..model.connection import ConnectionState
+from ..model.jobs import JobKind, JobState
+from ..model.model import (
+    DocumentModel,
+    Error,
+    ErrorKind,
+    ProgressKind,
+    QueueMode,
+    SamplingQuality,
+    Workspace,
+    no_error,
+)
+from ..model.properties import Bind, Binding, bind, bind_combo
+from ..model.root import root
 from ..settings import Settings, settings
+from ..style import Style, Styles, sort_recent_styles
+from ..text import (
+    char16_index_to_str_index,
+    char16_len,
+    edit_attention,
+    pattern_comment,
+    pattern_layer,
+    pattern_lora,
+    pattern_weight_expr,
+    pattern_wildcard,
+    select_on_cursor_pos,
+    str_index_to_char16_index,
+)
+from ..util import ensure
+from . import actions, theme
 from .autocomplete import PromptAutoComplete
 from .theme import SignalBlocker
-from . import actions, theme
 
 
 class QueuePopup(QMenu):
-    _model: Model
-    _connections: list[QMetaObject.Connection]
-
     def __init__(self, supports_batch=True, parent: QWidget | None = None):
         super().__init__(parent)
-        self._connections = []
+        self._connections: list[QMetaObject.Connection | Binding] = []
 
         palette = self.palette()
         self.setObjectName("QueuePopup")
@@ -84,9 +103,25 @@ class QueuePopup(QMenu):
         self._layout = QGridLayout()
         self.setLayout(self._layout)
 
+        counts_label = QLabel(_("Jobs"), self)
+        counts_layout = QHBoxLayout()
+        counts_layout.setContentsMargins(0, 0, 0, 0)
+        counts_layout.addWidget(QLabel(_("Document:"), self))
+        self._counts_document = QLabel("0", self)
+        self._counts_document.setStyleSheet(f"color: {theme.highlight}; font-weight: bold;")
+        counts_layout.addWidget(self._counts_document)
+        counts_layout.addWidget(QLabel(_("Total:"), self))
+        counts_layout.addSpacing(4)
+        self._counts_total = QLabel("0", self)
+        self._counts_total.setStyleSheet(f"color: {theme.highlight}; font-weight: bold;")
+        counts_layout.addWidget(self._counts_total)
+        counts_layout.addStretch()
+        self._layout.addWidget(counts_label, 0, 0)
+        self._layout.addLayout(counts_layout, 0, 1)
+
         batch_label = QLabel(_("Batches"), self)
         batch_label.setVisible(supports_batch)
-        self._layout.addWidget(batch_label, 0, 0)
+        self._layout.addWidget(batch_label, 1, 0)
         batch_layout = QHBoxLayout()
         self._batch_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._batch_slider.setMinimum(1)
@@ -99,15 +134,16 @@ class QueuePopup(QMenu):
         self._batch_label.setVisible(supports_batch)
         batch_layout.addWidget(self._batch_slider)
         batch_layout.addWidget(self._batch_label)
-        self._layout.addLayout(batch_layout, 0, 1)
+        self._layout.addLayout(batch_layout, 1, 1)
 
         self._seed_label = QLabel(_("Seed"), self)
-        self._layout.addWidget(self._seed_label, 1, 0)
-        self._seed_input = QSpinBox(self)
+        self._layout.addWidget(self._seed_label, 2, 0)
+        self._seed_input = QDoubleSpinBox(self)
         self._seed_check = QCheckBox(self)
         self._seed_check.setText(_("Fixed"))
         self._seed_input.setMinimum(0)
-        self._seed_input.setMaximum(2**31 - 1)
+        self._seed_input.setMaximum(2**32 - 1)
+        self._seed_input.setDecimals(0)
         self._seed_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._seed_input.setToolTip(
             _(
@@ -120,7 +156,7 @@ class QueuePopup(QMenu):
         seed_layout.addWidget(self._seed_check)
         seed_layout.addWidget(self._seed_input)
         seed_layout.addWidget(self._randomize_seed)
-        self._layout.addLayout(seed_layout, 1, 1)
+        self._layout.addLayout(seed_layout, 2, 1)
 
         resolution_multiplier_label = QLabel(_("Resolution"), self)
         self._resolution_multiplier_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -136,19 +172,19 @@ class QueuePopup(QMenu):
         resolution_multiplier_layout = QHBoxLayout()
         resolution_multiplier_layout.addWidget(self._resolution_multiplier_slider)
         resolution_multiplier_layout.addWidget(self._resolution_multiplier_display)
-        self._layout.addWidget(resolution_multiplier_label, 2, 0)
-        self._layout.addLayout(resolution_multiplier_layout, 2, 1)
+        self._layout.addWidget(resolution_multiplier_label, 3, 0)
+        self._layout.addLayout(resolution_multiplier_layout, 3, 1)
 
         enqueue_label = QLabel(_("Enqueue"), self)
         self._queue_mode_combo = QComboBox(self)
         self._queue_mode_combo.addItem(_("at the Back"), QueueMode.back)
         self._queue_mode_combo.addItem(_("in Front (new jobs first)"), QueueMode.front)
         self._queue_mode_combo.addItem(_("Replace Queue"), QueueMode.replace)
-        self._layout.addWidget(enqueue_label, 3, 0)
-        self._layout.addWidget(self._queue_mode_combo, 3, 1)
+        self._layout.addWidget(enqueue_label, 4, 0)
+        self._layout.addWidget(self._queue_mode_combo, 4, 1)
 
         cancel_label = QLabel(_("Cancel"), self)
-        self._layout.addWidget(cancel_label, 4, 0)
+        self._layout.addWidget(cancel_label, 5, 0)
         self._cancel_active = self._create_cancel_button(_("Active"), actions.cancel_active)
         self._cancel_queued = self._create_cancel_button(_("Queued"), actions.cancel_queued)
         self._cancel_all = self._create_cancel_button(_("All"), actions.cancel_all)
@@ -156,7 +192,7 @@ class QueuePopup(QMenu):
         cancel_layout.addWidget(self._cancel_active)
         cancel_layout.addWidget(self._cancel_queued)
         cancel_layout.addWidget(self._cancel_all)
-        self._layout.addLayout(cancel_layout, 4, 1)
+        self._layout.addLayout(cancel_layout, 5, 1)
 
         self._model = root.active_model
 
@@ -165,25 +201,28 @@ class QueuePopup(QMenu):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         Binding.disconnect_all(self._connections)
         self._model = model
-        self._randomize_seed.setEnabled(self._model.fixed_seed)
-        self._seed_input.setEnabled(self._model.fixed_seed)
-        self._batch_label.setText(str(self._model.batch_count))
+        self._randomize_seed.setEnabled(model.fixed_seed)
+        self._seed_input.setValue(model.seed)
+        self._seed_input.setEnabled(model.fixed_seed)
+        self._batch_label.setText(str(model.batch_count))
         self._connections = [
-            bind(self._model, "batch_count", self._batch_slider, "value"),
+            bind(model, "batch_count", self._batch_slider, "value"),
             model.batch_count_changed.connect(lambda v: self._batch_label.setText(str(v))),
-            bind(self._model, "seed", self._seed_input, "value"),
-            bind(self._model, "fixed_seed", self._seed_check, "checked", Bind.one_way),
+            model.seed_changed.connect(lambda: self._seed_input.setValue(self._model.seed)),
+            self._seed_input.valueChanged.connect(lambda v: setattr(self._model, "seed", int(v))),
+            bind(model, "fixed_seed", self._seed_check, "checked", Bind.one_way),
             self._seed_check.toggled.connect(lambda v: setattr(self._model, "fixed_seed", v)),
-            self._model.fixed_seed_changed.connect(self._seed_input.setEnabled),
-            self._model.fixed_seed_changed.connect(self._randomize_seed.setEnabled),
-            self._randomize_seed.clicked.connect(self._model.generate_seed),
+            model.fixed_seed_changed.connect(self._seed_input.setEnabled),
+            model.fixed_seed_changed.connect(self._randomize_seed.setEnabled),
+            self._randomize_seed.clicked.connect(model.generate_seed),
             model.resolution_multiplier_changed.connect(self._update_resolution_multiplier),
-            bind_combo(self._model, "queue_mode", self._queue_mode_combo),
-            model.jobs.count_changed.connect(self._update_cancel_buttons),
+            bind_combo(model, "queue_mode", self._queue_mode_combo),
+            model.jobs.count_changed.connect(self._update_job_count),
         ]
+        self._update_job_count()
 
     def _create_cancel_button(self, name: str, action: Callable[[], None]):
         button = QToolButton(self)
@@ -194,12 +233,15 @@ class QueuePopup(QMenu):
         button.clicked.connect(action)
         return button
 
-    def _update_cancel_buttons(self):
+    def _update_job_count(self):
         has_active = self._model.jobs.any_executing()
-        has_queued = self._model.jobs.count(JobState.queued) > 0
+        n_queued = self._model.jobs.count(JobState.queued)
+        n_total = sum(m.jobs.count(JobState.queued) for m in root.models)
+        self._counts_document.setText(str(n_queued + (1 if has_active else 0)))
+        self._counts_total.setText(str(n_total + (1 if has_active else 0)))
         self._cancel_active.setEnabled(has_active)
-        self._cancel_queued.setEnabled(has_queued)
-        self._cancel_all.setEnabled(has_active or has_queued)
+        self._cancel_queued.setEnabled(n_queued > 0)
+        self._cancel_all.setEnabled(has_active or n_queued > 0)
 
     def _update_resolution_multiplier(self):
         slider_value = round(self.model.resolution_multiplier * 10)
@@ -220,7 +262,6 @@ class QueueButton(QToolButton):
     def __init__(self, supports_batch=True, parent: QWidget | None = None):
         super().__init__(parent)
         self._model = root.active_model
-        self._connect_model()
 
         self._popup = QueuePopup(supports_batch)
         popup_action = QWidgetAction(self)
@@ -229,14 +270,14 @@ class QueueButton(QToolButton):
 
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._update()
+        self._connect_model()
 
     @property
     def model(self):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model != model:
             Binding.disconnect_all(self._connections)
             self._model = model
@@ -248,6 +289,7 @@ class QueueButton(QToolButton):
             self._model.jobs.count_changed.connect(self._update),
             self._model.progress_kind_changed.connect(self._update),
         ]
+        self._update()
 
     def _update(self):
         count = self._model.jobs.count(JobState.queued)
@@ -265,14 +307,18 @@ class QueueButton(QToolButton):
             else:
                 self.setToolTip(_("Generating image.") + f" {cancel_msg}")
             count += 1
+        elif count > 0:
+            self.setIcon(theme.icon("queue-waiting"))
+            self.setToolTip(f"{queued_msg} {cancel_msg}")
         else:
             self.setIcon(theme.icon("queue-inactive"))
             self.setToolTip(_("Idle."))
+
         self.setText(f"{count} ")
 
     def sizeHint(self) -> QSize:
         original = super().sizeHint()
-        width = original.height() * 0.75 + self.fontMetrics().width(" 99 ") + 20
+        width = original.height() * 0.75 + self.fontMetrics().horizontalAdvance(" 99 ") + 20
         return QSize(int(width), original.height())
 
     def paintEvent(self, a0):
@@ -280,14 +326,12 @@ class QueueButton(QToolButton):
 
 
 class StyleSelectWidget(QWidget):
-    _value: Style
-    _styles: list[Style]
-
     value_changed = pyqtSignal(Style)
     quality_changed = pyqtSignal(SamplingQuality)
 
     def __init__(self, parent: QWidget | None, show_quality=False):
         super().__init__(parent)
+        self._styles: list[Style] = []
         self._value = Styles.list().default
 
         layout = QHBoxLayout(self)
@@ -306,39 +350,57 @@ class StyleSelectWidget(QWidget):
             self._quality_combo.currentIndexChanged.connect(self.change_quality)
             layout.addWidget(self._quality_combo, 1)
 
-        settings = QToolButton(self)
-        settings.setIcon(theme.icon("settings"))
-        settings.setAutoRaise(True)
-        settings.clicked.connect(self.show_settings)
-        layout.addWidget(settings)
+        settings_btn = QToolButton(self)
+        settings_btn.setIcon(theme.icon("settings"))
+        settings_btn.setAutoRaise(True)
+        settings_btn.clicked.connect(self.show_settings)
+        layout.addWidget(settings_btn)
 
         Styles.list().changed.connect(self.update_styles)
         Styles.list().name_changed.connect(self.update_styles)
         root.connection.state_changed.connect(self.update_styles)
+        settings.changed.connect(self._on_settings_changed)
 
     def update_styles(self):
-        comfy = root.connection.client_if_connected
-        self._styles = filter_supported_styles(Styles.list().filtered(), comfy)
+        if root.connection.state is not ConnectionState.connected:
+            return
+        client = root.connection.client_if_connected
+        filtered = filter_supported_styles(Styles.list().filtered(), client)
+        recent, remaining = sort_recent_styles(
+            filtered, settings.recent_styles, settings.recent_styles_count
+        )
+        if self._value not in chain(recent, remaining):
+            recent.insert(0, self._value)
+        self._styles = recent + remaining
         with SignalBlocker(self._combo):
             self._combo.clear()
-            for style in self._styles:
-                icon = theme.checkpoint_icon(resolve_arch(style, comfy))
+            for style in recent:
+                icon = theme.checkpoint_icon(resolve_arch(style, client))
+                self._combo.addItem(icon, f"{style.name} ★", style.filename)
+            if recent and remaining:
+                self._combo.insertSeparator(len(recent))
+            for style in remaining:
+                icon = theme.checkpoint_icon(resolve_arch(style, client))
                 self._combo.addItem(icon, style.name, style.filename)
-            if self._value in self._styles:
-                self._combo.setCurrentText(self._value.name)
-            elif len(self._styles) > 0:
-                self._value = self._styles[0]
-                self._combo.setCurrentIndex(0)
+            self._combo.setCurrentText(self._value.name)
 
     def change_style(self):
-        style = self._styles[self._combo.currentIndex()]
-        if style != self._value:
-            self._value = style
-            self.value_changed.emit(style)
+        filename = self._combo.currentData()
+        if filename is None:
+            return  # separator item selected
+        style = next((s for s in self._styles if s.filename == filename), None)
+        if style is None or style == self._value:
+            return
+        self._value = style
+        self.value_changed.emit(style)
 
     def change_quality(self):
         quality = SamplingQuality(self._quality_combo.currentData())
         self.quality_changed.emit(quality)
+
+    def _on_settings_changed(self, name: str, value: object):
+        if "recent_styles" in name:
+            self.update_styles()
 
     def show_settings(self):
         from .settings import SettingsDialog
@@ -353,7 +415,71 @@ class StyleSelectWidget(QWidget):
     def value(self, style: Style):
         if style != self._value:
             self._value = style
-            self._combo.setCurrentText(style.name)
+            if style not in self._styles:
+                self.update_styles()
+            else:
+                idx = self._combo.findData(style.filename)
+                self._combo.setCurrentIndex(idx)
+
+
+class PromptHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self._comment_fmt = QTextCharFormat()
+        self._comment_fmt.setForeground(QColor(theme.grey))
+        self._comment_fmt.setFontItalic(True)
+
+        self._weight_fmt = QTextCharFormat()
+        self._weight_fmt.setForeground(QColor(theme.red))
+
+        self._keyword_fmt = QTextCharFormat()
+        self._keyword_fmt.setForeground(QColor(theme.strong_highlight))
+
+        self._grey_fmt = QTextCharFormat()
+        self._grey_fmt.setForeground(QColor(theme.grey))
+
+    def highlightBlock(self, text: str | None):
+        if text is None:
+            return
+        comment_start = len(text)
+        m = pattern_comment.search(text)
+        if m:
+            comment_start = m.start()
+            self.setFormat(m.start(), m.end() - m.start(), self._comment_fmt)
+
+        for m in pattern_weight_expr.finditer(text):
+            if m.start(1) < comment_start:
+                self.setFormat(m.start(), 1, self._grey_fmt)
+                self.setFormat(m.start(1), m.end(1) - m.start(1), self._weight_fmt)
+                self.setFormat(m.end(1), 1, self._grey_fmt)
+
+        for m in pattern_lora.finditer(text):
+            if m.start() < comment_start:
+                # keyword "lora" starts at m.start()+1 (after '<'), length 4
+                self.setFormat(m.start(), 1, self._grey_fmt)
+                self.setFormat(m.start() + 1, 4, self._keyword_fmt)
+                self.setFormat(m.end(1), 1, self._grey_fmt)
+                if m.group(2):
+                    self.setFormat(m.start(2), m.end(2) - m.start(2), self._weight_fmt)
+                    self.setFormat(m.end(2), 1, self._grey_fmt)
+
+        for m in pattern_layer.finditer(text):
+            if m.start() < comment_start:
+                # keyword "layer" starts at m.start()+1 (after '<'), length 5
+                self.setFormat(m.start(), 1, self._grey_fmt)
+                self.setFormat(m.start() + 1, 5, self._keyword_fmt)
+                self.setFormat(m.end(1), 1, self._grey_fmt)
+
+        for m in pattern_wildcard.finditer(text):
+            if m.start() < comment_start:
+                wildcard_text = m.group(0)
+                wildcard_start = m.start()
+                self.setFormat(wildcard_start, 1, self._keyword_fmt)
+                for i, char in enumerate(wildcard_text):
+                    if char == "|":
+                        self.setFormat(wildcard_start + i, 1, self._keyword_fmt)
+                self.setFormat(wildcard_start + len(wildcard_text) - 1, 1, self._keyword_fmt)
 
 
 class ResizeHandle(QWidget):
@@ -411,6 +537,7 @@ class TextPromptWidget(QPlainTextEdit):
         self._completer = PromptAutoComplete(self)
         self.textChanged.connect(self.notify_text_changed)
 
+        self._highlighter = PromptHighlighter(self.document())
         self._resize_handle: ResizeHandle | None = None
 
         palette: QPalette = self.palette()
@@ -523,11 +650,6 @@ class TextPromptWidget(QPlainTextEdit):
         else:
             self.setFrameStyle(QFrame.Shape.NoFrame)
 
-    def setEnabled(self, a0):
-        super().setEnabled(a0)
-        disabled_hint = _("The selected Style does not use the negative prompt.")
-        self.setToolTip("" if a0 else disabled_hint)
-
     @property
     def has_focus(self):
         return self.hasFocus()
@@ -545,125 +667,89 @@ class TextPromptWidget(QPlainTextEdit):
     def handle_weight_adjustment(self, event: QKeyEvent):
         """Handles Ctrl + (arrow key up / arrow key down) attention weight adjustment."""
         if event.key() in [Qt.Key.Key_Up, Qt.Key.Key_Down] and (
-            event.modifiers() & Qt.Modifier.CTRL
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
             cursor = self.textCursor()
             text = self.toPlainText()
 
             if cursor.hasSelection():
-                start = cursor.selectionStart()
-                end = cursor.selectionEnd()
+                start = char16_index_to_str_index(text, cursor.selectionStart())
+                end = char16_index_to_str_index(text, cursor.selectionEnd())
             else:
-                start, end = select_on_cursor_pos(text, cursor.position())
+                pos = char16_index_to_str_index(text, cursor.position())
+                start, end = select_on_cursor_pos(text, pos)
 
             target_text = text[start:end]
             text_after_edit = edit_attention(target_text, event.key() == Qt.Key.Key_Up)
             text = text[:start] + text_after_edit + text[end:]
             self.setPlainText(text)
+            start_c16 = str_index_to_char16_index(text, start)
             cursor = self.textCursor()
-            cursor.setPosition(min(start + len(text_after_edit), len(text)))
-            cursor.setPosition(min(start, len(text)), QTextCursor.KeepAnchor)
+            cursor.setPosition(min(start_c16 + char16_len(text_after_edit), char16_len(text)))
+            cursor.setPosition(min(start_c16, char16_len(text)), QTextCursor.MoveMode.KeepAnchor)
             self.setTextCursor(cursor)
 
 
-class StrengthSnapping:
-    model: Model
-
-    def __init__(self, model: Model):
-        self.model = model
-
-    def get_steps(self) -> tuple[int, int]:
-        is_live = self.model.workspace is Workspace.live
-        if self.model.workspace is Workspace.animation:
-            is_live = self.model.animation.sampling_quality is SamplingQuality.fast
-        return self.model.style.get_steps(is_live=is_live)
-
-    def nearest_percent(self, value: int) -> int | None:
-        _, max_steps = self.get_steps()
-        steps, start_at_step = self.apply_strength(value)
-        return snap_to_percent(steps, start_at_step, max_steps=max_steps)
-
-    def apply_strength(self, value: int) -> tuple[int, int]:
-        min_steps, max_steps = self.get_steps()
-        strength = value / 100
-        return apply_strength(strength, steps=max_steps, min_steps=min_steps)
-
-
-# SpinBox variant that allows manually entering strength values,
-# but snaps to model_steps on step actions (scrolling, arrows, arrow keys).
-class StrengthSpinBox(QSpinBox):
-    snapping: StrengthSnapping | None
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.snapping = None
-        # for manual input
-        self.setMinimum(1)
-        self.setMaximum(100)
-
-    def stepBy(self, steps):
-        value = max(self.minimum(), min(self.maximum(), self.value() + steps))
-        if self.snapping is not None:
-            # keep going until we hit a new snap point
-            current_point = self.nearest_snap_point(self.value())
-            while self.nearest_snap_point(value) == current_point and value > 1:
-                value += 1 if steps > 0 else -1
-            value = self.nearest_snap_point(value)
-        self.setValue(value)
-
-    def nearest_snap_point(self, value: int) -> int:
-        assert self.snapping
-        return self.snapping.nearest_percent(value) or (int(value / 5) * 5)
-
-
-class StrengthWidget(QWidget):
-    _model: Model | None = None
-    _value: int = 100
-
+class StrengthWidget(DoubleSliderSpinBox):
     value_changed = pyqtSignal(float)
 
-    def __init__(self, slider_range: tuple[int, int] = (1, 100), prefix=True, parent=None):
-        super().__init__(parent)
-        self._layout = QHBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(self._layout)
+    def __init__(self, range: tuple[float, float] = (0.01, 1.0), prefix=True):
+        super().__init__()
+        self._model: DocumentModel | None = None
+        self._value = 100
+        self._range = (range[0] * 100, range[1] * 100)
 
-        self._slider = QSlider(Qt.Orientation.Horizontal, self)
-        self._slider.setMinimum(slider_range[0])
-        self._slider.setMaximum(slider_range[1])
-        self._slider.setValue(self._value)
-        self._slider.setSingleStep(5)
-        self._slider.valueChanged.connect(self.slider_changed)
+        self.setSoftMinimum(self._range[0])
+        self.setSoftMaximum(self._range[1])
+        self.setRange(min(self._range[0], 1), 100, 0)
+        super().setValue(self._value)
 
-        self._input = StrengthSpinBox(self)
-        self._input.setValue(self._value)
+        w = self.widget()  # the internal QDoubleSpinBox
+        w.setSingleStep(5)
         if prefix:
-            self._input.setPrefix(_("Strength") + ": ")
-        self._input.setSuffix("%")
-        self._input.setSpecialValueText(_("Off"))
-        self._input.valueChanged.connect(self.notify_changed)
+            w.setPrefix(_("Strength") + ": ")
+        w.setSuffix("%")
+        if range[0] == 0:
+            w.setSpecialValueText(_("Off"))
 
-        settings.changed.connect(self.update_suffix)
+        w.valueChanged.connect(self.notify_changed)
+        self.draggingFinished.connect(self._complete_drag)
+        settings.changed.connect(self._update_suffix)
 
-        self._layout.addWidget(self._slider)
-        self._layout.addWidget(self._input)
+    def notify_changed(self, value: float):
+        value = int(value)
+        if self.isDragging():
+            self._change_suffix(value)
+            return
 
-    def slider_changed(self, value: int):
-        if self._input.snapping is not None:
-            value = self._input.snapping.nearest_percent(value) or value
-        self.notify_changed(value)
-
-    def notify_changed(self, value: int):
+        step = 1 if value - self._value > 0 else -1
+        if not self.isDragging() and self._model is not None:
+            # keep going until we hit a new snap point
+            current_point = self._nearest_snap_point(self._value)
+            while self._nearest_snap_point(value) == current_point and value > 1:
+                value += step
+            value = self._nearest_snap_point(value)
         if self._update_value(value):
             self.value_changed.emit(self.value)
 
+    def _complete_drag(self):
+        value = int(self.widget().value())
+        if settings.show_steps:
+            value = self._nearest_snap_point(value)
+        if self._update_value(value):
+            self.value_changed.emit(self.value)
+
+    def _nearest_snap_point(self, value: int) -> int:
+        if self._model and (snap := _nearest_percent(self._model, value)):
+            return snap
+        return max(round(value / 5) * 5, int(self._range[0]))
+
     def _update_value(self, value: int):
-        with SignalBlocker(self._slider), SignalBlocker(self._input):
-            self._slider.setValue(value)
-            self._input.setValue(value)
         if value != self._value:
             self._value = value
-            self.update_suffix()
+            with SignalBlocker(self.widget()):
+                super().setValue(value)
+            self._update_suffix()
             return True
         return False
 
@@ -672,15 +758,16 @@ class StrengthWidget(QWidget):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model:
-            self._model.style_changed.disconnect(self.update_suffix)
-            self._model.animation.sampling_quality_changed.disconnect(self.update_suffix)
+            self._model.style_changed.disconnect(self._update_suffix)
+            self._model.edit_mode_changed.disconnect(self._update_suffix)
+            self._model.animation.sampling_quality_changed.disconnect(self._update_suffix)
         self._model = model
-        self._model.style_changed.connect(self.update_suffix)
-        self._model.animation.sampling_quality_changed.connect(self.update_suffix)
-        self._input.snapping = StrengthSnapping(self._model)
-        self.update_suffix()
+        self._model.style_changed.connect(self._update_suffix)
+        self._model.edit_mode_changed.connect(self._update_suffix)
+        self._model.animation.sampling_quality_changed.connect(self._update_suffix)
+        self._update_suffix()
 
     @property
     def value(self):
@@ -688,21 +775,106 @@ class StrengthWidget(QWidget):
 
     @value.setter
     def value(self, value: float):
-        if value == self.value:
+        self.setValue(value)
+
+    def _change_suffix(self, value: int):
+        if not self._model or not settings.show_steps:
+            self.widget().setSuffix("%")
             return
+
+        steps, start_at_step = _apply_strength(self._model, value)
+        self.widget().setSuffix(f"% - {steps - start_at_step}/{steps} steps")
+
+    def _update_suffix(self):
+        self._change_suffix(self._value)
+
+    def setValue(self, value: float):
         self._update_value(round(value * 100))
 
-    def update_suffix(self):
-        if not self._input.snapping or not settings.show_steps:
-            self._input.setSuffix("%")
-            return
+    def setVisible(self, visible: bool):
+        self.widget().setVisible(visible)
 
-        steps, start_at_step = self._input.snapping.apply_strength(self._value)
-        self._input.setSuffix(f"% ({steps - start_at_step}/{steps})")
+    def setEnabled(self, enabled: bool):
+        self.widget().setEnabled(enabled)
+
+    def setToolTip(self, tooltip: str):
+        self.widget().setToolTip(tooltip)
+
+
+def _get_steps(model: DocumentModel) -> tuple[int, int]:
+    is_live = model.workspace is Workspace.live
+    if model.workspace is Workspace.animation:
+        is_live = model.animation.sampling_quality is SamplingQuality.fast
+    return model.active_style.get_steps(is_live=is_live)
+
+
+def _apply_strength(model: DocumentModel, strength_percent: int) -> tuple[int, int]:
+    if strength_percent <= 0:
+        return 0, 0
+    min_steps, max_steps = _get_steps(model)
+    strength = strength_percent / 100
+    return apply_strength(strength, steps=max_steps, min_steps=min_steps)
+
+
+def _nearest_percent(model: DocumentModel, strength_percent: int) -> int | None:
+    _, max_steps = _get_steps(model)
+    steps, start_at_step = _apply_strength(model, strength_percent)
+    return snap_to_percent(steps, start_at_step, max_steps=max_steps)
+
+
+class LayerCountWidget(QWidget):
+    value_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = 4
+
+        self._layout = QHBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self._layout)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal, self)
+        self._slider.setMinimum(1)
+        self._slider.setMaximum(10)
+        self._slider.setValue(self._value)
+        self._slider.setSingleStep(1)
+        self._slider.valueChanged.connect(self._notify_changed)
+
+        self._input = QSpinBox(self)
+        self._input.setPrefix(_("Layers") + ": ")
+        self._input.setMinimum(1)
+        self._input.setMaximum(10)
+        self._input.setValue(self._value)
+        self._input.valueChanged.connect(self._notify_changed)
+
+        self._layout.addWidget(self._slider)
+        self._layout.addWidget(self._input)
+
+    def _notify_changed(self, value: int):
+        if value != self._value:
+            self._value = value
+            self._update()
+            self.value_changed.emit(self._value)
+
+    def _update(self):
+        with SignalBlocker(self._slider), SignalBlocker(self._input):
+            self._slider.setValue(self._value)
+            self._input.setValue(self._value)
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value: int):
+        if value == self._value:
+            return
+        self._value = value
+        self._update()
 
 
 class WorkspaceSelectWidget(QToolButton):
-    _icons = {
+    _icons: ClassVar[dict[Workspace, QIcon]] = {
         Workspace.generation: theme.icon("workspace-generation"),
         Workspace.upscaling: theme.icon("workspace-upscaling"),
         Workspace.live: theme.icon("workspace-live"),
@@ -724,7 +896,7 @@ class WorkspaceSelectWidget(QToolButton):
 
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setMenu(menu)
-        self.setPopupMode(QToolButton.InstantPopup)
+        self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.setToolTip(
             _("Switch between workspaces: image generation, upscaling, live preview and animation.")
         )
@@ -749,6 +921,13 @@ class WorkspaceSelectWidget(QToolButton):
         action.setIconVisibleInMenu(True)
         action.triggered.connect(actions.set_workspace(workspace))
         return action
+
+
+def _get_width_dip(s: QPaintDevice):
+    # get device-indpendent width for things like QPixmap, which report their size in physical pixels
+    if ratio := s.devicePixelRatioF():
+        return int(s.width() / ratio)
+    return s.width()
 
 
 class GenerateButton(QPushButton):
@@ -776,12 +955,11 @@ class GenerateButton(QPushButton):
 
     def minimumSizeHint(self):
         fm = self.fontMetrics()
-        return QSize(fm.width(self._operation) + 40, 12 + int(1.3 * fm.height()))
+        return QSize(fm.horizontalAdvance(self._operation) + 40, 12 + int(1.3 * fm.height()))
 
-    def enterEvent(self, a0: QEvent | None):
-        if client := root.connection.client_if_connected:
-            if client.user:
-                self._cost = self.model.estimate_cost(self._kind)
+    def enterEvent(self, event: QEnterEvent | None):
+        if (client := root.connection.client_if_connected) and client.user:
+            self._cost = self.model.estimate_cost(self._kind)
 
     def leaveEvent(self, a0: QEvent | None):
         self._cost = 0
@@ -801,7 +979,7 @@ class GenerateButton(QPushButton):
     def paintEvent(self, a0: QPaintEvent | None) -> None:
         opt = QStyleOption()
         opt.initFrom(self)
-        opt.state |= QStyle.StateFlag.State_Sunken if self.isDown() else 0
+        opt.state |= QStyle.StateFlag.State_Sunken if self.isDown() else QStyle.StateFlag(0)
         painter = QPainter(self)
         fm = self.fontMetrics()
         style = ensure(self.style())
@@ -812,20 +990,21 @@ class GenerateButton(QPushButton):
         )
         rect = self.rect()
         pixmap = self.icon().pixmap(int(fm.height() * 1.3))
-        is_hover = int(opt.state) & QStyle.StateFlag.State_MouseOver
+        pixmap_width = _get_width_dip(pixmap)
+        is_hover = opt.state & QStyle.StateFlag.State_MouseOver
         element = QStyle.PrimitiveElement.PE_PanelButtonCommand
-        content_width = fm.width(self._operation) + 5 + pixmap.width()
+        content_width = fm.horizontalAdvance(self._operation) + 5 + pixmap_width
         content_rect = rect.adjusted(int(0.5 * (rect.width() - content_width)), 0, 0, 0)
         style.drawPrimitive(element, opt, painter, self)
         style.drawItemPixmap(painter, content_rect, align, pixmap)
-        content_rect = content_rect.adjusted(pixmap.width() + 5, 0, 0, 0)
+        content_rect = content_rect.adjusted(pixmap_width + 5, 0, 0, 0)
         style.drawItemText(painter, content_rect, align, self.palette(), True, self._operation)
 
         cost_width = 0
         if is_hover and self._cost > 0:
             pixmap = self._cost_icon.pixmap(fm.height())
-            text_width = fm.width(str(self._cost))
-            cost_width = text_width + 16 + pixmap.width()
+            text_width = fm.horizontalAdvance(str(self._cost))
+            cost_width = text_width + 16 + pixmap_width
             cost_rect = rect.adjusted(rect.width() - cost_width, 0, 0, 0)
             painter.setOpacity(0.3)
             painter.drawLine(
@@ -840,14 +1019,14 @@ class GenerateButton(QPushButton):
         seed_width = 0
         if is_hover and self.model.fixed_seed:
             pixmap = self._seed_icon.pixmap(fm.height())
-            seed_width = pixmap.width() + 4
+            seed_width = pixmap_width + 4
             seed_rect = rect.adjusted(rect.width() - cost_width - seed_width, 0, 0, 0)
             style.drawItemPixmap(painter, seed_rect, align, pixmap)
 
         if is_hover and self.model.resolution_multiplier != 1.0:
             pixmap = self._resolution_icon.pixmap(fm.height())
             resolution_rect = rect.adjusted(
-                rect.width() - cost_width - seed_width - pixmap.width() - 4, 0, 0, 0
+                rect.width() - cost_width - seed_width - pixmap_width - 4, 0, 0, 0
             )
             style.drawItemPixmap(painter, resolution_rect, align, pixmap)
 
@@ -1001,12 +1180,12 @@ def _paint_tool_drop_down(widget: QToolButton, text: str | None = None):
     rect = widget.rect()
     pixmap = widget.icon().pixmap(int(rect.height() * 0.75))
     element = QStyle.PrimitiveElement.PE_Widget
-    if int(opt.state) & QStyle.StateFlag.State_MouseOver:
+    if opt.state & QStyle.StateFlag.State_MouseOver:
         element = QStyle.PrimitiveElement.PE_PanelButtonCommand
     style.drawPrimitive(element, opt, painter, widget)
     style.drawItemPixmap(painter, rect.adjusted(4, 0, 0, 0), align, pixmap)
     if text:
-        text_rect = rect.adjusted(pixmap.width() + 4, 0, 0, 0)
+        text_rect = rect.adjusted(_get_width_dip(pixmap) + 4, 0, 0, 0)
         style.drawItemText(painter, text_rect, align, widget.palette(), True, text)
     painter.translate(int(0.5 * rect.width() - 10), 0)
     style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorArrowDown, opt, painter)

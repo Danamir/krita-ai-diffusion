@@ -1,13 +1,17 @@
-import pytest
-import numpy as np
 import struct
 import zlib
 
-from PyQt5.QtGui import QImage, qRgba
-from PyQt5.QtCore import Qt, QByteArray
+import numpy as np
+import pytest
 from PIL import Image as PILImage
-from ai_diffusion.image import Mask, Bounds, Extent, Image, ImageCollection
-from .config import image_dir, result_dir, reference_dir
+from PyQt6.QtCore import QByteArray, Qt
+from PyQt6.QtGui import QImage, qRgba
+
+from ai_diffusion.backend.api import WorkflowKind
+from ai_diffusion.image import Bounds, Extent, Image, ImageCollection, ImageFileFormat, Mask
+from ai_diffusion.text import create_ai_generated_xmp
+
+from .config import image_dir, reference_dir, result_dir
 
 
 def test_extent_compare():
@@ -25,7 +29,7 @@ def test_extent_scale_pixel_count():
 
 
 def create_test_image(w, h):
-    img = QImage(w, h, QImage.Format_ARGB32)
+    img = QImage(w, h, QImage.Format.Format_ARGB32)
     for y in range(h):
         for x in range(w):
             img.setPixel(x, y, qRgba(x, y, 0, 255))
@@ -39,7 +43,7 @@ def test_image_rgba():
 
 
 def test_image_mask():
-    qimg = QImage(2, 5, QImage.Format_Grayscale8)
+    qimg = QImage(2, 5, QImage.Format.Format_Grayscale8)
     qimg.fill(123)
     img = Image(qimg)
     assert img.extent == Extent(2, 5)
@@ -55,7 +59,7 @@ def test_base64():
 
 
 def test_image_make_opaque():
-    img = Image(QImage(2, 2, QImage.Format_ARGB32))
+    img = Image(QImage(2, 2, QImage.Format.Format_ARGB32))
     img.set_pixel(0, 0, (0, 0, 0, 0))
     img.set_pixel(1, 0, (0, 0, 0, 155))
     img.set_pixel(0, 1, (42, 42, 42, 255))
@@ -98,6 +102,30 @@ def test_image_from_pil():
     assert img.pixel(0, 0) == (255, 0, 0, 255)
 
 
+@pytest.mark.parametrize(
+    "format", [ImageFileFormat.png, ImageFileFormat.webp, ImageFileFormat.jpeg]
+)
+@pytest.mark.parametrize(
+    ("workflow_kind", "source_type"),
+    [
+        (WorkflowKind.generate, "trainedAlgorithmicMedia"),
+        (WorkflowKind.inpaint, "compositeWithTrainedAlgorithmicMedia"),
+    ],
+)
+def test_write_ai_generated_xmp(tmp_path, format, workflow_kind, source_type):
+    # images smaller than 64x64 fall back to JPEG due to a Qt6 VP8L encoder bug
+    image = create_test_image(64, 64)
+    path = tmp_path / f"generated.{format.extension}"
+    image.save(path, format)
+    image.write_xmp_metadata(path, create_ai_generated_xmp(workflow_kind))
+
+    xmp = PILImage.open(path).info["xmp"].decode()
+    assert (
+        f'Iptc4xmpExt:DigitalSourceType="http://cv.iptc.org/newscodes/digitalsourcetype/{source_type}"'
+        in xmp
+    )
+
+
 def test_image_from_packed_bytes():
     # input has stride 3, while QImage has a minimum pixel row alignment of 4 bytes
     data = QByteArray(b"\x00\x01\x02\x03\x04\x05")
@@ -112,9 +140,10 @@ def test_image_from_packed_bytes():
 
 @pytest.mark.skip("Benchmark")
 def test_image_compress_speed():
-    from PyQt5.QtGui import QImageWriter
-    from PyQt5.QtCore import QBuffer, QByteArray, QFile, QIODevice
     from timeit import default_timer
+
+    from PyQt6.QtCore import QBuffer, QByteArray, QFile, QIODevice
+    from PyQt6.QtGui import QImageWriter
 
     img = Image.load("tests/images/beach_1536x1024.webp")
 
@@ -136,11 +165,12 @@ def test_image_compress_speed():
 
         file = QFile(f"beach_1536x1024_q{q}.webp")
         file.open(QIODevice.OpenModeFlag.WriteOnly)
-        file.write(byte_array)
+        file.write(byte_array.data())
         file.close()
 
-    from PIL import Image as PILImage
     from io import BytesIO
+
+    from PIL import Image as PILImage
 
     print("\nPillow (lossless)")
 
@@ -232,7 +262,6 @@ def test_pad_square():
 @pytest.mark.parametrize(
     "input,expected",
     [
-        (Bounds(-1, 3, 5, 9), Bounds(0, 1, 4, 9)),
         (Bounds(-1, 3, 5, 9), Bounds(0, 1, 4, 9)),
         (Bounds(2, 3, 2, 5), Bounds(2, 3, 2, 5)),
     ],
@@ -332,14 +361,16 @@ def test_mask_to_image_no_extent():
 
 
 def test_mask_rectangle():
-    mask = Mask.rectangle(Bounds(1, 2, 6, 5), feather=2)
+    mask = Mask.rectangle(Bounds(1, 2, 6, 5), Bounds(4, 5, 8, 7))
     # fmt: off
     assert mask.to_array() == [
-        127, 159, 191, 191, 159, 127,
-        159, 191, 223, 223, 191, 159,
-        191, 223, 255, 255, 223, 191,
-        159, 191, 223, 223, 191, 159,
-        127, 159, 191, 191, 159, 127]
+        0, 0  , 0  , 0  , 0  , 0  , 0  , 0,
+        0, 0  , 0  , 0  , 0  , 0  , 0  , 0,
+        0, 255, 255, 255, 255, 255, 255, 0,
+        0, 255, 255, 255, 255, 255, 255, 0,
+        0, 255, 255, 255, 255, 255, 255, 0,
+        0, 255, 255, 255, 255, 255, 255, 0,
+        0, 255, 255, 255, 255, 255, 255, 0]
     # fmt: on
 
 
@@ -401,3 +432,14 @@ def test_save_png_with_metadata(tmp_path):
     data = file_path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
     assert b"my test metadata in the png" in data
+
+
+def test_read_png_text_preserves_newlines(tmp_path):
+    # Newlines in PNG text chunks must survive: QImageReader.text() collapses them, so the
+    # plugin parses the chunks directly instead.
+    img = Image.create(Extent(2, 2), Qt.GlobalColor.red)
+    file_path = tmp_path / "test_newlines.png"
+    text = "line one\nline two\nline three"
+    img.save_png_with_metadata(file_path, text)
+
+    assert Image.read_png_text(file_path)["parameters"] == text

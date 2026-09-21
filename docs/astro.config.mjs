@@ -1,11 +1,14 @@
 // @ts-check
-import { defineConfig } from 'astro/config';
+import { defineConfig, passthroughImageService } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import icon from 'astro-icon';
 
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.interstice.cloud',
+	image: {
+		service: passthroughImageService(),
+	},
 	integrations: [
 		starlight({
 			title: 'Krita AI Handbook',
@@ -33,6 +36,7 @@ export default defineConfig({
 						{ label: 'Text Prompts', slug: 'prompts' },
 						{ label: 'Control Layers', slug: 'control-layers' },
 						{ label: 'Regions', slug: 'regions' },
+						{ label: 'Edit Models', slug: 'edit-models' },
 						{ label: 'Samplers', slug: 'samplers' },
 						{ label: 'Custom Graphs', slug: 'custom-graph' },
 					],

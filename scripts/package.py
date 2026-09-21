@@ -1,16 +1,17 @@
 import asyncio
-import aiohttp
-import sys
-import dotenv
 import os
 import subprocess
-from markdown import markdown
-from shutil import rmtree, copy, copytree, ignore_patterns, make_archive
+import sys
 from pathlib import Path
+from shutil import copy, copytree, ignore_patterns, make_archive, rmtree
+from typing import NamedTuple
+
+import aiohttp
+from markdown import markdown
 
 sys.path.append(str(Path(__file__).parent.parent))
 import ai_diffusion
-from ai_diffusion.resources import update_model_checksums
+from ai_diffusion.backend.resources import update_model_checksums
 
 sys.path.append(str(Path(__file__).parent))
 import translation
@@ -30,23 +31,49 @@ def convert_markdown_to_html(markdown_file: Path, html_file: Path):
 
 
 def update_server_requirements():
-    subprocess.run(
-        [
-            "uv",
-            "pip",
-            "compile",
-            "scripts/server_requirements.in",
-            "--no-deps",
-            "--no-annotate",
-            "--universal",
-            "--upgrade",
-            "--quiet",
-            "-o",
-            "ai_diffusion/server_requirements.txt",
-        ],
-        cwd=root,
-        check=True,
-    )
+    class Cfg(NamedTuple):
+        platform: str
+        extra_index: str | None = None
+        override: str | None = None
+        dependencies: str | None = None
+        os_version: str | None = None
+
+    req_dir = root / "ai_diffusion" / "backend" / "requirements"
+    configs = {
+        "linux-cpu": Cfg("x86_64-unknown-linux-gnu", "cpu"),
+        "linux-cuda": Cfg("x86_64-unknown-linux-gnu", "cu130"),
+        "linux-cuda126": Cfg("x86_64-unknown-linux-gnu", "cu126"),
+        "linux-xpu": Cfg("x86_64-unknown-linux-gnu", "xpu"),
+        "linux-rocm": Cfg("x86_64-unknown-linux-gnu", "rocm7.2"),
+        "macos-cpu": Cfg("aarch64-apple-darwin", os_version="14.0"),
+        "macos-mps": Cfg("aarch64-apple-darwin", os_version="14.0"),
+        "windows-cpu": Cfg("x86_64-pc-windows-msvc", "cpu"),
+        "windows-cuda": Cfg("x86_64-pc-windows-msvc", "cu130"),
+        "windows-cuda126": Cfg("x86_64-pc-windows-msvc", "cu126"),
+        "windows-xpu": Cfg("x86_64-pc-windows-msvc", "xpu"),
+        "windows-rocm": Cfg(
+            "x86_64-pc-windows-msvc", None, "rocm-windows.in", "rocm-windows-deps.in"
+        ),
+    }
+    for name, cfg in configs.items():
+        cmd = ["uv", "pip", "compile", str((req_dir / "base.in").relative_to(root))]
+        if additional_reqs := cfg.dependencies:
+            cmd += [str((req_dir / additional_reqs).relative_to(root))]
+        cmd += ["--emit-index-annotation", "--emit-index-url"]
+        cmd += ["--index-strategy", "unsafe-best-match"]
+        cmd += ["--python-platform", cfg.platform, "--python-version", "3.12"]
+        if override := cfg.override:
+            cmd += ["--override", str((req_dir / override).relative_to(root))]
+        cmd += ["--index-url", "https://pypi.org/simple"]
+        if extra_index := cfg.extra_index:
+            cmd += ["--extra-index-url", f"https://download.pytorch.org/whl/{extra_index}"]
+        cmd += ["--upgrade", "--quiet"]
+        cmd += ["-o", str((req_dir / f"{name}.txt").relative_to(root))]
+        env = os.environ.copy()
+        if cfg.platform == "aarch64-apple-darwin" and cfg.os_version is not None:
+            env["MACOSX_DEPLOYMENT_TARGET"] = cfg.os_version
+        print(f"{name}.txt")
+        subprocess.run(cmd, cwd=root, check=True, env=env)
 
 
 def precheck():
@@ -76,19 +103,15 @@ def build_package():
 
     make_archive(str(root / package_name), "zip", package_dir)
 
-    # Do this afterwards to not include untested changes in the package
-    # Option 1: test the dependency changes and do another package build
-    # Option 2: revert the dependency changes, keep stable version for now
-    update_server_requirements()
-
 
 async def publish_package(package_path: Path, target: str):
-    dotenv.load_dotenv(root / "service" / "web" / ".env.local")
-    service_url = os.environ["TEST_SERVICE_URL"]
+    from service.pod.lib.environment import Config  # type: ignore
+
+    config = Config.from_env()
+    service_url = os.environ.get("TEST_SERVICE_URL", "http://localhost:8787")
     if target == "production":
         service_url = "https://api.interstice.cloud"
-    service_token = os.environ["INTERSTICE_INFRA_TOKEN"]
-    headers = {"Authorization": f"Bearer {service_token}"}
+    headers = {"Authorization": f"Bearer {config.secrets.interstice_infra_token}"}
 
     archive_data = package_path.read_bytes()
     async with aiohttp.ClientSession(service_url, headers=headers) as session:
@@ -119,3 +142,7 @@ if __name__ == "__main__":
     elif cmd == "check":
         print("Performing precheck without building")
         precheck()
+
+    elif cmd == "update":
+        print("Updating server requirements without building")
+        update_server_requirements()

@@ -1,15 +1,16 @@
-from enum import Enum
-from dataclasses import dataclass
 import csv
-from typing import cast
+from dataclasses import dataclass
+from enum import Enum
+from typing import ClassVar, cast
 
-from PyQt5.QtWidgets import QApplication, QCompleter, QPlainTextEdit, QStyledItemDelegate, QStyle
-from PyQt5.QtGui import QFont, QPalette, QPen, QColor, QFontMetrics, QTextCursor
-from PyQt5.QtCore import Qt, QStringListModel, QSize, QRect, QAbstractProxyModel
+from PyQt6.QtCore import QAbstractProxyModel, QRect, QSize, QStringListModel, Qt
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPalette, QPen, QTextCursor
+from PyQt6.QtWidgets import QApplication, QCompleter, QPlainTextEdit, QStyle, QStyledItemDelegate
 
-from ..root import root
-from ..settings import settings
 from ..files import FileFilter
+from ..model.root import root
+from ..settings import settings
+from ..text import char16_index_to_str_index
 from ..util import ensure, plugin_dir, user_data_dir
 
 
@@ -40,11 +41,7 @@ class TagListModel(QStringListModel):
 
 
 def cursor_position(text: str, cursor: QTextCursor):
-    pos_c16 = cursor.position()  # counted as 2-byte characters
-    bytes_utf16 = text.encode("utf-16")
-    byte_pos = 2 + pos_c16 * 2  # utf-16 text starts with 2-byte BOM
-    text_until_pos = bytes_utf16[:byte_pos].decode("utf-16")
-    return len(text_until_pos)
+    return char16_index_to_str_index(text, cursor.position())
 
 
 class TagCompleterDelegate(QStyledItemDelegate):
@@ -68,7 +65,7 @@ class TagCompleterDelegate(QStyledItemDelegate):
 
         # Calculate rectangles
         rect = option.rect
-        meta_width = QFontMetrics(normal_font).width(tag_item.meta) + 10
+        meta_width = QFontMetrics(normal_font).horizontalAdvance(tag_item.meta) + 10
         meta_rect = QRect(rect.right() - meta_width, rect.top(), meta_width, rect.height())
 
         # Draw the tag
@@ -94,8 +91,8 @@ class TagCompleterDelegate(QStyledItemDelegate):
         small_font = QFont(option.font)
         small_font.setPointSize(normal_font.pointSize() - 2)
 
-        tag_width = QFontMetrics(normal_font).width(tag_item.tag)
-        meta_width = QFontMetrics(small_font).width(tag_item.meta)
+        tag_width = QFontMetrics(normal_font).horizontalAdvance(tag_item.tag)
+        meta_width = QFontMetrics(small_font).horizontalAdvance(tag_item.meta)
 
         total_width = tag_width + meta_width + 10  # Add some padding
         size = super().sizeHint(option, index)
@@ -122,7 +119,7 @@ class TagCompleterDelegate(QStyledItemDelegate):
 
         # Get the default background color for dropdown items
         app = cast(QApplication, QApplication.instance())
-        base_color = app.palette().color(QPalette.Base)
+        base_color = app.palette().color(QPalette.ColorRole.Base)
 
         # Blend the colors
         return self._blend_colors(base_color, tag_color, 0.2)
@@ -150,7 +147,7 @@ class PromptAutoComplete:
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setWidget(widget)
         self._popup = ensure(self._completer.popup())
-        self._lora_delegate = ensure(self._popup.itemDelegate())
+        self._item_delegate = ensure(self._popup.itemDelegate())
         self._completion_prefix = ""
         self._completion_suffix = ""
 
@@ -161,7 +158,6 @@ class PromptAutoComplete:
         settings.changed.connect(self._reload_tag_model)
 
     def _reload_tag_model(self):
-        global _tag_model
         global _tag_files
 
         tag_files = settings.tag_files
@@ -205,7 +201,7 @@ class PromptAutoComplete:
         _tag_model.setTags(unique_tags)
         _tag_files = tag_files
 
-    def _current_text(self, separators=" >\n") -> str:
+    def _current_text(self, separators=" ()>,|{\n") -> str:
         text = self._widget.toPlainText()
         start = pos = cursor_position(text, self._widget.textCursor())
         while pos > 0 and (text[pos - 1] not in separators or pos > 1 and text[pos - 2] == "\\"):
@@ -216,15 +212,26 @@ class PromptAutoComplete:
         prefix = self._current_text()
         name = prefix.removeprefix("<lora:")
         lora_mode = len(prefix) > len(name)
+        layer_mode = False
+        if not lora_mode:
+            name = prefix.removeprefix("<layer:")
+            layer_mode = len(prefix) > len(name)
 
         if lora_mode:
             self._completer.setModel(self._lora_model)
             self._completion_prefix = name
             self._completion_suffix = ">"
-            self._popup.setItemDelegate(self._lora_delegate)
+            self._popup.setItemDelegate(self._item_delegate)
+        elif layer_mode:
+            layers = root.active_model.document.layers
+            layer_model = QStringListModel([layer.name for layer in layers.images])
+            self._completer.setModel(layer_model)
+            self._completion_prefix = name
+            self._completion_suffix = ">"
+            self._popup.setItemDelegate(self._item_delegate)
         else:
             # fall through to tag search
-            self._completion_prefix = prefix = self._current_text(separators="()>,\n").lstrip()
+            self._completion_prefix = prefix = self._current_text(separators="()>,|{\n").lstrip()
             name = prefix.replace("\\(", "(").replace("\\)", ")")
             if not name.startswith("<") and len(name.rstrip()) > 2:
                 self._completer.setModel(_tag_model)
@@ -242,9 +249,12 @@ class PromptAutoComplete:
 
     def _insert_completion(self, completion):
         triggers = ""
-        if self._current_text().startswith("<lora:"):
+        prefix = self._current_text()
+        if prefix.startswith("<lora:"):
             if file := root.files.loras.find(f"{completion}.safetensors"):
                 triggers = " " + file.meta("lora_triggers", "")
+        elif prefix.startswith("<layer:"):
+            pass
         else:  # tag completion
             # escape () in tags so they won't be interpreted as prompt weights
             completion = completion.replace("(", "\\(").replace(")", "\\)")
@@ -264,7 +274,7 @@ class PromptAutoComplete:
     def is_active(self):
         return self._popup.isVisible()
 
-    action_keys = [
+    action_keys: ClassVar[list[Qt.Key]] = [
         Qt.Key.Key_Enter,
         Qt.Key.Key_Return,
         Qt.Key.Key_Up,

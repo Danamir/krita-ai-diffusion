@@ -1,30 +1,36 @@
-from PyQt5.QtCore import Qt, QMetaObject, QEvent, pyqtSignal
-from PyQt5.QtGui import QCursor
-from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QProgressBar,
-    QLabel,
+from PyQt6.QtCore import QEvent, QMetaObject, Qt, pyqtSignal
+from PyQt6.QtGui import QCursor, QEnterEvent
+from PyQt6.QtWidgets import (
     QComboBox,
-    QSlider,
-    QSpinBox,
     QDoubleSpinBox,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..properties import Binding, Bind, bind, bind_combo, bind_toggle
-from ..resources import ControlMode, UpscalerName
-from ..model import Model, TileOverlapMode
-from ..jobs import JobKind
+from ..backend.resources import ControlMode, UpscalerName
 from ..localization import translate as _
-from ..root import root
-from .theme import SignalBlocker, set_text_clipped
-from .widget import WorkspaceSelectWidget, StyleSelectWidget, StrengthWidget, QueueButton
-from .widget import GenerateButton, ErrorBox
+from ..model.jobs import JobKind
+from ..model.model import DocumentModel, TileOverlapMode
+from ..model.properties import Bind, Binding, bind, bind_combo, bind_toggle
+from ..model.root import root
+from . import theme
 from .settings_widgets import WarningIcon
 from .switch import SwitchWidget
-from . import theme
+from .theme import SignalBlocker, set_text_clipped
+from .widget import (
+    ErrorBox,
+    GenerateButton,
+    QueueButton,
+    StrengthWidget,
+    StyleSelectWidget,
+    WorkspaceSelectWidget,
+)
 
 
 class FactorWidget(QWidget):
@@ -51,6 +57,8 @@ class FactorWidget(QWidget):
         self.input.setSuffix("x")
         self.input.setDecimals(2)
         self.input.valueChanged.connect(self.change_factor)
+        fm = self.input.fontMetrics()
+        self.input.setMinimumWidth(fm.horizontalAdvance(self.input.prefix() + "4 x") + 10)
 
         self.target_label = QLabel(self)
         self.target_label.setStyleSheet(f"color: {theme.grey};")
@@ -76,7 +84,7 @@ class FactorWidget(QWidget):
             self.update_target_extent()
             self.value_changed.emit(value)
 
-    def change_factor_slider(self, value: int | float):
+    def change_factor_slider(self, value: float):
         rounded = round(value / 50) * 50
         if rounded != value:
             self.slider.setValue(rounded)
@@ -93,9 +101,9 @@ class FactorWidget(QWidget):
         else:
             self.target_label.setText("")
 
-    def enterEvent(self, a0: QEvent | None):
+    def enterEvent(self, event: QEnterEvent | None):
         self.update_target_extent()
-        super().enterEvent(a0)
+        super().enterEvent(event)
 
     def leaveEvent(self, a0: QEvent | None):
         self.update_target_extent()
@@ -103,7 +111,7 @@ class FactorWidget(QWidget):
 
 
 class UpscaleWidget(QWidget):
-    _model: Model
+    _model: DocumentModel
     _model_bindings: list[QMetaObject.Connection | Binding]
 
     def __init__(self):
@@ -131,16 +139,16 @@ class UpscaleWidget(QWidget):
         self.refinement_checkbox.setCheckable(True)
 
         self.style_select = StyleSelectWidget(self)
-        self.strength_slider = StrengthWidget(slider_range=(20, 50), prefix=False, parent=self)
+        self.strength_slider = StrengthWidget(range=(0.2, 0.5), prefix=False)
         strength_layout = QHBoxLayout()
         strength_layout.addWidget(QLabel(_("Strength"), self), 1)
-        strength_layout.addWidget(self.strength_slider, 3)
+        strength_layout.addWidget(self.strength_slider.widget(), 3)
 
-        self.unblur_slider = StrengthWidget(slider_range=(0, 100), prefix=False, parent=self)
+        self.unblur_slider = StrengthWidget(range=(0.0, 1.0), prefix=False)
         unblur_layout = QHBoxLayout()
         unblur_layout.addWidget(QLabel(_("Image guidance"), self), 1)
-        unblur_layout.addWidget(self.unblur_slider, 3)
-        root.connection.models_changed.connect(self._update_unblur_enabled)
+        unblur_layout.addWidget(self.unblur_slider.widget(), 3)
+        root.connection.models_changed.connect(self._update_style)
 
         self.overlap_custom_combo = QComboBox(self)
         self.overlap_custom_combo.addItem(_("Automatic"), TileOverlapMode.auto)
@@ -177,7 +185,6 @@ class UpscaleWidget(QWidget):
         group_layout.addLayout(prompt_layout)
         self.refinement_checkbox.setLayout(group_layout)
         layout.addWidget(self.refinement_checkbox)
-        self.factor_widget.input.setMinimumWidth(self.strength_slider._input.width() + 10)
 
         self.upscale_button = GenerateButton(JobKind.upscaling, self)
         self.upscale_button.operation = _("Upscale")
@@ -208,7 +215,7 @@ class UpscaleWidget(QWidget):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model != model:
             Binding.disconnect_all(self._model_bindings)
             self._model = model
@@ -231,12 +238,12 @@ class UpscaleWidget(QWidget):
                 model.regions.added.connect(self._update_prompt),
                 model.regions.removed.connect(self._update_prompt),
                 model.progress_changed.connect(self.update_progress),
-                model.style_changed.connect(self._update_unblur_enabled),
+                model.style_changed.connect(self._update_style),
             ]
             self.upscale_button.model = model
             self.queue_button.model = model
             self._update_prompt()
-            self._update_unblur_enabled()
+            self._update_style()
             self._update_overlap()
             self.update_progress()
 
@@ -275,20 +282,29 @@ class UpscaleWidget(QWidget):
             self.model.upscale.tile_overlap_mode is TileOverlapMode.custom
         )
 
-    def _update_unblur_enabled(self):
-        has_unblur = False
-        if client := root.connection.client_if_connected:
-            models = client.models.for_arch(self.model.arch)
-            has_unblur = models.control.find(ControlMode.blur, allow_universal=True) is not None
-        self.unblur_slider.setEnabled(has_unblur)
-        if not has_unblur:
-            self.unblur_slider.setToolTip(_("The tile/unblur control model is not installed."))
+    def _update_style(self):
+        arch = self.model.arch
+        if arch.is_edit:
+            tooltip = _("Not supported for edit models")
+            self.strength_slider.setEnabled(False)
+            self.strength_slider.setToolTip(tooltip)
+            self.unblur_slider.setEnabled(False)
+            self.unblur_slider.setToolTip(tooltip)
         else:
-            self.unblur_slider.setToolTip(
-                _(
+            self.strength_slider.setEnabled(True)
+            self.strength_slider.setToolTip("")
+            has_unblur = False
+            if client := root.connection.client_if_connected:
+                models = client.models.for_arch(self.model.arch)
+                has_unblur = models.find_control(ControlMode.blur) is not None
+            self.unblur_slider.setEnabled(has_unblur)
+            if not has_unblur:
+                tooltip = _("The tile/unblur control model is not installed.")
+            else:
+                tooltip = _(
                     "When enabled, the low resolution image is used as guidance for refining the upscaled image.\nThis produces results which are closer to the original while enhancing local details."
                 )
-            )
+            self.unblur_slider.setToolTip(tooltip)
 
     def _update_prompt(self):
         self.use_prompt_value.setText(_("On") if self.model.upscale.use_prompt else _("Off"))

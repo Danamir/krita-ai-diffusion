@@ -1,56 +1,66 @@
 from __future__ import annotations
 
-from typing import Optional, cast
 from pathlib import Path
-from PyQt5.QtWidgets import (
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
+from typing import cast
+
+from krita import Krita
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QPalette
+from PyQt6.QtWidgets import (
     QCheckBox,
-    QFrame,
-    QLabel,
-    QSpinBox,
-    QToolButton,
     QComboBox,
-    QWidget,
     QCompleter,
     QFileDialog,
-    QMessageBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QPalette, QColor
-from krita import Krita
 
-from ..client import filter_supported_styles, resolve_arch
-from ..resources import Arch, ResourceId, ResourceKind, search_paths
-from ..settings import Setting, ServerMode, settings
-from ..server import Server
-from ..files import File, FileFilter, FileSource, FileFormat
-from ..style import Style, Styles, StyleSettings, SamplerPresets
+from ..backend.client import filter_supported_styles, resolve_arch
+from ..backend.resources import Arch, ResourceId, ResourceKind, search_paths
+from ..backend.server import Server
+from ..files import File, FileFilter, FileFormat, FileSource
 from ..localization import translate as _
-from ..root import root
-from .settings_widgets import ExpanderButton, SpinBoxSetting, SliderSetting, SwitchSetting
-from .settings_widgets import ComboBoxSetting, TextSetting, LineEditSetting, SettingWidget
-from .settings_widgets import SettingsTab, WarningIcon
-from .widget import create_framed_label
-from .theme import SignalBlocker, add_header, icon
-from .switch import SwitchWidget
+from ..model.root import root
+from ..settings import ServerMode, Setting, settings
+from ..style import SamplerPresets, Style, Styles, StyleSettings
 from . import theme
+from .settings_widgets import (
+    ComboBoxSetting,
+    ExpanderButton,
+    LineEditSetting,
+    SettingsTab,
+    SettingWidget,
+    SettingWidgetBase,
+    SliderSetting,
+    SpinBoxSetting,
+    SwitchSetting,
+    TextSetting,
+    WarningIcon,
+)
+from .switch import SwitchWidget
+from .theme import SignalBlocker, add_header, icon
+from .widget import create_framed_label
 
 
 class LoraItem(QWidget):
     changed = pyqtSignal()
     removed = pyqtSignal(QWidget)
 
-    def __init__(self, name_filter: str, parent=None):
+    def __init__(self, loras: FileFilter, parent=None):
         super().__init__(parent)
         self.setContentsMargins(0, 0, 0, 0)
 
-        self._loras = FileFilter(root.files.loras)
-        self._loras.available_only = True
-        self._loras.name_prefix = name_filter
+        self._loras = loras
         self._current: File | None = None
+        self._is_active = True
 
         completer = QCompleter(self._loras)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -60,7 +70,7 @@ class LoraItem(QWidget):
         small_font.setPointSize(small_font.pointSize() - 1)
 
         grey_text = self.palette()
-        grey_text.setColor(QPalette.ColorRole.Foreground, QColor(theme.grey))
+        grey_text.setColor(QPalette.ColorRole.WindowText, QColor(theme.grey))
 
         self._advanced_button = ExpanderButton(parent=self)
         self._advanced_button.toggled.connect(self._expand)
@@ -242,15 +252,18 @@ class LoraItem(QWidget):
     @property
     def value(self):
         if self._current is None:
-            return dict(name="", strength=1.0, enabled=True)
-        return dict(
-            name=self._current.id, strength=self.strength, enabled=self._enabled.isChecked()
-        )
+            return {"name": "", "strength": 1.0, "enabled": True}
+        return {
+            "name": self._current.id,
+            "strength": self.strength,
+            "enabled": self._enabled.isChecked(),
+        }
 
     @value.setter
     def value(self, v: dict):
         new_value = root.files.loras.find(v["name"]) or File.remote(v["name"])
-        if self._current is None or new_value.id != self._current.id:
+        ui_name = self._select.currentText()
+        if self._current is None or new_value.id != self._current.id or ui_name != new_value.name:
             self._current = new_value
             index = self._select.findData(new_value.id)
             if index >= 0:
@@ -261,11 +274,32 @@ class LoraItem(QWidget):
         self._enabled.setChecked(v.get("enabled", True))
         self._update()
 
-    def apply_filter(self, name_filter: str):
-        with SignalBlocker(self._select):
-            self._loras.name_prefix = name_filter
+    @property
+    def is_active(self):
+        """False if item is kept alive for reuse but not displayed."""
+        return self._is_active
+
+    @is_active.setter
+    def is_active(self, value: bool):
+        self._is_active = value
+        self.setVisible(value)  # isVisible() can be False depending on UI state, even if active
+
+    def start_apply_filter(self):
+        self._select.blockSignals(True)
+
+    def apply_filter(self):
+        # filter available items _without_ changing current selection
         if self._current and self._current.id != self._select.currentData():
             self._select.setEditText(self._current.name)
+        self._select.blockSignals(False)
+
+    def reset(self):
+        self._current = None
+        self.strength = 1.0
+        self._enabled.setChecked(True)
+        self._select.setCurrentIndex(0)
+        if self._loras.rowCount() > 0:
+            self._select_lora()
 
     def _show_lora_warnings(self, lora: File):
         if client := root.connection.client_if_connected:
@@ -297,14 +331,14 @@ _special_lora_warning = _(
 class LoraList(QWidget):
     value_changed = pyqtSignal()
 
-    open_folder_button: Optional[QToolButton] = None
+    open_folder_button: QToolButton | None = None
     last_filter = "All"
-
-    _items: list[LoraItem]
 
     def __init__(self, setting: Setting, parent=None):
         super().__init__(parent)
-        self._items = []
+        self._items: list[LoraItem] = []
+        self._loras = FileFilter(root.files.loras)
+        self._loras.available_only = True
 
         self._layout = QVBoxLayout()
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -356,21 +390,30 @@ class LoraList(QWidget):
 
     def _add_item(self, lora: dict | File | None = None):
         assert self._item_list is not None
-        item = LoraItem(self.filter_prefix, parent=self)
+        for i in self._items:
+            if not i.is_active:
+                item = i  # reuse existing item to avoid cost of creating new ones
+                item.is_active = True
+                break
+        else:
+            item = LoraItem(self._loras, parent=self)
+            item.changed.connect(self._update_item)
+            item.removed.connect(self._remove_item)
+            self._items.append(item)
+
         if isinstance(lora, dict):
             item.value = lora
         elif isinstance(lora, File):
-            item.value = dict(name=lora.id, strength=1.0)
-        item.changed.connect(self._update_item)
-        item.removed.connect(self._remove_item)
-        self._items.append(item)
+            item.value = {"name": lora.id, "strength": 1.0}
+        else:
+            item.reset()
         self._item_list.addWidget(item)
         self.value_changed.emit()
 
-    def _remove_item(self, item: QWidget):
-        self._items.remove(item)
+    def _remove_item(self, item: LoraItem):
+        # removing and creating items is slow, hiding allows reuse
+        item.is_active = False
         self._item_list.removeWidget(item)
-        item.deleteLater()
         self.value_changed.emit()
 
     def _update_item(self):
@@ -395,7 +438,10 @@ class LoraList(QWidget):
     def _set_filtered_names(self):
         LoraList.last_filter = self.filter
         for item in self._items:
-            item.apply_filter(self.filter_prefix)
+            item.start_apply_filter()
+        self._loras.name_prefix = self.filter_prefix
+        for item in self._items:
+            item.apply_filter()
 
     def _upload_lora(self):
         filepath = QFileDialog.getOpenFileName(
@@ -422,12 +468,12 @@ class LoraList(QWidget):
 
     @property
     def value(self):
-        return [item.value for item in self._items]
+        return [item.value for item in self._items if item.is_active]
 
     @value.setter
-    def value(self, v):
-        while not len(self._items) == 0:
-            self._remove_item(self._items[-1])
+    def value(self, v: list[dict | File]):
+        for item in self._items:
+            self._remove_item(item)
         for lora in v:
             self._add_item(lora)
 
@@ -469,10 +515,12 @@ class SamplerWidget(QWidget):
         info_layout.addStretch()
         info_layout.addWidget(self._user_presets_link)
 
-        self._steps = SliderSetting(StyleSettings.sampler_steps, self, 1, 100)
+        self._steps = SliderSetting(StyleSettings.sampler_steps, self, 1, 100, suffix=" steps")
+        self._steps.slider.setSoftMaximum(50)
         self._steps.value_changed.connect(self.notify_changed)
 
-        self._cfg = SliderSetting(StyleSettings.cfg_scale, self, 1.0, 20.0)
+        self._cfg = SliderSetting(StyleSettings.cfg_scale, self, 1.0, 24.0, decimals=1)
+        self._cfg.slider.setSoftMaximum(12.0)
         self._cfg.value_changed.connect(self.notify_changed)
 
         extended_layout = QVBoxLayout()
@@ -533,10 +581,6 @@ class SamplerWidget(QWidget):
 
 
 class StylePresets(SettingsTab):
-    _checkpoint_advanced_widgets: list[SettingWidget]
-    _default_sampler_widgets: list[SettingWidget]
-    _live_sampler_widgets: list[SettingWidget]
-
     def __init__(self, server: Server):
         super().__init__(_("Style Presets"))
         self.server = server
@@ -599,14 +643,14 @@ class StylePresets(SettingsTab):
         frame_layout.addLayout(builtin_layout)
 
         frame = QFrame(self)
-        frame.setFrameStyle(QFrame.StyledPanel)
+        frame.setFrameStyle(QFrame.Shape.StyledPanel)
         frame.setLineWidth(1)
         frame.setLayout(frame_layout)
         self._layout.addWidget(frame)
 
-        self._style_widgets: dict[str, SettingWidget] = {}
+        self._style_widgets: dict[str, SettingWidgetBase] = {}
 
-        def add(name: str, widget: SettingWidget):
+        def add(name: str, widget: SettingWidgetBase | SettingWidget):
             self._style_widgets[name] = widget
             self._layout.addWidget(widget)
             widget.value_changed.connect(self.write)
@@ -637,19 +681,24 @@ class StylePresets(SettingsTab):
         checkpoint_advanced.toggled.connect(self._toggle_checkpoint_advanced)
         self._layout.addWidget(checkpoint_advanced)
 
-        self._arch_select: ComboBoxSetting = add(
+        self._arch_select = add(
             "architecture", ComboBoxSetting(StyleSettings.architecture, parent=self)
         )
         self._vae = add("vae", ComboBoxSetting(StyleSettings.vae, parent=self))
 
-        self._clip_skip = add("clip_skip", SpinBoxSetting(StyleSettings.clip_skip, self, 0, 12))
+        self._clip_skip = self._style_widgets["clip_skip"] = SpinBoxSetting(
+            StyleSettings.clip_skip, self, 0, 12
+        )
+        self._clip_skip.value_changed.connect(self.write)
+        self._layout.addWidget(self._clip_skip)
         self._clip_skip_check = self._clip_skip.add_checkbox(_("Override"))
         self._clip_skip_check.toggled.connect(self._toggle_clip_skip)
 
-        self._resolution_spin = add(
-            "preferred_resolution",
-            SpinBoxSetting(StyleSettings.preferred_resolution, self, 0, 2048, step=8),
+        self._resolution_spin = self._style_widgets["preferred_resolution"] = SpinBoxSetting(
+            StyleSettings.preferred_resolution, self, 0, 2048, step=8
         )
+        self._resolution_spin.value_changed.connect(self.write)
+        self._layout.addWidget(self._resolution_spin)
         resolution_check = self._resolution_spin.add_checkbox(_("Override"))
         resolution_check.toggled.connect(self._toggle_preferred_resolution)
 
@@ -674,7 +723,10 @@ class StylePresets(SettingsTab):
             widget.indent = 1
         self._toggle_checkpoint_advanced(False)
 
-        add("loras", LoraList(StyleSettings.loras, self))
+        self._loras = LoraList(StyleSettings.loras, self)
+        self._layout.addWidget(self._loras)
+        self._loras.value_changed.connect(self.write)
+
         add("style_prompt", LineEditSetting(StyleSettings.style_prompt, self))
         add("negative_prompt", LineEditSetting(StyleSettings.negative_prompt, self))
 
@@ -701,8 +753,8 @@ class StylePresets(SettingsTab):
                 _("Open the folder where checkpoints are stored"),
                 self._open_checkpoints_folder,
             )
-        if self._style_widgets["loras"].open_folder_button:
-            self._style_widgets["loras"].open_folder_button.clicked.connect(self._open_lora_folder)
+        if self._loras.open_folder_button:
+            self._loras.open_folder_button.clicked.connect(self._open_lora_folder)
 
         self._populate_style_list()
         Styles.list().changed.connect(self._update_style_list)
@@ -766,10 +818,10 @@ class StylePresets(SettingsTab):
 
     def _open_checkpoints_folder(self):
         arch = resolve_arch(self.current_style, root.connection.client_if_connected)
-        if arch.is_flux_like or arch is Arch.chroma or arch.is_qwen_like:
-            self._open_folder(Path("models/diffusion_models"))
-        else:
+        if arch.is_sdxl_like or arch is Arch.sd15:
             self._open_folder(Path("models/checkpoints"))
+        else:
+            self._open_folder(Path("models/diffusion_models"))
 
     def _open_lora_folder(self):
         self._open_folder(Path("models/loras"))
@@ -818,7 +870,7 @@ class StylePresets(SettingsTab):
 
     def _show_edit_style(self, style: Style):
         arch = resolve_arch(style, root.connection.client_if_connected)
-        self._edit_style.visible = not arch.is_edit
+        self._edit_style.visible = not arch.supports_edit
 
     def _setup_edit_style(self):
         client = root.connection.client_if_connected
@@ -826,7 +878,7 @@ class StylePresets(SettingsTab):
         edit_styles.extend(
             (s.name, s.filename)
             for s in filter_supported_styles(Styles.list(), client)
-            if s != self.current_style and resolve_arch(s, client).is_edit
+            if s != self.current_style and resolve_arch(s, client).supports_edit
         )
         self._edit_style.set_items(edit_styles)
 
@@ -870,6 +922,7 @@ class StylePresets(SettingsTab):
             self._builtin_message.setVisible(is_builtin)
             self._builtin_copy.setVisible(is_builtin)
             self._checkpoint_select.setEnabled(not is_builtin)
+            self._loras.setEnabled(not is_builtin)
             for widget in self._style_widgets.values():
                 widget.setEnabled(not is_builtin)
             for widget in self._checkpoint_advanced_widgets:
@@ -884,7 +937,9 @@ class StylePresets(SettingsTab):
         elif arch.is_flux_like:
             valid_archs = (Arch.auto, Arch.flux, Arch.flux_k)
         elif arch.is_qwen_like:
-            valid_archs = (Arch.auto, Arch.qwen, Arch.qwen_e, Arch.qwen_e_p)
+            valid_archs = (Arch.auto, Arch.qwen, Arch.qwen_e, Arch.qwen_e_p, Arch.qwen_l)
+        elif arch.is_flux2:
+            valid_archs = (Arch.auto, Arch.flux2_4b, Arch.flux2_9b)
         else:
             valid_archs = (Arch.auto, arch)
         with SignalBlocker(self._arch_select):
@@ -900,6 +955,7 @@ class StylePresets(SettingsTab):
         with self._write_guard:
             for name, widget in self._style_widgets.items():
                 widget.value = getattr(style, name)
+            self._loras.value = style.loras  # type: ignore
             self._default_sampler.read(style)
             self._live_sampler.read(style)
         self._show_builtin_info(style)
@@ -922,6 +978,7 @@ class StylePresets(SettingsTab):
         for name, widget in self._style_widgets.items():
             if widget.value is not None:
                 setattr(style, name, widget.value)
+        style.loras = self._loras.value
         self._write_checkpoint(style)
         self._default_sampler.write(style)
         self._live_sampler.write(style)

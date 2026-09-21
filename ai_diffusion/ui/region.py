@@ -1,30 +1,33 @@
 from __future__ import annotations
-from enum import Enum
-from PyQt5.QtWidgets import QWidget, QLabel, QToolButton, QHBoxLayout, QVBoxLayout, QFrame, QMenu
-from PyQt5.QtGui import (
-    QGuiApplication,
-    QMouseEvent,
-    QResizeEvent,
-    QPixmap,
-    QImage,
-    QPainter,
-    QIcon,
-    QFontMetrics,
-)
-from PyQt5.QtCore import QObject, QEvent, Qt, QMetaObject, QSize, pyqtSignal
 
-from ..root import root
-from ..client import Client
-from ..image import Bounds
-from ..properties import Binding, bind
+from enum import Enum
+from functools import partial
+
+from PyQt6.QtCore import QEvent, QMetaObject, QObject, QPoint, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+)
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMenu, QToolButton, QVBoxLayout, QWidget
+
+from ..backend.client import Client
 from ..document import LayerType
-from ..region import Region, RootRegion, RegionLink, translate_prompt
+from ..image import Bounds
 from ..localization import translate as _
+from ..model.properties import Binding, bind
+from ..model.region import Region, RegionLink, RootRegion, translate_prompt
+from ..model.root import root
 from ..util import ensure
-from .control import ControlListWidget
-from .widget import TextPromptWidget
-from .settings import settings
 from . import theme
+from .control import ControlListWidget
+from .settings import settings
+from .widget import TextPromptWidget
 
 
 class InactiveRegionWidget(QFrame):
@@ -93,7 +96,7 @@ class ActiveRegionWidget(QFrame):
         super().__init__(parent)
         self._root = root
         self._region: RootRegion | Region | None = root
-        self._bindings: list[QMetaObject.Connection] = []
+        self._bindings: list[QMetaObject.Connection | Binding] = []
         self._header_style = header
         self._translation_enabled = True
         self._is_slim = False
@@ -185,6 +188,12 @@ class ActiveRegionWidget(QFrame):
         )
         self._language_button.clicked.connect(self._toggle_translation_enabled)
 
+        font_height = QFontMetrics(self.font()).height()
+        self._negative_warning = QLabel(self)
+        self._negative_warning.setPixmap(theme.icon("alert").pixmap(font_height, font_height))
+        self._negative_warning.setToolTip(_("The selected Style does not use the negative prompt."))
+        self._negative_warning.setVisible(False)
+
         self._setup_bindings(self._region)
         settings.changed.connect(self.update_settings)
 
@@ -217,12 +226,10 @@ class ActiveRegionWidget(QFrame):
             ]
             if self.is_slim:
                 evt = region.negative_enabled_live_changed
-                self._bindings.append(evt.connect(self.negative.setEnabled))
-                self.negative.setEnabled(region.negative_enabled_live)
             else:
                 evt = region.negative_enabled_changed
-                self._bindings.append(evt.connect(self.negative.setEnabled))
-                self.negative.setEnabled(region.negative_enabled)
+            self._bindings.append(evt.connect(self._show_negative_warning))
+            self._show_negative_warning()
         elif isinstance(region, Region):
             self._root = region.root
             self._bindings = [
@@ -325,15 +332,15 @@ class ActiveRegionWidget(QFrame):
                 if len(name) > 20:
                     name = name[:17] + "..."
 
-                def link():
-                    region.link(active_layer)
-                    self.region = region
+                def link(r: Region):
+                    r.link(active_layer)
+                    self.region = r
 
                 action = ensure(menu.addAction(name))
-                action.triggered.connect(link)
+                action.triggered.connect(partial(link, region))
 
         pos = self._link_region_button.rect().bottomLeft()
-        menu.exec_(self._link_region_button.mapToGlobal(pos))
+        menu.exec(self._link_region_button.mapToGlobal(pos))
 
     @property
     def is_slim(self):
@@ -351,7 +358,7 @@ class ActiveRegionWidget(QFrame):
         return settings.show_negative_prompt and isinstance(self._region, RootRegion)
 
     def update_settings(self, key: str, value):
-        if key == "prompt_line_count" or key == "prompt_line_count_live":
+        if key in {"prompt_line_count", "prompt_line_count_live"}:
             self._update_prompt_widgets()
         elif key == "show_negative_prompt":
             self.negative.text = ""
@@ -396,9 +403,8 @@ class ActiveRegionWidget(QFrame):
             self._language_button.setText(lang.upper())
             if enabled:
                 text = self._lang_help_enabled
-                if client := root.connection.client_if_connected:
-                    if client.features.translation:
-                        text += "\n" + self._lang_help_translate
+                if (client := root.connection.client_if_connected) and client.features.translation:
+                    text += "\n" + self._lang_help_translate
             else:
                 text = self._lang_help_disabled
             self._language_button.setToolTip(text)
@@ -415,15 +421,32 @@ class ActiveRegionWidget(QFrame):
         self.negative.setVisible(self.has_negative)
         self._layout_language_button()
         self._setup_resize_handle()
+        self._show_negative_warning()
 
     def _layout_language_button(self):
         if settings.prompt_translation:
             pos = self.positive.geometry().bottomRight()
             if self.has_negative:
                 pos = self.negative.geometry().bottomRight()
-            s = QSize(self.fontMetrics().width("EN"), self.fontMetrics().height())
+            s = QSize(self.fontMetrics().horizontalAdvance("EN"), self.fontMetrics().height())
             self._language_button.move(pos.x() - s.width() - 2, pos.y() - s.height() - 2)
             self._language_button.resize(s)
+
+        if self.has_negative:
+            pos = self.negative.geometry().bottomRight()
+            if settings.prompt_translation:
+                pos = pos - QPoint(self._language_button.width() + 4, 0)
+            s = self.fontMetrics().height() + 2
+            self._negative_warning.move(pos.x() - s - 2, pos.y() - s - 2)
+            self._negative_warning.resize(QSize(s, s))
+
+    def _show_negative_warning(self):
+        if isinstance(self._region, RootRegion):
+            r = self._region
+            enabled = r.negative_enabled_live if self.is_slim else r.negative_enabled
+            self._negative_warning.setVisible(settings.show_negative_prompt and not enabled)
+        else:
+            self._negative_warning.setVisible(False)
 
     def _setup_resize_handle(self):
         can_resize = not (isinstance(self._region, Region) and self.is_slim)
@@ -440,7 +463,7 @@ class ActiveRegionWidget(QFrame):
             new_height = y_pos - 5
         fm = QFontMetrics(ensure(self.positive.document()).defaultFont())
         new_line_count = round(new_height / fm.lineSpacing())
-        if 1 <= new_line_count <= 10:
+        if 1 <= new_line_count <= theme.prompt_max_line_count:
             if self.is_slim:
                 settings.prompt_line_count_live = new_line_count
             else:

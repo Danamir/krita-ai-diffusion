@@ -1,18 +1,28 @@
 from __future__ import annotations
 
-from PyQt5.QtGui import QResizeEvent
-from PyQt5.QtWidgets import QWidget, QLabel, QSlider, QToolButton, QCheckBox
-from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QVBoxLayout, QGridLayout, QFrame
-from PyQt5.QtCore import Qt, QMetaObject, pyqtSignal
+from PyQt6.QtCore import QMetaObject, Qt, pyqtSignal
+from PyQt6.QtGui import QResizeEvent
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QSlider,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..resources import ControlMode
-from ..properties import Binding, bind, bind_combo, bind_toggle
-from ..control import ControlLayer, ControlLayerList
-from ..root import root
+from ..backend.resources import ControlMode
 from ..localization import translate as _
+from ..model.control import ControlLayer, ControlLayerList
+from ..model.properties import Binding, bind, bind_combo, bind_toggle
+from ..model.root import root
+from . import theme
 from .interval_slider import IntervalSlider
 from .theme import SignalBlocker
-from . import theme
 
 
 class ControlWidget(QWidget):
@@ -37,7 +47,7 @@ class ControlWidget(QWidget):
         self.layer_select = QComboBox(self)
         self.layer_select.setMinimumContentsLength(20)
         self.layer_select.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self._update_layers()
         root.active_model.layers.changed.connect(self._update_layers)
@@ -63,6 +73,11 @@ class ControlWidget(QWidget):
         )
         self.generate_tool_button.clicked.connect(control.generate)
 
+        self.generate_regions_tool_button = _create_generate_regions_button(
+            self, Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self.generate_regions_tool_button.clicked.connect(control.generate_segmentation)
+
         self.add_pose_tool_button = _create_add_pose_button(
             self, Qt.ToolButtonStyle.ToolButtonIconOnly
         )
@@ -81,6 +96,7 @@ class ControlWidget(QWidget):
         bar_layout.addWidget(self.mode_select)
         bar_layout.addWidget(self.layer_select, 3)
         bar_layout.addWidget(self.generate_tool_button)
+        bar_layout.addWidget(self.generate_regions_tool_button)
         bar_layout.addWidget(self.add_pose_tool_button)
         bar_layout.addWidget(self.preset_slider, 1)
         bar_layout.addWidget(self.error_text, 3)
@@ -119,6 +135,11 @@ class ControlWidget(QWidget):
         )
         self.generate_button.clicked.connect(control.generate)
 
+        self.generate_regions_button = _create_generate_regions_button(
+            self.extended_widget, Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.generate_regions_button.clicked.connect(control.generate_segmentation)
+
         self.add_pose_button = _create_add_pose_button(
             self.extended_widget, Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -131,6 +152,7 @@ class ControlWidget(QWidget):
         actions_layout = QHBoxLayout()
         actions_layout.addWidget(self.custom_checkbox, stretch=1)
         actions_layout.addWidget(self.generate_button)
+        actions_layout.addWidget(self.generate_regions_button)
         actions_layout.addWidget(self.add_pose_button)
         extended_layout.addLayout(actions_layout)
 
@@ -142,6 +164,7 @@ class ControlWidget(QWidget):
         self.strength_slider.setPageStep(10)
         self.strength_label = QLabel("1.0", self.extended_widget)
 
+        self.range_label = QLabel(_("Range") + ":", self.extended_widget)
         self.range_slider = IntervalSlider(
             low=0, high=20, minimum=0, maximum=20, parent=self.extended_widget
         )
@@ -154,7 +177,7 @@ class ControlWidget(QWidget):
         slider_layout.addWidget(QLabel(_("Strength") + ":"), 0, 0)
         slider_layout.addWidget(self.strength_slider, 0, 2)
         slider_layout.addWidget(self.strength_label, 0, 3)
-        slider_layout.addWidget(QLabel(_("Range") + ":"), 1, 0)
+        slider_layout.addWidget(self.range_label, 1, 0)
         slider_layout.addWidget(self.range_start_label, 1, 1)
         slider_layout.addWidget(self.range_slider, 1, 2)
         slider_layout.addWidget(self.range_end_label, 1, 3)
@@ -179,6 +202,7 @@ class ControlWidget(QWidget):
             control.has_active_job_changed.connect(self._update_job_active),
             control.error_text_changed.connect(self._set_error),
             control.is_supported_changed.connect(self._update_visibility),
+            control.has_range_changed.connect(self._update_visibility),
             control.can_generate_changed.connect(self._update_visibility),
             control.mode_changed.connect(self._update_visibility),
             control.is_pose_vector_changed.connect(self._update_pose_utils),
@@ -216,7 +240,8 @@ class ControlWidget(QWidget):
     def _update_visibility(self):
         is_small = self.width() < 420
         is_pose = self._control.mode is ControlMode.pose
-        is_edit = root.active_model.arch.is_edit
+        is_segmentation = self._control.mode is ControlMode.segmentation
+        is_edit = root.active_model.arch.supports_edit
 
         def controls():
             self.layer_select.setVisible(self._control.is_supported)
@@ -224,8 +249,18 @@ class ControlWidget(QWidget):
             self.expand_button.setVisible(self._control.is_supported and not is_edit)
             self.generate_button.setVisible(self._control.can_generate and is_small)
             self.generate_tool_button.setVisible(self._control.can_generate and not is_small)
+            self.generate_regions_button.setVisible(
+                self._control.is_supported and is_segmentation and is_small
+            )
+            self.generate_regions_tool_button.setVisible(
+                self._control.is_supported and is_segmentation and not is_small
+            )
             self.add_pose_button.setVisible(is_pose and is_small)
             self.add_pose_tool_button.setVisible(is_pose and not is_small)
+            self.range_label.setVisible(self._control.has_range)
+            self.range_slider.setVisible(self._control.has_range)
+            self.range_start_label.setVisible(self._control.has_range)
+            self.range_end_label.setVisible(self._control.has_range)
             if not self._control.is_supported or is_edit:
                 self.expand_button.setChecked(False)
 
@@ -256,6 +291,8 @@ class ControlWidget(QWidget):
     def _update_job_active(self):
         self.generate_button.setEnabled(not self._control.has_active_job)
         self.generate_tool_button.setEnabled(not self._control.has_active_job)
+        self.generate_regions_button.setEnabled(not self._control.has_active_job)
+        self.generate_regions_tool_button.setEnabled(not self._control.has_active_job)
         self.layer_select.setEnabled(not self._control.has_active_job)
 
     def _update_custom_values(self):
@@ -290,6 +327,15 @@ def _create_generate_button(parent, style: Qt.ToolButtonStyle):
     button.setText(_("From Image"))
     button.setIcon(theme.icon("control-generate"))
     button.setToolTip(_("Generate control layer from current image"))
+    return button
+
+
+def _create_generate_regions_button(parent, style: Qt.ToolButtonStyle):
+    button = QToolButton(parent)
+    button.setToolButtonStyle(style)
+    button.setText(_("From Regions"))
+    button.setIcon(theme.icon("region-prompt"))
+    button.setToolTip(_("Generate segmentation control layer from current regions"))
     return button
 
 

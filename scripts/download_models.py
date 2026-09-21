@@ -14,18 +14,27 @@ Usage:
 """
 
 import asyncio
-import aiohttp
 import os
 import sys
-from pathlib import Path
-from tqdm import tqdm
 from argparse import ArgumentParser
+from pathlib import Path
+
+import aiohttp
+from tqdm import tqdm
 
 sys.path.append(str(Path(__file__).parent.parent))
-from ai_diffusion import platform_tools, resources
-from ai_diffusion.resources import Arch, ModelRequirements, ResourceKind, ModelResource
-from ai_diffusion.resources import VerificationState
-from ai_diffusion.resources import required_models, default_checkpoints, optional_models
+from ai_diffusion import platform_tools
+from ai_diffusion.backend import resources
+from ai_diffusion.backend.resources import (
+    Arch,
+    ModelRequirements,
+    ModelResource,
+    ResourceKind,
+    VerificationState,
+    default_checkpoints,
+    optional_models,
+    required_models,
+)
 
 try:
     import truststore
@@ -37,19 +46,19 @@ except ImportError:
 
 def _match_backend(model: ModelResource, backend: ModelRequirements):
     if backend is ModelRequirements.cuda:
-        return model.requirements not in [ModelRequirements.cuda_fp4, ModelRequirements.no_cuda]
-    if backend is ModelRequirements.cuda_fp4:
-        return model.requirements not in [ModelRequirements.cuda, ModelRequirements.no_cuda]
-    return model.requirements not in [ModelRequirements.cuda, ModelRequirements.cuda_fp4]
+        return model.requirements is not ModelRequirements.no_cuda
+    return model.requirements is not ModelRequirements.cuda
 
 
 def list_models(
     sd15=False,
     sdxl=False,
     flux=False,
+    flux2=False,
     illu=False,
+    zimage=False,
     upscalers=False,
-    checkpoints=[],
+    checkpoints=None,
     controlnet=False,
     prefetch=False,
     deprecated=False,
@@ -57,8 +66,12 @@ def list_models(
     recommended=False,
     all=False,
     backend=ModelRequirements.no_cuda,
-    exclude=[],
+    exclude=None,
 ) -> set[ModelResource]:
+    if exclude is None:
+        exclude = []
+    if checkpoints is None:
+        checkpoints = []
     assert sum([minimal, recommended, all]) <= 1, (
         "Only one of --minimal, --recommended, --all can be specified"
     )
@@ -70,13 +83,17 @@ def list_models(
         versions.append(Arch.sdxl)
     if flux or all:
         versions.append(Arch.flux)
+    if flux2 or all:
+        versions.append(Arch.flux2_4b)
     if illu or all:
         versions.append(Arch.illu)
         versions.append(Arch.illu_v)
+    if zimage or all:
+        versions.append(Arch.zimage)
 
     models: set[ModelResource] = set()
     models.update([m for m in default_checkpoints if all or (m.id.identifier in checkpoints)])
-    if minimal or recommended or all or sd15 or sdxl or flux:
+    if len(versions) > 1:
         models.update([m for m in required_models if m.arch in versions])
     if minimal:
         models.add(default_checkpoints[0])
@@ -86,7 +103,12 @@ def list_models(
         models.update([m for m in required_models if m.kind is ResourceKind.upscaler])
         models.update(resources.upscale_models)
     if controlnet or recommended or all:
-        kinds = [ResourceKind.controlnet, ResourceKind.ip_adapter, ResourceKind.clip_vision]
+        kinds = [
+            ResourceKind.controlnet,
+            ResourceKind.ip_adapter,
+            ResourceKind.clip_vision,
+            ResourceKind.model_patch,
+        ]
         models.update([m for m in optional_models if m.kind in kinds and m.arch in versions])
     if flux or all:
         lora = ResourceKind.lora
@@ -96,9 +118,9 @@ def list_models(
     if deprecated:
         models.update([m for m in resources.deprecated_models if m.arch in versions])
 
-    excluded_models = set([
+    excluded_models = {
         m for m in models if (m.id.string in exclude) or (not _match_backend(m, backend))
-    ])
+    }
     models = models - excluded_models
 
     # Remove duplicate files listed under different IDs (apply to multiple architectures)
@@ -113,6 +135,12 @@ def list_models(
         print("\nNo models selected for download.")
 
     return models
+
+
+def detect_backend():
+    return (
+        ModelRequirements.cuda if platform_tools.get_cuda_devices() else ModelRequirements.no_cuda
+    )
 
 
 def _progress(name: str, size: int | None, index=0):
@@ -170,7 +198,7 @@ async def download(
         if not dry_run:
             async with client.get(url) as resp:
                 resp.raise_for_status()
-                with open(target_file.with_suffix(".part"), "wb") as fd:
+                with open(target_file.with_suffix(".part"), "wb") as fd:  # noqa
                     with _progress(model.name, resp.content_length, index) as pbar:
                         async for chunk, is_end in resp.content.iter_chunks():
                             fd.write(chunk)
@@ -263,6 +291,8 @@ if __name__ == "__main__":
     parser.add_argument("--sdxl", action="store_true", help="[Workload] everything needed to run SDXL (no checkpoints)")
     parser.add_argument("--illu", action="store_true", help="[Workload] everything needed to run Illustrious-SDXL (no checkpoints)")
     parser.add_argument("--flux", action="store_true", help="[Workload] everything needed to run Flux (no checkpoints)")
+    parser.add_argument("--flux2", action="store_true", help="[Workload] everything needed to run Flux 2 (no checkpoints)")
+    parser.add_argument("--zimage", action="store_true", help="[Workload] everything needed to run Z-Image (no checkpoints)")
     parser.add_argument("--checkpoints", action="store_true", dest="checkpoints", help="download all checkpoints for selected workloads")
     parser.add_argument("--controlnet", action="store_true", help="download ControlNet models for selected workloads")
     parser.add_argument("--checkpoint", action="append", choices=checkpoint_names, dest="checkpoint_list", help="download a specific checkpoint (can specify multiple times)")
@@ -271,7 +301,7 @@ if __name__ == "__main__":
     parser.add_argument("--deprecated", action="store_true", help="download old models which will be removed in the near future")
     parser.add_argument("--retry-attempts", type=int, default=5, metavar="N", help="number of retry attempts for downloading a model")
     parser.add_argument("--continue-on-error", action="store_true", help="continue downloading models even if an error occurs")
-    parser.add_argument("--backend", choices=["auto", "cpu", "cuda", "cuda_fp4", "xpu", "rocm"], default="auto", help="filter models for specific hardware")
+    parser.add_argument("--backend", choices=["auto", "cpu", "cuda", "xpu", "rocm", "mps"], default="auto", help="filter models for specific hardware")
     parser.add_argument("-j", "--jobs", type=int, default=4, metavar="N", help="number of parallel downloads")
     # fmt: on
     args = parser.parse_args()
@@ -282,29 +312,28 @@ if __name__ == "__main__":
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.sdxl]
     if args.checkpoints and args.flux:
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.flux]
+    if args.checkpoints and args.flux2:
+        checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.flux2_4b]
     if args.checkpoints and args.illu:
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu]
         checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.illu_v]
+    if args.checkpoints and args.zimage:
+        checkpoints += [m.id.identifier for m in default_checkpoints if m.arch is Arch.zimage]
 
     print(f"Generative AI for Krita - Model download - v{resources.version}")
 
     backend = ModelRequirements.no_cuda
     if args.backend == "auto":
-        devices = platform_tools.get_cuda_devices()
-        if any(major >= 10 for (major, minor) in devices):  # Blackwell has compute capability 10.x
-            backend = ModelRequirements.cuda_fp4
-        elif len(devices) > 0:
-            backend = ModelRequirements.cuda
+        backend = detect_backend()
     elif args.backend == "cuda":
         backend = ModelRequirements.cuda
-    elif args.backend == "cuda_fp4":
-        backend = ModelRequirements.cuda_fp4
-
     models = list_models(
         sd15=args.sd15,
         sdxl=args.sdxl,
         flux=args.flux,
+        flux2=args.flux2,
         illu=args.illu,
+        zimage=args.zimage,
         upscalers=args.upscalers,
         checkpoints=checkpoints,
         controlnet=args.controlnet,

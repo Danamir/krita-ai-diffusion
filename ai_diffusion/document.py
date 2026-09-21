@@ -1,16 +1,30 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
+from uuid import uuid4
 from weakref import WeakValueDictionary
+
 import krita
 from krita import Krita
-from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QObject, QTimer, QUuid, pyqtSignal
 
-from .image import Extent, Bounds, Mask, Image
+from .image import Bounds, Extent, Image, Mask
 from .layer import Layer, LayerManager, LayerType
-from .pose import Pose
 from .localization import translate as _
+from .pose import Pose
 from .util import acquire_elements
+
+
+class SelectionModifiers(NamedTuple):
+    feather_rel: float = 0.0
+    feather_min_px: int = 0
+    pad_rel: float = 0.0
+    pad_offset_px: int = 0
+    size_min_px: int = 0
+    multiple: int = 8
+    square: bool = False
+    invert: bool = False
 
 
 class Document(QObject):
@@ -37,7 +51,7 @@ class Document(QObject):
         return True, None
 
     def create_mask_from_selection(
-        self, padding: float = 0.0, multiple=8, min_size=0, square=False, invert=False
+        self, mod: SelectionModifiers
     ) -> tuple[Mask, Bounds] | tuple[None, None]:
         raise NotImplementedError
 
@@ -48,6 +62,9 @@ class Document(QObject):
 
     def resize(self, extent: Extent):
         raise NotImplementedError
+
+    def resize_canvas(self, width: int, height: int):
+        """Resize the underlying canvas if supported by the implementation."""
 
     def annotate(self, key: str, value: QByteArray):
         pass
@@ -98,36 +115,69 @@ class KritaDocument(Document):
     Keeps track of selection and current time changes by polling at a fixed interval.
     """
 
-    _doc: krita.Document
-    _id: QUuid
-    _layers: LayerManager
-    _poller: QTimer
-    _selection_bounds: Bounds | None = None
-    _current_time: int = 0
     _instances: WeakValueDictionary[str, KritaDocument] = WeakValueDictionary()
 
-    def __init__(self, krita_document: krita.Document):
+    def __init__(self, krita_document: krita.Document, id: str | None):
         super().__init__()
         self._doc = krita_document
-        self._id = krita_document.rootNode().uniqueId()
-        self._poller = QTimer()
+        self._id = id
+        if self._id is None:
+            self._id = str(uuid4())
+            krita_document.setAnnotation(
+                "ai_diffusion/document_id",
+                "document unique identifier",
+                QByteArray(self._id.encode("utf-8")),
+            )
+        self._instances[self._id] = self
+        self._layers = LayerManager(krita_document)
+        self._selection_bounds: Bounds | None = None
+        self._current_time: int = 0
+
+        self._was_valid = False
+        self._poller = QTimer(self)
         self._poller.setInterval(20)
         self._poller.timeout.connect(self._poll)
         self._poller.start()
-        self._instances[self._id.toString()] = self
-        self._layers = LayerManager(krita_document)
+
+    @staticmethod
+    def _id_from_annotation(doc: krita.Document) -> str | None:
+        id = doc.annotation("ai_diffusion/document_id")
+        if id and id.size() > 0:
+            return str(id.data(), "utf-8")
+        return None
 
     @classmethod
     def active(cls):
         if doc := Krita.instance().activeDocument():
-            if (
-                doc not in acquire_elements(Krita.instance().documents())
-                or doc.activeNode() is None
-            ):
+            if doc.activeNode() is None:
                 return None
-            id = doc.rootNode().uniqueId().toString()
-            return cls._instances.get(id) or KritaDocument(doc)
+            all_docs = acquire_elements(Krita.instance().documents())
+            if doc not in all_docs or not doc.activeNode():
+                return None  # document not fully initialized yet
+            id = cls._id_from_annotation(doc)
+            for other in all_docs:
+                other_id = cls._id_from_annotation(other)
+                if other != doc and id and other_id == id:
+                    id = None  # doc is a copy of other, give it a new ID (see #2164)
+                    break
+            if id and id in cls._instances:
+                cached = cls._instances[id]
+                if cached._doc in all_docs:  # don't reuse if the document was closed
+                    return cached
+            return KritaDocument(doc, id)
         return None
+
+    @classmethod
+    def active_instance(cls) -> KritaDocument | None:
+        if doc := Krita.instance().activeDocument():
+            id = cls._id_from_annotation(doc)
+            if id and id in cls._instances:
+                return cls._instances[id]
+        return None
+
+    @property
+    def id(self):
+        return self._id
 
     @property
     def extent(self):
@@ -151,9 +201,7 @@ class KritaDocument(Document):
             return False, msg_fmt.format("depth", "8-bit integer", depth)
         return True, None
 
-    def create_mask_from_selection(
-        self, padding: float = 0.0, multiple=8, min_size=0, square=False, invert=False
-    ):
+    def create_mask_from_selection(self, mod: SelectionModifiers):
         user_selection = self._doc.selection()
         if not user_selection:
             return None, None
@@ -167,14 +215,16 @@ class KritaDocument(Document):
         )
         original_bounds = Bounds.clamp(original_bounds, self.extent)
         size_factor = original_bounds.extent.diagonal
-        padding_pixels = int(padding * size_factor)
+        pad_px = max(int(mod.feather_rel * size_factor), mod.feather_min_px)
+        pad_px += mod.pad_offset_px
+        pad_px += int(mod.pad_rel * size_factor)
 
-        if invert:
+        if mod.invert:
             selection.invert()
 
         bounds = _selection_bounds(selection)
         bounds = Bounds.pad(
-            bounds, padding_pixels, multiple=multiple, min_size=min_size, square=square
+            bounds, pad_px, multiple=mod.multiple, min_size=mod.size_min_px, square=mod.square
         )
         bounds = Bounds.clamp(bounds, self.extent)
         data = selection.pixelData(*bounds)
@@ -201,6 +251,9 @@ class KritaDocument(Document):
     def resize(self, extent: Extent):
         res = self._doc.resolution()
         self._doc.scaleImage(extent.width, extent.height, res, res, "Bilinear")
+
+    def resize_canvas(self, width: int, height: int):
+        self._doc.resizeImage(0, 0, width, height)
 
     def annotate(self, key: str, value: QByteArray):
         self._doc.setAnnotation(f"ai_diffusion/{key}", f"AI Diffusion Plugin: {key}", value)
@@ -240,7 +293,10 @@ class KritaDocument(Document):
 
     @property
     def is_valid(self):
-        return self._doc in acquire_elements(Krita.instance().documents())
+        # can be a document that has been closed, or one that hasn't finished initializing
+        return self._doc.activeNode() is not None and self._doc in acquire_elements(
+            Krita.instance().documents()
+        )
 
     @property
     def is_active(self):
@@ -248,6 +304,7 @@ class KritaDocument(Document):
 
     def _poll(self):
         if self.is_valid:
+            self._was_valid = True
             selection = self._doc.selection()
             selection_bounds = _selection_bounds(selection) if selection else None
             if selection_bounds != self._selection_bounds:
@@ -258,7 +315,7 @@ class KritaDocument(Document):
             if current_time != self._current_time:
                 self._current_time = current_time
                 self.current_time_changed.emit()
-        else:
+        elif self._was_valid:
             self._poller.stop()
 
     def __eq__(self, other):
@@ -280,22 +337,20 @@ def _selection_is_entire_document(selection: krita.Selection, extent: Extent):
     if bounds.width + bounds.x < extent.width or bounds.height + bounds.y < extent.height:
         return False
     mask = selection.pixelData(*bounds)
-    is_opaque = all(x == b"\xff" for x in mask)
-    return is_opaque
+    return all(x == b"\xff" for x in mask)
 
 
 class PoseLayers:
-    _layers: dict[str, Pose] = {}
-    _timer = QTimer()
-
     def __init__(self):
+        self._layers: dict[QUuid, Pose] = {}
+        self._timer = QTimer()
         self._timer.setInterval(500)
         self._timer.timeout.connect(self.update)
         self._timer.start()
 
     def update(self):
-        doc = KritaDocument.active()
-        if not doc:
+        doc = KritaDocument.active_instance()
+        if not doc or not doc.is_valid:
             return
         try:
             layer = doc.layers.active
@@ -309,7 +364,7 @@ class PoseLayers:
         self._update(layer, acquire_elements(layer.shapes()), pose, doc.resolution)
 
     def add_character(self, layer: krita.VectorLayer):
-        doc = KritaDocument.active()
+        doc = KritaDocument.active_instance()
         assert doc is not None
         pose = self._layers.setdefault(layer.uniqueId(), Pose(doc.extent))
         svg = Pose.create_default(doc.extent, pose.people_count).to_svg()

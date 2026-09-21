@@ -34,6 +34,13 @@
         "minimum_steps": 4,
         "cfg": 5.5
     },
+    "RES multistep simple": {
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        "steps": 20,
+        "minimum_steps": 3,
+        "cfg": 4.0
+    },
     "Turbo/Lightning Merge - DPM++ SDE": {
         "sampler": "dpmpp_sde_gpu",
         "scheduler": "karras",
@@ -95,5 +102,12 @@
         "steps": 8,
         "minimum_steps": 3,
         "cfg": 1.0
+    },
+    "Flux 2 - Euler": {
+        "sampler": "euler",
+        "scheduler": "flux2",
+        "steps": 20,
+        "minimum_steps": 3,
+        "cfg": 5.0
     }
 }

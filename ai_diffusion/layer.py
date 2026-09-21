@@ -1,13 +1,17 @@
 from __future__ import annotations
+
 from contextlib import contextmanager, nullcontext
 from enum import Enum
-import krita
-from PyQt5.QtCore import QObject, QUuid, QByteArray, QTimer, pyqtSignal
-from PyQt5.QtGui import QImage
+from typing import ClassVar
 
-from .image import Extent, Bounds, Image, ImageCollection
-from .util import acquire_elements, ensure, maybe, client_logger as log
+import krita
+from PyQt6.QtCore import QByteArray, QObject, QTimer, QUuid, pyqtSignal
+from PyQt6.QtGui import QImage
+
 from . import eventloop
+from .image import BlendMode, Bounds, Extent, Image, ImageCollection
+from .util import acquire_elements, ensure, maybe
+from .util import client_logger as log
 
 
 class LayerType(Enum):
@@ -128,8 +132,7 @@ class Layer(QObject):
     def bounds(self):
         # In Krita layer bounds can be larger than the image - this property clamps them
         bounds = Bounds.from_qrect(self._node.bounds())
-        bounds = Bounds.restrict(bounds, Bounds(0, 0, *self._manager.image_extent))
-        return bounds
+        return Bounds.restrict(bounds, Bounds(0, 0, *self._manager.image_extent))
 
     @property
     def parent_layer(self):
@@ -154,7 +157,6 @@ class Layer(QObject):
             data: QByteArray = self._node.projectionPixelData(*bounds)
         else:
             data: QByteArray = self._node.pixelDataAtTime(*bounds, time)
-        assert data is not None and data.size() >= bounds.extent.pixel_count * 4
         return Image.from_packed_bytes(data, bounds.extent)
 
     def write_pixels(
@@ -169,12 +171,14 @@ class Layer(QObject):
         bounds = bounds or layer_bounds
         if keep_alpha:
             composite = self.get_pixels(bounds)
-            composite.draw_image(img, keep_alpha=True)
+            composite.draw_image(img, blend=BlendMode.keep)
             img = composite
         elif layer_bounds != bounds and not layer_bounds.is_zero:
             # layer.cropNode(*bounds)  <- more efficient, but clutters the undo stack
             blank = Image.create(layer_bounds.extent, fill=0)
             self._node.setPixelData(blank.data, *layer_bounds)
+
+        assert img.extent == bounds.extent, "write_pixels: image size does must match bounds size"
         self._node.setPixelData(img.data, *bounds)
         if make_visible:
             self.is_visible = True
@@ -188,7 +192,6 @@ class Layer(QObject):
                 data: QByteArray = self._node.pixelData(*bounds)
             else:
                 data: QByteArray = self._node.pixelDataAtTime(*bounds, time)
-            assert data is not None and data.size() >= bounds.extent.pixel_count
             return Image.from_packed_bytes(data, bounds.extent, channels=1)
         else:
             img = self.get_pixels(bounds, time)
@@ -201,7 +204,7 @@ class Layer(QObject):
         bounds = bounds or self.bounds
         time_range = range(doc.playBackStartTime(), doc.playBackEndTime() + 1)
         return ImageCollection(
-            (fn(bounds, time) for time in time_range if self._node.hasKeyframeAtTime(time))
+            fn(bounds, time) for time in time_range if self._node.hasKeyframeAtTime(time)
         )
 
     def get_pixel_frames(self, bounds: Bounds | None = None):
@@ -346,32 +349,24 @@ class LayerManager(QObject):
     parent_changed = pyqtSignal(Layer)
     removed = pyqtSignal(Layer)
 
-    _doc: krita.Document | None
-    _layers: dict[QUuid, Layer]
-    _active_id: QUuid
-    _last_active: Layer | None = None
-    _timer: QTimer
-    _is_updating: bool = False
-
     def __init__(self, doc: krita.Document | None):
         super().__init__()
         self._doc = doc
-        self._layers = {}
+        self._layers: dict[QUuid, Layer] = {}
+        self._active_id = QUuid()
+        self._last_active: Layer | None = None
+        self._timer: QTimer
+        self._is_updating = False
+
         if doc is not None:
             root = doc.rootNode()
             self._layers = {root.uniqueId(): Layer(self, root)}
             self._active_id = doc.activeNode().uniqueId()
             self.update()
-            self._timer = QTimer()
+            self._timer = QTimer(self)
             self._timer.setInterval(500)
             self._timer.timeout.connect(self.update)
             self._timer.start()
-        else:
-            self._active_id = QUuid()
-
-    def __del__(self):
-        if self._doc is not None:
-            self._timer.stop()
 
     @contextmanager
     def _update_guard(self):
@@ -458,7 +453,7 @@ class LayerManager(QObject):
                 self._last_active = layer
             return ensure(layer, "Active layer not found in layer tree (no fallback)")
         except Exception as e:
-            log.error(f"Error getting active layer: {e}")
+            log.error(f"Error getting active layer: {e!s}")
             return self.root
 
     @active.setter
@@ -480,8 +475,7 @@ class LayerManager(QObject):
         node = doc.createNode(name, "paintlayer")
         if img and bounds:
             node.setPixelData(img.data, *bounds)
-        layer = self._insert(node, parent, above, make_active)
-        return layer
+        return self._insert(node, parent, above, make_active)
 
     def _insert(
         self,
@@ -527,19 +521,19 @@ class LayerManager(QObject):
         group_node.addChildNode(layer.node, None)
         return self.wrap(group_node)
 
-    def update_layer_image(self, layer: Layer, image: Image, bounds: Bounds, keep_alpha=False):
+    def update_layer_image(self, layer: Layer, image: Image, bounds: Bounds, blend=BlendMode.alpha):
         """Update layer pixel data by creating a new layer to allow undo."""
         layer_bounds = layer.bounds
-        if not keep_alpha:
+        if blend is not BlendMode.keep:
             layer_bounds = Bounds.union(layer_bounds, bounds)
         content = layer.get_pixels(layer_bounds)
-        content.draw_image(image, bounds.relative_to(layer_bounds).offset, keep_alpha=keep_alpha)
+        content.draw_image(image, bounds.relative_to(layer_bounds).offset, blend=blend)
         replacement = self.create(layer.name, content, layer_bounds, above=layer)
         layer.remove_later()
         return replacement
 
-    _image_types = [t.value for t in LayerType if t.is_image]
-    _mask_types = [t.value for t in LayerType if t.is_mask]
+    _image_types: ClassVar[list[str]] = [t.value for t in LayerType if t.is_image]
+    _mask_types: ClassVar[list[str]] = [t.value for t in LayerType if t.is_mask]
 
     @property
     def all(self) -> list[Layer]:

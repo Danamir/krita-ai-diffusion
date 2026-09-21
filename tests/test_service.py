@@ -1,89 +1,67 @@
-from pathlib import Path
-import pytest
-import subprocess
-import os
-import sys
 import asyncio
-import dotenv
+from pathlib import Path
+from timeit import default_timer as timer
 
-from ai_diffusion.api import WorkflowInput, WorkflowKind, ControlInput, ImageInput, CheckpointInput
-from ai_diffusion.api import SamplingInput, ConditioningInput, ExtentInput, RegionInput
-from ai_diffusion.client import Client, ClientEvent
-from ai_diffusion.cloud_client import CloudClient, enumerate_features, apply_limits
-from ai_diffusion.image import Extent, Image, Bounds
-from ai_diffusion.resources import ControlMode, Arch
+import aiohttp
+import pytest
+
+from ai_diffusion.backend.api import (
+    CheckpointInput,
+    ConditioningInput,
+    ControlInput,
+    ExtentInput,
+    ImageInput,
+    RegionInput,
+    SamplingInput,
+    WorkflowInput,
+    WorkflowKind,
+)
+from ai_diffusion.backend.client import Client, ClientEvent
+from ai_diffusion.backend.cloud_client import CloudClient, apply_limits, enumerate_features
+from ai_diffusion.backend.resources import Arch, ControlMode
+from ai_diffusion.image import Bounds, Extent, Image, ImageCollection
 from ai_diffusion.util import ensure
-from .conftest import has_local_cloud
-from .config import root_dir, test_dir, result_dir
 
-pod_main = root_dir / "service" / "pod" / "pod.py"
-run_dir = test_dir / "pod"
+from .config import result_dir, test_dir
+from .conftest import CloudService, qtapp
+
+
+async def receive_images(client: Client, work: WorkflowInput | list[WorkflowInput]):
+    job_id = None
+    images = ImageCollection()
+    if not isinstance(work, list):
+        work = [work]
+    async for msg in client.listen():
+        if job_id is None:
+            job_id = [await client.enqueue(w) for w in work]
+        if msg.event is ClientEvent.finished and msg.job_id in job_id:
+            assert msg.images is not None
+            images.append(msg.images)
+            job_id.remove(msg.job_id)
+            if len(job_id) == 0:
+                await client.disconnect()
+        if msg.event is ClientEvent.error:
+            raise RuntimeError(msg.error)
+    return images
+
+
+async def connect_cloud(service: CloudService):
+    user = await service.create_user("workflow-tester")
+    client = CloudClient(service.url, user["token"])
+    await client.connect()
+    return client
 
 
 @pytest.fixture(scope="module")
-def pod_server(qtapp, pytestconfig):
-    async def serve(process: asyncio.subprocess.Process):
-        try:
-            async for line in ensure(process.stdout):
-                print(line.decode("utf-8"), end="")
-        except asyncio.CancelledError:
-            process.terminate()
-            await process.wait()
-
-    async def start():
-        env = os.environ.copy()
-        args = ["-u", "-Xutf8", str(pod_main), "--rp_serve_api"]
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            *args,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        async for line in ensure(process.stdout):
-            text = line.decode("utf-8")
-            print(text[:80], end="")
-            if "Uvicorn running" in text:
-                break
-
-        return process, asyncio.create_task(serve(process))
-
-    async def stop(process, task):
-        process.terminate()
-        task.cancel()
-        await process.communicate()
-
-    if not pytestconfig.getoption("--pod-process") or pytestconfig.getoption("--ci"):
-        yield None  # For using local docker image or deployed serverless endpoint
-    else:
-        process, task = qtapp.run(start())
-        yield process
-        qtapp.run(stop(process, task))
-
-
-async def receive_images(client: Client, work: WorkflowInput):
-    job_id = None
-    async for msg in client.listen():
-        if job_id is None:
-            job_id = await client.enqueue(work)
-        if msg.event is ClientEvent.finished and msg.job_id == job_id:
-            assert msg.images is not None
-            return msg.images
-        if msg.event is ClientEvent.error:
-            raise Exception(msg.error)
-    assert False, "Connection closed without receiving images"
-
-
-@pytest.fixture()
-def cloud_client(pytestconfig, qtapp, pod_server):
+def cloud_client(pytestconfig, qtapp, cloud_service: CloudService):
     if pytestconfig.getoption("--ci"):
         pytest.skip("Diffusion is disabled on CI")
-    if not has_local_cloud:
-        pytest.skip("Local cloud service not found")
-    dotenv.load_dotenv(root_dir / "service" / "web" / ".env.local")
-    url = os.environ["TEST_SERVICE_URL"]
-    token = os.environ["TEST_SERVICE_TOKEN"]
-    return qtapp.run(CloudClient.connect(url, token))
+    if not cloud_service.enabled:
+        pytest.skip("Cloud service not running")
+
+    client = qtapp.run(connect_cloud(cloud_service))
+    yield client
+    qtapp.run(client.disconnect())
 
 
 def run_and_save(
@@ -102,13 +80,26 @@ def run_and_save(
     return results[0]
 
 
-def create_simple_workflow():
+def create_simple_workflow(prompt="fluffy ball", input: Image | Extent | None = None):
+    start = 0
+    if isinstance(input, Image):
+        images = ImageInput.from_extent(input.extent)
+        images.initial_image = input
+        images.hires_image = input
+        start = 4
+    elif isinstance(input, Extent):
+        images = ImageInput.from_extent(input)
+    else:
+        images = ImageInput.from_extent(Extent(512, 512))
+
     return WorkflowInput(
-        WorkflowKind.generate,
-        images=ImageInput.from_extent(Extent(512, 512)),
+        WorkflowKind.generate if images.initial_image is None else WorkflowKind.refine,
+        images=images,
         models=CheckpointInput("dreamshaper_8.safetensors"),
-        sampling=SamplingInput("dpmpp_2m", "normal", cfg_scale=5.0, total_steps=20),
-        conditioning=ConditioningInput("fluffy ball"),
+        sampling=SamplingInput(
+            "dpmpp_2m", "normal", cfg_scale=5.0, total_steps=20, start_step=start
+        ),
+        conditioning=ConditioningInput(prompt),
         batch_count=2,
     )
 
@@ -119,7 +110,7 @@ def test_simple(qtapp, cloud_client):
 
 
 def test_large_image(qtapp, cloud_client):
-    extent = Extent(3072, 2048)
+    extent = Extent(2304, 1536)
     input_image = Image.load(test_dir / "images" / "beach_1536x1024.webp")
     input_image = Image.scale(input_image, extent)
     workflow = WorkflowInput(
@@ -164,11 +155,14 @@ cost_params = {
     "upscaled-invalid": (Arch.sd15, 1, 512, 512, 10),
     "illustrious": (Arch.illu, 2, 1024, 1024, 20),
     "illustrious-v": (Arch.illu_v, 2, 1024, 1024, 20),
+    "flux2": (Arch.flux2_4b, 2, 1024, 1024, 4),
+    "zimage": (Arch.zimage, 2, 1024, 1024, 9),
 }
 
 
 @pytest.mark.parametrize("params", cost_params.keys())
-def test_compute_cost(qtapp, cloud_client: CloudClient, params):
+@qtapp
+async def test_compute_cost(cloud_client: CloudClient, params):
     sdversion, batch_count, width, height, steps = cost_params[params]
     extent = Extent(width, height)
     input = WorkflowInput(
@@ -197,11 +191,8 @@ def test_compute_cost(qtapp, cloud_client: CloudClient, params):
         input.kind = WorkflowKind.upscale_tiled
         input.extent.target = Extent(200, 200)
 
-    async def check():
-        service_cost = await cloud_client.compute_cost(input)
-        assert service_cost == input.cost
-
-    qtapp.run(check())
+    service_cost = await cloud_client.compute_cost(input)
+    assert service_cost == input.cost
 
 
 def test_features_limits():
@@ -225,3 +216,107 @@ def test_features_limits():
     assert work.conditioning and len(work.conditioning.control) == 2
     assert work.conditioning and len(work.conditioning.regions[0].control) == 2
     assert work.models and work.models.self_attention_guidance is False
+
+
+@qtapp
+async def test_multiple_jobs(pytestconfig, cloud_service: CloudService):
+    if not pytestconfig.getoption("--benchmark"):
+        pytest.skip("Only runs with --benchmark")
+    if not cloud_service.enabled:
+        pytest.skip("Cloud service not running")
+
+    async def create_client(i: int):
+        user = await cloud_service.create_user(f"multi-job-tester-{i}")
+        client = CloudClient(cloud_service.url, user["token"])
+        await client.connect()
+        return client
+
+    input_image = Image.load(test_dir / "images" / "flowers.webp")
+    input_image = Image.scale(input_image, Extent(512, 512))
+    prompts = [
+        "potted flowers, red petals, sunlight",
+        "potted flowers, blue petals, dawn",
+        "potted flowers, yellow petals, sunlight",
+        "potted flowers, purple petals, night",
+        "potted flowers, orange petals, sunset",
+    ]
+
+    async def run_job(client: CloudClient, index: int):
+        workflow = create_simple_workflow(prompt=prompts[index], input=input_image)
+        images = await receive_images(client, [workflow, workflow])
+        for i, result in enumerate(images):
+            filename = result_dir / f"cloud_multi_user{index}_image{i}.png"
+            result.save(filename)
+
+    start_time = timer()
+    clients = await asyncio.gather(*(create_client(i) for i in range(5)))
+    await asyncio.gather(*(run_job(client, i) for i, client in enumerate(clients)))
+    duration = timer() - start_time
+    print(f"Completed 5 x 2 jobs in {duration:.2f} seconds", end=" ")
+
+
+def test_error_workflow(qtapp, cloud_client: CloudClient):
+    workflow = create_simple_workflow()
+    workflow.kind = WorkflowKind.refine  # Error: refine requires an input image
+    with pytest.raises(Exception, match="failed"):
+        run_and_save(qtapp, cloud_client, workflow, "error_workflow")
+
+
+async def _reset_worker_config(cloud_service: CloudService):
+    for _attempt in range(5):
+        try:
+            await cloud_service.update_worker_config()
+            break
+        except aiohttp.ClientConnectionError:
+            await asyncio.sleep(2)  # Wait for worker to be back up
+
+
+@qtapp
+async def test_timeout(pytestconfig, cloud_service: CloudService):
+    if not pytestconfig.getoption("--benchmark"):
+        pytest.skip("Only runs with --benchmark")
+    if not cloud_service.enabled:
+        pytest.skip("Cloud service not running")
+
+    user = await cloud_service.create_user("timeout-tester")
+    client = CloudClient(cloud_service.url, user["token"])
+    await client.connect()
+    big_workflow = create_simple_workflow(input=Extent(2048, 1536))
+
+    try:
+        await cloud_service.update_worker_config({"job_timeout": 5})
+
+        with pytest.raises(Exception, match="timeout"):
+            await receive_images(client, big_workflow)
+    finally:
+        await _reset_worker_config(cloud_service)
+
+    # Worker should be restarted and accept new jobs
+    small_workflow = create_simple_workflow()
+    images = await receive_images(client, small_workflow)
+    assert len(images) == 2
+
+
+@pytest.mark.parametrize("scenario", ["max_uptime", "max_memory"])
+@qtapp
+async def test_restart(pytestconfig, cloud_service: CloudService, scenario: str):
+    if not pytestconfig.getoption("--benchmark"):
+        pytest.skip("Only runs with --benchmark")
+    if not cloud_service.enabled:
+        pytest.skip("Cloud service not running")
+
+    user = await cloud_service.create_user("restart-tester")
+    client = CloudClient(cloud_service.url, user["token"])
+    await client.connect()
+    workflow = create_simple_workflow()
+
+    try:
+        if scenario == "max_uptime":
+            await cloud_service.update_worker_config({"max_uptime": 2})
+        elif scenario == "max_memory":
+            await cloud_service.update_worker_config({"max_memory_usage": 0.1})
+
+        images = await receive_images(client, workflow)
+        assert len(images) == 2
+    finally:
+        await _reset_worker_config(cloud_service)

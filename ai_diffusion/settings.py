@@ -1,16 +1,18 @@
 from __future__ import annotations
-from dataclasses import dataclass
-import os
+
 import json
-import uuid
+import os
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple, Optional, Any
-from PyQt5.QtCore import QObject, pyqtSignal
+from typing import Any, ClassVar, NamedTuple
 
-from .platform_tools import is_macos, is_windows
-from .util import encode_json, read_json_with_comments, user_data_dir, client_logger as log
+from PyQt6.QtCore import QObject, pyqtSignal
+
 from .localization import translate as _
+from .platform_tools import is_macos, is_windows
+from .util import client_logger as log
+from .util import encode_json, read_json_with_comments, user_data_dir
 
 
 class ServerMode(Enum):
@@ -26,6 +28,7 @@ class ServerBackend(Enum):
     mps = (_("Use MPS (Metal Performance Shader)"), is_macos)
     directml = (_("Use DirectML (GPU)"), is_windows)
     xpu = (_("Use XPU (Intel GPU)"), not is_macos)
+    rocm = (_("Use ROCm (AMD GPU)"), not is_macos)
 
     @staticmethod
     def supported():
@@ -83,9 +86,9 @@ class ImageFileFormat(Enum):
             return ImageFileFormat.png_small
         if extension == ".webp":
             return ImageFileFormat.webp
-        if extension == ".jpg" or extension == ".jpeg":
+        if extension in {".jpg", ".jpeg"}:
             return ImageFileFormat.jpeg
-        raise Exception(f"Unsupported image extension: {extension}")
+        raise ValueError(f"Unsupported image extension: {extension}")
 
     @property
     def extension(self):
@@ -187,8 +190,8 @@ class Settings(QObject):
         _("Server Path"),
         str(user_data_dir / "server"),
         _(
-            "Directory where ComfyUI will be installed. At least 10GB of free disk space is required for a minimal installation."
-        ),
+            "Directory where ComfyUI will be installed. At least {size} GB of free disk space is required for a minimal installation."
+        ).format(size=16),
     )
 
     server_url: str
@@ -206,25 +209,46 @@ class Settings(QObject):
         _("Server Arguments"), "", _("Additional command line arguments passed to the server")
     )
 
+    server_authorization: str
+    _server_authorization = Setting("ComfyUI Authorization Token", "")
+
     check_server_resources: bool
     _check_server_resources = Setting("Refuse connection if nodes or models are missing", True)
 
-    comfyui_client_id: str
-    _comfyui_client_id = Setting("ComfyUI client ID", str(uuid.uuid4()))
-
-    selection_grow: int
-    _selection_grow = Setting(
-        _("Selection Grow"), 5, _("Selection area is expanded by a fraction of its size")
-    )
-
     selection_feather: int
     _selection_feather = Setting(
-        _("Selection Feather"), 5, _("The border is blurred by a fraction of selection size")
+        _("Selection Feather"),
+        10,
+        _("The border is expanded and blurred by a fraction of selection size"),
+    )
+
+    selection_min_transition: int
+    _selection_min_transition = Setting(
+        "Selection minimum feather", 32, "Minimum smooth grow (feathering) in pixels for denoising"
+    )
+
+    selection_grow_offset: int
+    _selection_grow_offset = Setting(
+        "Selection Grow Offset",
+        4,
+        "Apply binary grow/dilation in pixels to denoise mask before smooth grow (feathering)",
+    )
+
+    selection_blend: int
+    _selection_blend = Setting(
+        _("Selection Blend"), 25, _("Transition area for alpha blending the result image")
     )
 
     selection_padding: int
     _selection_padding = Setting(
-        _("Selection Padding"), 7, _("Minimum additional padding around the selection area")
+        _("Selection Padding"), 6, _("Minimum additional padding around the selection area")
+    )
+
+    color_match: bool
+    _color_match = Setting(
+        _("Color Match"),
+        True,
+        _("Match peripheral colors and brightness with existing content. Requires a selection."),
     )
 
     nsfw_filter: float
@@ -283,6 +307,9 @@ class Settings(QObject):
         ),
     )
 
+    confirm_discard_image: bool
+    _confirm_discard_image = Setting("Ask for confirmation when discarding images", True)
+
     prompt_line_count: int
     _prompt_line_count = Setting(
         _("Prompt Line Count"), 2, _("Size of the text editor for image descriptions")
@@ -311,7 +338,7 @@ class Settings(QObject):
     tag_files: list[str]
     _tag_files = Setting(
         _("Tag Auto-Completion"),
-        list(),
+        [],
         _("Enable text completion for tags from the selected files"),
     )
 
@@ -339,6 +366,24 @@ class Settings(QObject):
 
     show_builtin_styles: bool
     _show_builtin_styles = Setting(_("Show pre-installed styles"), True)
+
+    recent_styles_count: int
+    _recent_styles_count = Setting(
+        _("Recent Styles"),
+        4,
+        _("Number of most recently used styles to show at the top of the style list"),
+    )
+
+    recent_styles: list[str]
+    _recent_styles = Setting(
+        "Recent Styles",
+        [
+            "built-in/edit-flux2.json",
+            "built-in/anime-illustrious.json",
+            "built-in/cinematic-photo-zimage.json",
+            "built-in/digital-artwork-xl.json",
+        ],
+    )
 
     history_size: int
     _history_size = Setting(
@@ -412,7 +457,7 @@ class Settings(QObject):
         _("Conserve memory by processing output images in smaller tiles."),
     )
 
-    _performance_presets = {
+    _performance_presets: ClassVar[dict[PerformancePreset, PerformancePresetSettings]] = {
         PerformancePreset.cpu: PerformancePresetSettings(
             batch_size=1,
             resolution_multiplier=1.0,
@@ -451,6 +496,9 @@ class Settings(QObject):
     document_defaults: dict[str, Any]
     _document_defaults = Setting(_("Document Defaults"), {}, _("Recently used document settings"))
 
+    last_news: str
+    _last_news = Setting("Last seen news digest", "")
+
     # Folder where intermediate images are stored for debug purposes (default: None)
     debug_image_folder = os.environ.get("KRITA_AI_DIFFUSION_DEBUG_IMAGE")
 
@@ -485,12 +533,12 @@ class Settings(QObject):
         if not init:
             self.server_mode = ServerMode.managed
 
-    def save(self, path: Optional[Path] = None):
+    def save(self, path: Path | None = None):
         path = self.default_path or path
         with open(path, "w") as file:
             file.write(json.dumps(self._values, default=encode_json, indent=4))
 
-    def load(self, path: Optional[Path] = None):
+    def load(self, path: Path | None = None):
         path = self.default_path or path
         self._migrate_legacy_settings(path)
         if not path.exists():
@@ -517,6 +565,9 @@ class Settings(QObject):
         if preset not in [PerformancePreset.custom, PerformancePreset.auto]:
             for k, v in self._performance_presets[preset]._asdict().items():
                 self._values[k] = v
+
+    def __iter__(self):
+        return iter(self._values.items())
 
     def _migrate_legacy_settings(self, path: Path):
         if path == self.default_path:

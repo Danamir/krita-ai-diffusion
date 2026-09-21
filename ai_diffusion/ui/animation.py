@@ -1,31 +1,39 @@
 from __future__ import annotations
-from PyQt5.QtCore import Qt, QMetaObject
-from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
+
+from PyQt6.QtCore import QMetaObject, Qt
+from PyQt6.QtWidgets import (
     QComboBox,
-    QPushButton,
-    QProgressBar,
+    QHBoxLayout,
     QLabel,
+    QProgressBar,
+    QPushButton,
     QRadioButton,
     QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..properties import Binding, bind, bind_combo, bind_toggle, Bind
-from ..model import Model
 from ..image import Extent, Image
-from ..root import root
-from ..settings import settings
 from ..localization import translate as _
+from ..model.model import DocumentModel
+from ..model.properties import Bind, Binding, bind, bind_combo, bind_toggle
+from ..model.root import root
+from ..settings import settings
 from . import theme
 from .control import ControlListWidget
-from .widget import WorkspaceSelectWidget, StyleSelectWidget, TextPromptWidget, StrengthWidget
-from .widget import QueueButton, ErrorBox, create_wide_tool_button
+from .widget import (
+    ErrorBox,
+    QueueButton,
+    StrengthWidget,
+    StyleSelectWidget,
+    TextPromptWidget,
+    WorkspaceSelectWidget,
+    create_wide_tool_button,
+)
 
 
 class AnimationWidget(QWidget):
-    _model: Model
+    _model: DocumentModel
     _model_bindings: list[QMetaObject.Connection | Binding]
 
     def __init__(self):
@@ -59,12 +67,12 @@ class AnimationWidget(QWidget):
         prompt_layout.addWidget(self.negative_textbox)
         layout.addLayout(prompt_layout)
 
-        self.strength_slider = StrengthWidget(parent=self)
+        self.strength_slider = StrengthWidget()
         self.add_control_button = create_wide_tool_button(
             "control-add", _("Add Control Layer"), self
         )
         strength_layout = QHBoxLayout()
-        strength_layout.addWidget(self.strength_slider)
+        strength_layout.addWidget(self.strength_slider.widget())
         strength_layout.addWidget(self.add_control_button)
         layout.addLayout(strength_layout)
 
@@ -102,12 +110,12 @@ class AnimationWidget(QWidget):
         self.target_layer = QComboBox(self)
         self.target_layer.setMinimumContentsLength(20)
         self.target_layer.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLength
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         layout.addWidget(self.target_layer)
 
         self.preview_area = QLabel(self)
-        self.preview_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.preview_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.preview_area.setAlignment(
             Qt.AlignmentFlag(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         )
@@ -120,7 +128,7 @@ class AnimationWidget(QWidget):
         return self._model
 
     @model.setter
-    def model(self, model: Model):
+    def model(self, model: DocumentModel):
         if self._model != model:
             Binding.disconnect_all(self._model_bindings)
             self._model = model

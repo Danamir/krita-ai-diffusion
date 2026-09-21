@@ -1,22 +1,44 @@
 import json
-import pytest
+import zlib
+from collections.abc import Iterable
 from copy import copy
 from pathlib import Path
-from PyQt5.QtCore import Qt
 
-from ai_diffusion.api import CustomWorkflowInput, ImageInput, WorkflowInput
-from ai_diffusion.client import Client, ClientModels, CheckpointInfo, TextOutput
-from ai_diffusion.connection import Connection, ConnectionState
-from ai_diffusion.comfy_workflow import ComfyNode, ComfyObjectInfo, ComfyWorkflow, Output
-from ai_diffusion.custom_workflow import WorkflowSource, WorkflowCollection
-from ai_diffusion.custom_workflow import SortedWorkflows, CustomWorkspace
-from ai_diffusion.custom_workflow import CustomParam, ParamKind, workflow_parameters
-from ai_diffusion.image import Image, Extent, ImageCollection
-from ai_diffusion.jobs import JobQueue, Job, JobKind, JobParams
-from ai_diffusion.style import Style
-from ai_diffusion.resources import Arch
-from ai_diffusion.image import Bounds
-from ai_diffusion import workflow
+import pytest
+from PyQt6.QtCore import Qt
+
+from ai_diffusion.backend import workflow
+from ai_diffusion.backend.api import (
+    CustomStyleInput,
+    CustomWorkflowInput,
+    ImageInput,
+    WorkflowInput,
+)
+from ai_diffusion.backend.client import (
+    CheckpointInfo,
+    Client,
+    ClientModels,
+    JobInfoOutput,
+    OutputBatchMode,
+    TextOutput,
+)
+from ai_diffusion.backend.comfy_workflow import ComfyNode, ComfyObjectInfo, ComfyWorkflow, Output
+from ai_diffusion.backend.resources import Arch
+from ai_diffusion.image import Bounds, Extent, Image, ImageCollection, Mask
+from ai_diffusion.layer import LayerManager
+from ai_diffusion.model.connection import Connection, ConnectionState
+from ai_diffusion.model.custom_workflow import (
+    CustomParam,
+    CustomWorkspace,
+    ParamKind,
+    SortedWorkflows,
+    WorkflowCollection,
+    WorkflowSource,
+    workflow_parameters,
+)
+from ai_diffusion.model.jobs import Job, JobKind, JobParams, JobQueue
+from ai_diffusion.style import Style, Styles
+from ai_diffusion.util import PluginError
 
 from .config import test_dir
 
@@ -26,9 +48,11 @@ class MockClient(Client):
         self.models = ClientModels()
         self.models.node_inputs = node_defs
 
-    @staticmethod
-    async def connect(url: str, access_token: str = "") -> Client:
-        return MockClient(ComfyObjectInfo({}))
+    async def connect(self):
+        return
+
+    async def discover_models(self, refresh: bool):
+        yield self.DiscoverStatus("models", 1, 1)
 
     async def enqueue(self, work: WorkflowInput, front: bool = False) -> str:
         return ""
@@ -39,7 +63,7 @@ class MockClient(Client):
     async def interrupt(self):
         pass
 
-    async def clear_queue(self):
+    async def cancel(self, job_ids: Iterable[str]):
         pass
 
 
@@ -184,7 +208,7 @@ def test_files(tmp_path: Path):
 
     bad_file = tmp_path / "bad.json"
     bad_file.write_text("bad json")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(PluginError):
         collection.import_file(bad_file)
 
 
@@ -233,6 +257,43 @@ def test_workspace():
     assert workspace.metadata[0].default == 24
     assert workspace.metadata[1].name == "param3"
     assert workspace.params == {"param2": 23, "param3": 7}
+
+    doc_graph["3"] = {
+        "class_type": "ETN_Parameter",
+        "inputs": {"name": "param3", "type": "text", "default": ""},
+    }
+    workflows.set_graph(workflows.index(1), doc_graph)
+    assert workspace.validation_error == (
+        "Workflow contains duplicate parameter names: param3. Each parameter name must be unique."
+    )
+
+
+def test_workspace_no_connection():
+    connection = create_mock_connection({}, state=ConnectionState.disconnected)
+    workflows = WorkflowCollection(connection)
+    jobs = JobQueue()
+    workspace = CustomWorkspace(workflows, dummy_generate, jobs)
+
+    doc_graph = {
+        "1": {
+            "class_type": "ETN_Parameter",
+            "inputs": {
+                "name": "param2",
+                "type": "number (integer)",
+                "default": 23,
+                "min": 5,
+                "max": 95,
+            },
+        }
+    }
+    # store embedded graph, but don't make it active yet (disconnected)
+    workspace.set_graph("unicorn", doc_graph, document_name="doc1")
+    assert workspace.workflow_id == "unicorn"
+
+    # connecting should trigger workflows.loaded and set the embedded workflow as active
+    # since a workflow named "unicorn" doesn't exist
+    connection.state = ConnectionState.connected
+    assert workspace.workflow_id == "Embedded Workflow (doc1)"
 
 
 def test_import():
@@ -317,6 +378,43 @@ def test_parameters():
     ]
 
 
+def test_collect_parameters_preserves_style_architecture():
+    graph = {
+        "1": {
+            "class_type": "ETN_KritaStyle",
+            "inputs": {"name": "style", "sampler_preset": "auto"},
+        }
+    }
+    connection = create_mock_connection({"connection1": graph})
+    workflows = WorkflowCollection(connection)
+    workspace = CustomWorkspace(workflows, dummy_generate, JobQueue())
+
+    styles = Styles.list()
+    style = styles.create("anima-test.json")
+    try:
+        style.architecture = Arch.anima
+        style.checkpoints = ["checkpoint.safetensors"]
+        workspace.params["style"] = style.filename
+
+        models = ClientModels()
+        models.checkpoints = {
+            "checkpoint.safetensors": CheckpointInfo("checkpoint.safetensors", Arch.anima)
+        }
+
+        params = workspace.collect_parameters(
+            layers=LayerManager(None),
+            bounds=Bounds(0, 0, 1, 1),
+            models=models,
+            is_live=False,
+            is_animation=False,
+        )
+
+        assert isinstance(params["style"], CustomStyleInput)
+        assert params["style"].models.version is Arch.anima
+    finally:
+        styles.delete(style)
+
+
 def test_parameter_order():
     params = [
         CustomParam(ParamKind.number_int, "Ant", 4, 0, 10),
@@ -340,6 +438,43 @@ def test_parameter_order():
     ]
 
 
+def test_prepare_mask():
+    connection_workflows = {"connection1": make_dummy_graph(42)}
+    connection = create_mock_connection(connection_workflows)
+    workflows = WorkflowCollection(connection)
+
+    jobs = JobQueue()
+    workspace = CustomWorkspace(workflows, dummy_generate, jobs)
+
+    mask = Mask.rectangle(Bounds(10, 10, 40, 40), Bounds(10, 10, 40, 40))
+    canvas_bounds = Bounds(0, 0, 100, 100)
+    selection_bounds = Bounds(12, 12, 34, 34)
+    selection_node = ComfyNode(0, "ETN_KritaSelection", {"context": "automatic", "padding": 3})
+
+    prepared_mask, bounds = workspace.prepare_mask(
+        selection_node, copy(mask), selection_bounds, canvas_bounds
+    )
+    assert bounds == Bounds(6, 6, 48, 48)  # mask.bounds + padding // multiple of 8
+    assert prepared_mask is not None
+    assert prepared_mask.bounds == Bounds(4, 4, 40, 40)
+
+    selection_node.inputs["context"] = "mask_bounds"
+    prepared_mask, bounds = workspace.prepare_mask(
+        selection_node, copy(mask), selection_bounds, canvas_bounds
+    )
+    assert bounds == Bounds(9, 9, 40, 40)  # selection_bounds + padding // multiple of 8
+    assert prepared_mask is not None
+    assert prepared_mask.bounds == Bounds(1, 1, 40, 40)
+
+    selection_node.inputs["context"] = "entire_image"
+    prepared_mask, bounds = workspace.prepare_mask(
+        selection_node, copy(mask), selection_bounds, canvas_bounds
+    )
+    assert bounds == canvas_bounds
+    assert prepared_mask is not None
+    assert prepared_mask.bounds == mask.bounds
+
+
 def test_text_output():
     connection_workflows = {"connection1": make_dummy_graph(42)}
     connection = create_mock_connection(connection_workflows, ComfyObjectInfo({}))
@@ -358,18 +493,21 @@ def test_text_output():
     ]
 
     jobs = JobQueue()
+    job_params = JobParams(Bounds(0, 0, 1, 1), "test")
+    job1 = Job("job1", JobKind.diffusion, job_params)
+    job2 = Job("job2", JobKind.diffusion, job_params)
+
     workspace = CustomWorkspace(workflows, dummy_generate, jobs)
     workspace.outputs_changed.connect(on_output)
-    workspace.show_output(text_messages[0])
-    workspace.show_output(text_messages[1])
+    workspace.handle_output(job1, text_messages[0])
+    workspace.handle_output(job1, text_messages[1])
     assert workspace.outputs == {"1": text_messages[0], "2": text_messages[1]}
 
-    job_params = JobParams(Bounds(0, 0, 1, 1), "test")
-    jobs.job_finished.emit(Job("job1", JobKind.diffusion, job_params))
+    jobs.job_finished.emit(job1)
 
-    workspace.show_output(text_messages[3])
-    workspace.show_output(text_messages[2])
-    jobs.job_finished.emit(Job("job2", JobKind.diffusion, job_params))
+    workspace.handle_output(job2, text_messages[3])
+    workspace.handle_output(job2, text_messages[2])
+    jobs.job_finished.emit(job2)
     assert workspace.outputs == {"1": text_messages[3], "3": text_messages[2]}
 
     assert output_events == [
@@ -382,10 +520,45 @@ def test_text_output():
     ]
 
 
+def test_job_info_output():
+    job = Job("job1", JobKind.diffusion, JobParams(Bounds(0, 0, 1, 1), "test"))
+    job_anim = Job("job2", JobKind.animation, JobParams(Bounds(0, 0, 1, 1), "test"))
+    output1 = JobInfoOutput(name="Name1", batch_mode=OutputBatchMode.images, resize_canvas=True)
+    output2 = JobInfoOutput(name="Name2", batch_mode=OutputBatchMode.animation, resize_canvas=False)
+    output3 = JobInfoOutput(name="Name3", batch_mode=OutputBatchMode.layers, resize_canvas=True)
+
+    workspace = CustomWorkspace(
+        WorkflowCollection(create_mock_connection({})), dummy_generate, JobQueue()
+    )
+
+    workspace.handle_output(job, output1)
+    assert job.params.resize_canvas is True
+    assert job.params.name == "Name1"
+    assert job.kind == JobKind.diffusion
+
+    workspace.handle_output(job, output2)
+    assert job.params.resize_canvas is False
+    assert job.params.name == "Name2"
+    assert job.kind == JobKind.animation
+
+    workspace.handle_output(job_anim, output3)
+    assert job_anim.params.resize_canvas is True
+    assert job_anim.params.name == "Name3"
+    assert job_anim.kind == JobKind.diffusion
+    assert job_anim.params.is_layered is True
+
+
+def img_id(image: Image):
+    data = image.to_bytes()
+    hash = zlib.crc32(data.data())
+    return f"{hash:08x}"
+
+
 def test_expand():
     ext = ComfyWorkflow()
-    in_img, width, height, seed = ext.add("ETN_KritaCanvas", 4)
-    scaled = ext.add("ImageScale", 1, image=in_img, width=width, height=height)
+    in_img, width, height, seed, in_mask = ext.add("ETN_KritaCanvas", 5)  # type: ignore
+    rgba = ext.apply_mask(in_img, in_mask)
+    scaled = ext.add("ImageScale", 1, image=rgba, width=width, height=height)
     ext.add("ETN_KritaOutput", 1, images=scaled)
     inty = ext.add(
         "ETN_Parameter", 1, name="inty", type="number (integer)", default=4, min=0, max=10
@@ -396,7 +569,7 @@ def test_expand():
     choicy = ext.add("ETN_Parameter", 1, name="choicy", type="choice", default="c")
     layer_img = ext.add("ETN_KritaImageLayer", 1, name="layer_img")
     layer_mask = ext.add("ETN_KritaMaskLayer", 1, name="layer_mask")
-    stylie = ext.add("ETN_KritaStyle", 9, name="style", sampler_preset="live")  # type: ignore
+    stylie = ext.add("ETN_KritaStyle", 9, name="style", sampler_preset="auto")  # type: ignore
     ext.add(
         "Sink",
         1,
@@ -423,6 +596,19 @@ def test_expand():
     style.checkpoints = ["checkpoint.safetensors"]
     style.style_prompt = "bee hive"
     style.negative_prompt = "pigoon"
+
+    models = ClientModels()
+    models.checkpoints = {
+        "checkpoint.safetensors": CheckpointInfo("checkpoint.safetensors", Arch.sd15)
+    }
+
+    style_input = CustomStyleInput(
+        models=style.get_models(models.checkpoints),
+        sampling=workflow.sampling_from_style(style, 1.0, False),
+        positive_prompt=style.style_prompt,
+        negative_prompt=style.negative_prompt,
+    )
+
     params = {
         "inty": 7,
         "numby": 3.4,
@@ -431,29 +617,26 @@ def test_expand():
         "choicy": "b",
         "layer_img": Image.create(Extent(4, 4), Qt.GlobalColor.black),
         "layer_mask": Image.create(Extent(4, 4), Qt.GlobalColor.white),
-        "style": style,
+        "style": style_input,
     }
 
     input = CustomWorkflowInput(workflow=ext.root, params=params)
     images = ImageInput.from_extent(Extent(4, 4))
-    images.initial_image = Image.create(Extent(4, 4), Qt.GlobalColor.white)
-
-    models = ClientModels()
-    models.checkpoints = {
-        "checkpoint.safetensors": CheckpointInfo("checkpoint.safetensors", Arch.sd15)
-    }
+    images.initial_image = Image.create(Extent(4, 4), Qt.GlobalColor.red)
 
     w = ComfyWorkflow()
-    w = workflow.expand_custom(w, input, images, 123, models)
+    w = workflow.expand_custom(w, input, images, Bounds(0, 0, 4, 4), 123, models)
+
     expected = [
-        ComfyNode(1, "ETN_LoadImageBase64", {"image": images.initial_image.to_base64()}),
-        ComfyNode(2, "ImageScale", {"image": Output(1, 0), "width": 4, "height": 4}),
-        ComfyNode(3, "ETN_KritaOutput", {"images": Output(2, 0)}),
-        ComfyNode(4, "ETN_LoadImageBase64", {"image": params["layer_img"].to_base64()}),
-        ComfyNode(5, "ETN_LoadMaskBase64", {"mask": params["layer_mask"].to_base64()}),
-        ComfyNode(6, "CheckpointLoaderSimple", {"ckpt_name": "checkpoint.safetensors"}),
+        ComfyNode(1, "ETN_LoadImageCache", {"id": img_id(images.initial_image)}),
+        ComfyNode(2, "ETN_ApplyMaskToImage", {"image": Output(1, 0), "mask": Output(1, 1)}),
+        ComfyNode(3, "ImageScale", {"image": Output(2, 0), "width": 4, "height": 4}),
+        ComfyNode(4, "ETN_KritaOutput", {"images": Output(3, 0)}),
+        ComfyNode(5, "ETN_LoadImageCache", {"id": img_id(params["layer_img"])}),
+        ComfyNode(6, "ETN_LoadImageCache", {"id": img_id(params["layer_mask"])}),
+        ComfyNode(7, "CheckpointLoaderSimple", {"ckpt_name": "checkpoint.safetensors"}),
         ComfyNode(
-            7,
+            8,
             "Sink",
             {
                 "seed": 123,
@@ -462,17 +645,17 @@ def test_expand():
                 "texty": "cat",
                 "booly": False,
                 "choicy": "b",
-                "layer_img": Output(4, 0),
-                "layer_mask": Output(5, 0),
-                "model": Output(6, 0),
-                "clip": Output(6, 1),
-                "vae": Output(6, 2),
+                "layer_img": Output(5, 0),
+                "layer_mask": Output(6, 1),
+                "model": Output(7, 0),
+                "clip": Output(7, 1),
+                "vae": Output(7, 2),
                 "positive": "bee hive",
                 "negative": "pigoon",
-                "sampler": "euler",
-                "scheduler": "sgm_uniform",
-                "steps": 6,
-                "guidance": 1.8,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+                "steps": 20,
+                "guidance": 7.0,
             },
         ),
     ]
@@ -491,8 +674,8 @@ def test_expand_animation():
         Image.create(Extent(4, 4), Qt.GlobalColor.white),
     ])
     in_masks = ImageCollection([
-        Image.create(Extent(4, 4), Qt.GlobalColor.black),
-        Image.create(Extent(4, 4), Qt.GlobalColor.white),
+        Mask.rectangle(Bounds(0, 0, 4, 4), Bounds(0, 0, 4, 4)).to_image(),
+        Mask.rectangle(Bounds(1, 1, 3, 3), Bounds(1, 1, 3, 3)).to_image(),
     ])
     params = {
         "image": in_images,
@@ -504,19 +687,20 @@ def test_expand_animation():
     models = ClientModels()
 
     w = ComfyWorkflow()
-    w = workflow.expand_custom(w, input, images, 123, models)
+    w = workflow.expand_custom(w, input, images, Bounds(0, 0, 4, 4), 123, models)
+
     expected = [
-        ComfyNode(1, "ETN_LoadImageBase64", {"image": in_images[0].to_base64()}),
-        ComfyNode(2, "ETN_LoadImageBase64", {"image": in_images[1].to_base64()}),
+        ComfyNode(1, "ETN_LoadImageCache", {"id": img_id(in_images[0])}),
+        ComfyNode(2, "ETN_LoadImageCache", {"id": img_id(in_images[1])}),
         ComfyNode(3, "ImageBatch", {"image1": Output(1, 0), "image2": Output(2, 0)}),
         ComfyNode(4, "MaskToImage", {"mask": Output(1, 1)}),
         ComfyNode(5, "MaskToImage", {"mask": Output(2, 1)}),
         ComfyNode(6, "ImageBatch", {"image1": Output(4, 0), "image2": Output(5, 0)}),
         ComfyNode(7, "ImageToMask", {"image": Output(6, 0), "channel": "red"}),
-        ComfyNode(8, "ETN_LoadMaskBase64", {"mask": in_masks[0].to_base64()}),
-        ComfyNode(9, "ETN_LoadMaskBase64", {"mask": in_masks[1].to_base64()}),
-        ComfyNode(10, "MaskToImage", {"mask": Output(8, 0)}),
-        ComfyNode(11, "MaskToImage", {"mask": Output(9, 0)}),
+        ComfyNode(8, "ETN_LoadImageCache", {"id": img_id(in_masks[0])}),
+        ComfyNode(9, "ETN_LoadImageCache", {"id": img_id(in_masks[1])}),
+        ComfyNode(10, "MaskToImage", {"mask": Output(8, 1)}),
+        ComfyNode(11, "MaskToImage", {"mask": Output(9, 1)}),
         ComfyNode(12, "ImageBatch", {"image1": Output(10, 0), "image2": Output(11, 0)}),
         ComfyNode(13, "ImageToMask", {"image": Output(12, 0), "channel": "red"}),
         ComfyNode(
@@ -526,6 +710,56 @@ def test_expand_animation():
                 "image": Output(3, 0),
                 "image_alpha": Output(7, 0),
                 "mask": Output(13, 0),
+            },
+        ),
+    ]
+    for node in expected:
+        assert node in w, f"Node {node} not found in\n{json.dumps(w.root, indent=2)}"
+
+
+def test_expand_selection():
+    ext = ComfyWorkflow()
+    select, select_active, off_x, off_y = ext.add(
+        "ETN_KritaSelection", 4, context="automatic", padding=2
+    )
+    canvas, width, height, _seed = ext.add("ETN_KritaCanvas", 4)
+    ext.add(
+        "Sink",
+        1,
+        image=canvas,
+        width=width,
+        height=height,
+        mask=select,
+        has_selection=select_active,
+        offset_x=off_x,
+        offset_y=off_y,
+    )
+
+    params = {}
+    input = CustomWorkflowInput(workflow=ext.root, params=params)
+    images = ImageInput.from_extent(Extent(8, 16))
+    images.initial_image = Image.create(Extent(8, 16), Qt.GlobalColor.red)
+    images.hires_mask = Image.create(Extent(8, 16), Qt.GlobalColor.green)
+    bounds = Bounds(2, 3, 8, 16)  # selection from (2,2) to (6,6)
+    models = ClientModels()
+
+    w = ComfyWorkflow()
+    w = workflow.expand_custom(w, input, images, bounds, 123, models)
+
+    expected = [
+        ComfyNode(1, "ETN_LoadImageCache", {"id": img_id(images.hires_mask)}),
+        ComfyNode(2, "ETN_LoadImageCache", {"id": img_id(images.initial_image)}),
+        ComfyNode(
+            3,
+            "Sink",
+            {
+                "image": Output(2, 0),
+                "width": 8,
+                "height": 16,
+                "mask": Output(1, 1),
+                "has_selection": True,
+                "offset_x": 2,
+                "offset_y": 3,
             },
         ),
     ]

@@ -2,23 +2,24 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from PyQt5.QtWidgets import (
-    QVBoxLayout,
-    QHBoxLayout,
+
+from krita import DoubleSliderSpinBox
+from PyQt6.QtCore import QAbstractItemModel, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QToolButton,
-    QComboBox,
-    QSlider,
+    QVBoxLayout,
     QWidget,
-    QScrollArea,
-    QFrame,
 )
-from PyQt5.QtCore import Qt, QAbstractItemModel, QSize, pyqtSignal
-from PyQt5.QtGui import QIcon
 
 from ..localization import translate as _
 from ..settings import Setting, settings
@@ -62,48 +63,16 @@ class WarningIcon(QLabel):
         self.setVisible(False)
 
 
-class SettingWidget(QWidget):
+class SettingWidgetBase(QWidget):
     value_changed = pyqtSignal()
 
-    def __init__(self, setting: Setting, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._key_label = QLabel(f"<b>{setting.name}</b><br>{setting.desc}")
-        self._key_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        self._checkbox: QCheckBox | None = None
         self._widget: QWidget | None = None
-
+        self._checkbox: QCheckBox | None = None
         self._indent = 0
         self._show_label = True
-        self._layout = QHBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.addWidget(self._key_label)
-        self._layout.addStretch(1)
-        self.setLayout(self._layout)
-        self._set_margins()
-
-    def set_widget(self, widget: QWidget):
-        self._widget = widget
-        self._layout.addWidget(widget)
-
-    def add_button(self, icon: QIcon, tooltip: str, handler):
-        button = QToolButton(self)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setIcon(icon)
-        button.setToolTip(tooltip)
-        button.clicked.connect(handler)
-        self._layout.addWidget(button)
-
-    def add_checkbox(self, text: str):
-        widget = self._widget
-        assert widget is not None
-        checkbox = self._checkbox = QCheckBox(text, self)
-        checkbox.toggled.connect(lambda v: widget.setEnabled(v))
-        self._layout.removeWidget(self._widget)
-        self._layout.addWidget(checkbox)
-        self._layout.addWidget(self._widget)
-        return checkbox
 
     @property
     def visible(self):
@@ -134,6 +103,57 @@ class SettingWidget(QWidget):
         self._set_margins()
 
     @property
+    def value(self):
+        raise NotImplementedError
+
+    @value.setter
+    def value(self, v):
+        raise NotImplementedError
+
+    def set_items(self, items: ComboItemList):
+        raise NotImplementedError
+
+    def _set_margins(self):
+        self.setContentsMargins(self._indent * 16, 4 if self._show_label else 0, 0, 0)
+
+
+class SettingWidget(SettingWidgetBase):
+    def __init__(self, setting: Setting, parent=None):
+        super().__init__(parent)
+
+        self._key_label = QLabel(f"<b>{setting.name}</b><br>{setting.desc}")
+        self._key_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self._layout = QHBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.addWidget(self._key_label)
+        self._layout.addStretch(1)
+        self.setLayout(self._layout)
+        self._set_margins()
+
+    def set_widget(self, widget: QWidget):
+        self._widget = widget
+        self._layout.addWidget(widget)
+
+    def add_button(self, icon: QIcon, tooltip: str, handler):
+        button = QToolButton(self)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setIcon(icon)
+        button.setToolTip(tooltip)
+        button.clicked.connect(handler)
+        self._layout.addWidget(button)
+
+    def add_checkbox(self, text: str):
+        widget = self._widget
+        assert widget is not None
+        checkbox = self._checkbox = QCheckBox(text, self)
+        checkbox.toggled.connect(lambda v: widget.setEnabled(v))
+        self._layout.removeWidget(self._widget)
+        self._layout.addWidget(checkbox)
+        self._layout.addWidget(self._widget)
+        return checkbox
+
+    @property
     def show_label(self):
         return self._show_label
 
@@ -145,9 +165,6 @@ class SettingWidget(QWidget):
 
     def _notify_value_changed(self):
         self.value_changed.emit()
-
-    def _set_margins(self):
-        self.setContentsMargins(self._indent * 16, 4 if self._show_label else 0, 0, 0)
 
 
 class FileListSetting(SettingWidget):
@@ -237,47 +254,32 @@ class SliderSetting(SettingWidget):
         self,
         setting: Setting,
         parent=None,
-        minimum: int | float = 0,
-        maximum: int | float = 100,
-        format="{}",
+        minimum: float = 0,
+        maximum: float = 100,
+        decimals: int = 0,
+        suffix="",
     ):
         super().__init__(setting, parent)
         self._format_string = format
         self._is_float = isinstance(setting.default, float)
 
-        slider_widget = QWidget(self)
-        slider_layout = QHBoxLayout()
-        slider_widget.setLayout(slider_layout)
-        self._slider = QSlider(Qt.Orientation.Horizontal, self)
-        self._slider.setMinimumWidth(200)
-        self._slider.setMaximumWidth(300)
-        self._slider.setMinimum(round(minimum * self.multiplier))
-        self._slider.setMaximum(round(maximum * self.multiplier))
-        self._slider.setSingleStep(1)
-        self._slider.valueChanged.connect(self._change_value)
-        self._label = QLabel(str(self._slider.value()), self)
-        self._label.setMinimumWidth(16)
-        slider_layout.addWidget(self._slider)
-        slider_layout.addWidget(self._label)
-        self.set_widget(slider_widget)
-
-    def _change_value(self, value: int):
-        self._label.setText(self._format_string.format(self.value))
-        self.value_changed.emit()
-
-    @property
-    def multiplier(self):
-        return 1 if not self._is_float else 10
+        self.slider = DoubleSliderSpinBox()
+        self.slider.setRange(minimum, maximum, decimals)
+        self._spin = self.slider.widget()
+        self._spin.setSuffix(suffix)
+        self._spin.setSingleStep(10**-decimals)
+        self._spin.setMinimumWidth(235)
+        self._spin.setMaximumWidth(300)
+        self._spin.valueChanged.connect(self.value_changed)
+        self.set_widget(self._spin)
 
     @property
     def value(self):
-        x = self._slider.value()
-        return x if not self._is_float else x / self.multiplier
+        return self._spin.value()
 
     @value.setter
-    def value(self, v: int | float):
-        x = int(v) if not self._is_float else round(v * self.multiplier)
-        self._slider.setValue(x)
+    def value(self, v: float):
+        self._spin.setValue(v)
 
 
 ComboItemList = list[str] | list[tuple[str, Any]] | list[tuple[str, Any, QIcon]] | type[Enum]
@@ -363,7 +365,7 @@ class TextSetting(SettingWidget):
         self._edit.setText(v)
 
 
-class LineEditSetting(QWidget):
+class LineEditSetting(SettingWidgetBase):
     value_changed = pyqtSignal()
 
     def __init__(self, setting: Setting, parent=None):
@@ -390,10 +392,13 @@ class LineEditSetting(QWidget):
         self._edit.setText(v)
 
 
+_default_switch_labels = (_("On"), _("Off"))
+
+
 class SwitchSetting(SettingWidget):
     _text: tuple[str, str]
 
-    def __init__(self, setting: Setting, text=(_("On"), _("Off")), parent=None):
+    def __init__(self, setting: Setting, text=_default_switch_labels, parent=None):
         super().__init__(setting, parent)
         self._text = text
 
@@ -441,7 +446,7 @@ class SettingsTab(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
-        scroll.setFrameStyle(QFrame.NoFrame)
+        scroll.setFrameStyle(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         frame_layout.addWidget(scroll)
 

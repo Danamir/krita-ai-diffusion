@@ -1,9 +1,72 @@
-aiohttp 
-tqdm
-onnxruntime
-# for mediapipe:
-protobuf>=4.25.3,<5
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
+
+# pinned for mediapipe:
 numpy<2
+
+# ComfyUI
+torchsde
+einops
+transformers>=4.50.3
+tokenizers>=0.13.3
+sentencepiece
+safetensors>=0.4.2
+aiohttp>=3.11.8
+yarl>=1.18.0
+pyyaml
+Pillow
+scipy
+tqdm
+psutil
+kornia>=0.7.1
+spandrel
+pydantic~=2.0
+pydantic-settings~=2.0
+alembic
+SQLAlchemy
+av>=14.2.0
+comfy-kitchen>=0.2.7
+comfy-aimdo>=0.1.8
+requests
+
+# transitive dependencies
+stringzilla
+
+# comfyui_controlnet_aux
+onnxruntime
+importlib_metadata
+huggingface_hub
+scipy
+# Version pinned because later versions require numpy>2 which conflicts with mediapipe
 opencv-python==4.11.0.86
+protobuf>=4.25.3,<5
+filelock
+Pillow
+einops
+pyyaml
+scikit-image
+python-dateutil
+mediapipe
+# Version pinned because newer version requires pycairo, which does not provide binary
+# packages on Linux/macOS
+svglib==1.5.1
+fvcore
+yapf
+omegaconf
+ftfy
+addict
+yacs
+albumentations
+scikit-learn
+matplotlib
+
+# ComfyUI-GGUF
+gguf
+
+# comfyui-tooling-nodes
+argostranslate
 # Version fixed because argostranslate requires it
 sentencepiece==0.2.0
+# argostranslate uses pip to install stuff on demand but doesn't depend on it
+pip

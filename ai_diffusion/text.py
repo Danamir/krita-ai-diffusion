@@ -1,13 +1,37 @@
 from __future__ import annotations
+
+import random
 import re
 from pathlib import Path
-from typing import Tuple, List, NamedTuple
+from typing import NamedTuple
 
-from .api import LoraInput
+from .backend.api import ConditioningInput, LoraInput, RegionInput, WorkflowKind
 from .files import FileCollection, FileSource
 from .localization import translate as _
+from .model.jobs import JobParams
+from .util import PluginError
 from .util import client_logger as log
-from .jobs import JobParams
+
+# Functions to convert between position in Python str objects (unicode) and
+# index in QString char16 arrays (used in eg. QTextCursor).
+
+
+def char16_len(text: str):
+    return len(text.encode("utf-16")) // 2 - 1  # subtract BOM
+
+
+def char16_index_to_str_index(text: str, c16_index: int):
+    bytes_utf16 = text.encode("utf-16")
+    byte_pos = 2 + c16_index * 2  # utf-16 text starts with 2-byte BOM
+    text_until_pos = bytes_utf16[:byte_pos].decode("utf-16")
+    return len(text_until_pos)
+
+
+def str_index_to_char16_index(text: str, index: int):
+    return char16_len(text[:index])
+
+
+# Prompt processing utilities
 
 
 class LoraId(NamedTuple):
@@ -21,12 +45,18 @@ class LoraId(NamedTuple):
         return LoraId(original, original.replace("\\", "/").removesuffix(".safetensors"))
 
 
+pattern_comment = re.compile(r"(?<!\\)#(?![0-9a-fA-F]{6}).*")
+pattern_lora = re.compile(r"<lora:([^:<>]+)(?::(-?[^:<>]*))?>", re.IGNORECASE)
+pattern_layer = re.compile(r"<layer:([^>]+)>", re.IGNORECASE)
+pattern_weight_expr = re.compile(r"\([^:()]+:(-?[\d.]+)\)")
+pattern_wildcard = re.compile(r"(\{[^{}]+\|[^{}]+\})")
+
+
 def strip_prompt_comments(prompt: str):
-    """Strip comments (text after #) from the prompt, unless the # is escaped with a backslash."""
+    """Strip comments (text after #) from the prompt, unless the # is escaped with a backslash,
+    or it's a hex color code."""
     lines = prompt.splitlines()
-    stripped_lines = [
-        re.sub(r"(?<!\\)#.*", "", line).replace(r"\#", "#").rstrip() for line in lines
-    ]
+    stripped_lines = [pattern_comment.sub("", line).replace(r"\#", "#").rstrip() for line in lines]
     return "\n".join(stripped_lines).strip()
 
 
@@ -42,9 +72,6 @@ def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
     return f"{prompt}, {style_prompt}"
 
 
-_pattern_lora = re.compile(r"<lora:([^:<>]+)(?::(-?[^:<>]*))?>", re.IGNORECASE)
-
-
 def extract_loras(prompt: str, lora_files: FileCollection):
     loras: list[LoraInput] = []
 
@@ -56,14 +83,14 @@ def extract_loras(prompt: str, lora_files: FileCollection):
             if file.source is not FileSource.unavailable:
                 lora_filename = Path(file.id).stem.lower()
                 lora_normalized = file.name.lower()
-                if input == lora_filename or input == lora_normalized:
+                if input in (lora_filename, lora_normalized):
                     lora_file = file
                     break
 
         if not lora_file:
             error = _("LoRA not found") + f": {input}"
             log.warning(error)
-            raise Exception(error)
+            raise PluginError(error)
 
         lora_strength: float = lora_file.meta("lora_strength", 1.0)
         if match[2]:
@@ -72,18 +99,66 @@ def extract_loras(prompt: str, lora_files: FileCollection):
             except ValueError:
                 error = _("Invalid LoRA strength for") + f" {input}: {lora_strength}"
                 log.warning(error)
-                raise Exception(error)
+                raise ValueError(error)
 
         loras.append(LoraInput(lora_file.id, lora_strength))
         return ""
 
-    prompt = _pattern_lora.sub(replace, prompt)
+    prompt = pattern_lora.sub(replace, prompt)
     return prompt.strip(), loras
+
+
+def _extract_layers(prompt: str, start_index=1):
+    layer_index = start_index
+    layer_names: dict[str, int] = {}
+
+    for match in pattern_layer.finditer(prompt):
+        name = match[1]
+        idx = layer_names.get(name)
+        if idx is None:
+            idx = layer_index
+            layer_index += 1
+        layer_names[name] = idx
+    return layer_names
+
+
+def extract_layers(cond: ConditioningInput, region: RegionInput | None = None):
+    start_index = 2 if cond.edit_reference else 1
+    start_index += sum(1 if c.mode.is_ip_adapter else 0 for c in cond.control)
+    if region is None:
+        return _extract_layers(cond.positive, start_index)
+    else:
+        start_index += sum(1 if c.mode.is_ip_adapter else 0 for c in region.control)
+        return _extract_layers(region.positive, start_index)
+
+
+def replace_layers(prompt: str, layer_mapping: dict[str, int], replacement="Picture {}"):
+    def replace(match: re.Match[str]):
+        return replacement.format(layer_mapping[match[1]])
+
+    return pattern_layer.sub(replace, prompt).strip()
+
+
+def eval_wildcards(text: str, seed: int):
+    rng = random.Random(seed)
+
+    def replace(match: re.Match[str]):
+        wildcard_name = match[1]
+        options = wildcard_name.split("|")
+        return rng.choice(options).strip("{} ")
+
+    for __ in range(10):
+        prev = text
+        text = pattern_wildcard.sub(replace, text)
+        if text == prev:
+            break
+
+    return text
 
 
 def select_current_parenthesis_block(
     text: str, cursor_pos: int, open_brackets: list[str], close_brackets: list[str]
-) -> Tuple[int, int] | None:
+) -> tuple[int, int] | None:
     """Select the current parenthesis block that the cursor points to."""
     # Ensure cursor position is within valid range
     cursor_pos = max(0, min(cursor_pos, len(text)))
@@ -113,7 +188,7 @@ def select_current_parenthesis_block(
         return None
 
 
-def select_current_word(text: str, cursor_pos: int) -> Tuple[int, int]:
+def select_current_word(text: str, cursor_pos: int) -> tuple[int, int]:
     """Select the word the cursor points to."""
     delimiters = r".,\/!?%^*;:{}=`~()<> " + "\t\r\n"
     start = end = cursor_pos
@@ -129,7 +204,7 @@ def select_current_word(text: str, cursor_pos: int) -> Tuple[int, int]:
     return start, end
 
 
-def select_on_cursor_pos(text: str, cursor_pos: int) -> Tuple[int, int]:
+def select_on_cursor_pos(text: str, cursor_pos: int) -> tuple[int, int]:
     """Return a range in the text based on the cursor_position."""
     return select_current_parenthesis_block(
         text, cursor_pos, ["(", "<"], [")", ">"]
@@ -151,7 +226,7 @@ class ExprNode:
             return f"Expr({self.children}, weight={self.weight})"
 
 
-def parse_expr(expression: str) -> List[ExprNode]:
+def parse_expr(expression: str) -> list[ExprNode]:
     """
     Parses following attention syntax language.
     expr = text | (expr:number)
@@ -231,26 +306,39 @@ def edit_attention(text: str, positive: bool) -> str:
     )
 
 
+digital_source_type = "http://cv.iptc.org/newscodes/digitalsourcetype/"
+
+
+def create_ai_generated_xmp(workflow_kind: WorkflowKind):
+    source_type = "trainedAlgorithmicMedia"
+    if workflow_kind is not WorkflowKind.generate:
+        source_type = "compositeWithTrainedAlgorithmicMedia"
+    return f'''<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+   xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+   Iptc4xmpExt:DigitalSourceType="{digital_source_type}{source_type}"/>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>'''
+
+
 # creates the img text metadata for embedding in PNG files in style like Automatic1111
 def create_img_metadata(params: JobParams):
     meta = params.metadata
 
-    prompt = meta.get("prompt", "")
-    neg_prompt = meta.get("negative_prompt", "")
-    sampler_info = meta.get("sampler", "")
+    prompt = meta.get("prompt_final", meta.get("prompt", ""))
+    neg_prompt = meta.get("negative_prompt_final", meta.get("negative_prompt", ""))
+    sampler = meta.get("sampler", "")
+    steps = meta.get("steps", 0)
+    cfg_scale = meta.get("guidance", 0.0)
     model = meta.get("checkpoint", "Unknown")
     seed = params.seed
     width = params.bounds.width
     height = params.bounds.height
     strength = meta.get("strength", None)
     loras = meta.get("loras", [])
-
-    # Try to extract sampler, steps, and cfg scale from "sampler"
-    match = re.match(r".*?-\s*(.+?)\s*\((\d+)\s*/\s*([\d.]+)\)", sampler_info)
-    if match:
-        sampler, steps, cfg_scale = match.groups()
-    else:
-        sampler, steps, cfg_scale = sampler_info, "Unknown", "Unknown"
 
     # Embed LoRAs in the prompt
     lora_tags = ""

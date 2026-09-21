@@ -1,15 +1,71 @@
+from ai_diffusion.backend.api import ConditioningInput, ControlInput, LoraInput
+from ai_diffusion.backend.resources import ControlMode
+from ai_diffusion.files import File, FileCollection
+from ai_diffusion.image import Bounds
+from ai_diffusion.model.jobs import JobParams
 from ai_diffusion.text import (
-    merge_prompt,
-    extract_loras,
-    edit_attention,
-    select_on_cursor_pos,
+    char16_index_to_str_index,
+    char16_len,
     create_img_metadata,
+    edit_attention,
+    eval_wildcards,
+    extract_layers,
+    extract_loras,
+    merge_prompt,
+    replace_layers,
+    select_on_cursor_pos,
+    str_index_to_char16_index,
     strip_prompt_comments,
 )
-from ai_diffusion.api import LoraInput
-from ai_diffusion.files import File, FileCollection
-from ai_diffusion.jobs import JobParams
-from ai_diffusion.image import Bounds
+
+
+def test_char16_len():
+    assert char16_len("hello") == 5
+    assert char16_len("a") == 1
+    assert char16_len("") == 0
+    assert char16_len("😀") == 2
+    assert char16_len("hello😀") == 7
+    assert char16_len("😀😀") == 4
+    assert char16_len("a😀b") == 4
+    assert char16_len("café") == 4
+
+
+def test_char16_index_to_str_index():
+    text = "a😀b"
+    assert char16_index_to_str_index(text, 0) == 0
+    assert char16_index_to_str_index(text, 1) == 1
+    assert char16_index_to_str_index(text, 3) == 2
+    assert char16_index_to_str_index(text, 4) == 3
+
+
+def test_str_index_to_char16_index():
+    text = "a😀b"
+    assert str_index_to_char16_index(text, 0) == 0
+    assert str_index_to_char16_index(text, 1) == 1
+    assert str_index_to_char16_index(text, 2) == 3
+    assert str_index_to_char16_index(text, 3) == 4
+
+
+def test_roundtrip_conversion():
+    text = "hello😀world"
+    for i in range(len(text)):
+        c16_index = str_index_to_char16_index(text, i)
+        str_index = char16_index_to_str_index(text, c16_index)
+        assert str_index == i
+
+
+def test_char16_index_to_str_index_cjk():
+    text = "你好"
+    assert char16_index_to_str_index(text, 0) == 0
+    assert char16_index_to_str_index(text, 1) == 1
+    assert char16_index_to_str_index(text, 2) == 2
+
+
+def test_str_index_to_char16_index_cjk():
+    text = "你好"
+    assert str_index_to_char16_index(text, 0) == 0
+    assert str_index_to_char16_index(text, 1) == 1
+    assert str_index_to_char16_index(text, 2) == 2
 
 
 def test_strip_prompt_comment():
@@ -26,6 +82,17 @@ def test_strip_prompt_comments_multiline():
     prompt = "Line1 # comment\nLine2 \\# not a comment # comment\n# Line3"
     expected = "Line1\nLine2 # not a comment"
     assert strip_prompt_comments(prompt) == expected
+
+
+def test_strip_prompt_comments_hex_color():
+    assert (
+        strip_prompt_comments("A color code #FF5733 should not be stripped")
+        == "A color code #FF5733 should not be stripped"
+    )
+    assert (
+        strip_prompt_comments("A color code with comment #ff5733 # this is a comment")
+        == "A color code with comment #ff5733"
+    )
 
 
 def test_merge_prompt():
@@ -109,12 +176,78 @@ def test_extract_loras_meta():
     )
 
 
+def test_extract_layers():
+    prompt = ConditioningInput(
+        "A beautiful scenery <layer:Background> and a cat <layer:Foreground>"
+    )
+    layers = extract_layers(prompt)
+    modified_prompt = replace_layers(prompt.positive, layers, replacement="Picture {}")
+    assert modified_prompt == "A beautiful scenery Picture 1 and a cat Picture 2"
+    assert layers == {"Background": 1, "Foreground": 2}
+
+    prompt = ConditioningInput("<layer:Sky> above the mountains")
+    prompt.control = [ControlInput(ControlMode.reference)]
+    prompt.edit_reference = True
+    layers = extract_layers(prompt)
+    modified_prompt = replace_layers(prompt.positive, layers, replacement="Picture {}")
+    assert modified_prompt == "Picture 3 above the mountains"
+    assert layers == {"Sky": 3}
+
+    prompt = ConditioningInput("No layers here")
+    layers = extract_layers(prompt)
+    modified_prompt = replace_layers(prompt.positive, layers, replacement="Picture {}")
+    assert modified_prompt == "No layers here"
+    assert layers == {}
+
+    prompt = ConditioningInput("<layer:layer (merged)> and <layer:ba<yer:k>")
+    layers = extract_layers(prompt)
+    modified_prompt = replace_layers(prompt.positive, layers, replacement="{}")
+    assert modified_prompt == "1 and 2"
+    assert layers == {"layer (merged)": 1, "ba<yer:k": 2}
+
+    prompt = ConditioningInput("<layer:foo> <layer:bar> <layer:foo>")
+    layers = extract_layers(prompt)
+    modified_prompt = replace_layers(prompt.positive, layers, replacement="{}")
+    assert modified_prompt == "1 2 1"
+    assert layers == {"foo": 1, "bar": 2}
+
+
+def test_wildcards():
+    prompt = "beg {a1(/#|b} mid {1|2|3} end"
+    evaluated = eval_wildcards(prompt, seed=42)
+    assert evaluated == "beg a1(/# mid 1 end"
+
+    assert eval_wildcards("no {wild|card", seed=42) == "no {wild|card"
+    assert eval_wildcards("no {wildcard}", seed=42) == "no {wildcard}"
+    assert eval_wildcards("no wild|card}", seed=42) == "no wild|card}"
+
+    assert eval_wildcards("{ bla| piong }", seed=5) == "piong"
+    assert eval_wildcards("{ bla| piong }", seed=2) == "bla"
+
+    assert eval_wildcards("start {ab|{12|34}|cd} end", seed=4) == "start 12 end"
+    assert eval_wildcards("start {ab|{12|34}|cd} end", seed=3) == "start cd end"
+
+
+def test_wildcard_distribution():
+    prompt = "beg {a|b|c} mid {1|2|3} end"
+    results: dict[str, int] = {}
+    for seed in range(1000):
+        evaluated = eval_wildcards(prompt, seed)
+        results[evaluated] = results.get(evaluated, 0) + 1
+
+    assert len(results) == 9
+    assert all(count > 50 for count in results.values())
+    assert all(count < 150 for count in results.values())
+
+
 def test_create_img_metadata_basic():
     bounds = Bounds(0, 0, 512, 768)
     metadata = {
         "prompt": "A cat",
         "negative_prompt": "dog",
-        "sampler": "Euler - euler_a (20 / 7.5)",
+        "sampler": "Euler - euler_a",
+        "steps": 20,
+        "guidance": 7.5,
         "checkpoint": "model.ckpt",
         "strength": 0.8,
         "loras": [],
@@ -130,32 +263,9 @@ def test_create_img_metadata_basic():
     assert "A cat" in result
     assert "Negative prompt: dog" in result
     assert (
-        "Steps: 20, Sampler: euler_a, CFG scale: 7.5, Seed: 12345, Size: 512x768, Model hash: unknown, Model: model.ckpt, Denoising strength: 0.8"
+        "Steps: 20, Sampler: Euler - euler_a, CFG scale: 7.5, Seed: 12345, Size: 512x768, Model hash: unknown, Model: model.ckpt, Denoising strength: 0.8"
         in result
     )
-
-
-def test_create_img_metadata_sampler_unmatched():
-    bounds = Bounds(0, 0, 256, 256)
-    metadata = {
-        "prompt": "Test",
-        "negative_prompt": "",
-        "sampler": "UnknownSampler",
-        "checkpoint": "unknown.ckpt",
-        "loras": [],
-    }
-
-    job_params = JobParams(
-        bounds=bounds,
-        name="test",
-        metadata=metadata,
-        seed=12345,
-    )
-
-    result = create_img_metadata(job_params)
-    assert "Sampler: UnknownSampler" in result
-    assert "Steps: Unknown" in result
-    assert "CFG scale: Unknown" in result
 
 
 def test_create_img_metadata_loras_dict_and_tuple():
@@ -164,7 +274,9 @@ def test_create_img_metadata_loras_dict_and_tuple():
     metadata = {
         "prompt": "Prompt",
         "negative_prompt": "",
-        "sampler": "Euler - euler_a (10 / 5.0)",
+        "sampler": "Euler - euler_a",
+        "steps": 20,
+        "guidance": 7.0,
         "checkpoint": "loramodel.ckpt",
         "loras": [{"name": "lora1", "weight": 0.7}, ("lora2", 0.5), ["lora3", 0.9]],
     }
@@ -190,7 +302,9 @@ def test_create_img_metadata_strength_none_and_one():
         metadata={
             "prompt": "Prompt",
             "negative_prompt": "",
-            "sampler": "Euler - euler_a (5 / 2.0)",
+            "sampler": "Euler - euler_a",
+            "steps": 10,
+            "guidance": 2.0,
             "checkpoint": "model.ckpt",
             "strength": None,
             "loras": [],
@@ -204,7 +318,9 @@ def test_create_img_metadata_strength_none_and_one():
         metadata={
             "prompt": "Prompt",
             "negative_prompt": "",
-            "sampler": "Euler - euler_a (5 / 2.0)",
+            "sampler": "Euler - euler_a",
+            "steps": 10,
+            "guidance": 2.0,
             "checkpoint": "model.ckpt",
             "strength": 1.0,
             "loras": [],
@@ -229,9 +345,9 @@ def test_create_img_metadata_missing_metadata_fields():
     result = create_img_metadata(jp)
     assert "" in result
     assert "Negative prompt: " in result
-    assert "Steps: Unknown" in result
+    assert "Steps: 0" in result
     assert "Sampler: " in result
-    assert "CFG scale: Unknown" in result
+    assert "CFG scale: 0.0" in result
     assert "Seed: 999" in result
     assert "Size: 100x200" in result
     assert "Model: Unknown" in result

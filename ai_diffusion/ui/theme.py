@@ -1,34 +1,43 @@
 from __future__ import annotations
-from PyQt5.QtCore import Qt, QObject, QSize
-from PyQt5.QtGui import QGuiApplication, QPalette, QIcon, QPixmap, QFontMetrics
-from PyQt5.QtWidgets import QVBoxLayout, QLabel, QWidget
+
 from pathlib import Path
 
+from PyQt6.QtCore import QObject, QSize, Qt
+from PyQt6.QtGui import QFontMetrics, QGuiApplication, QIcon, QPalette, QPixmap
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+from ..backend.client import Client
 from ..files import FileFormat
+from ..localization import translate as _
+from ..platform_tools import is_windows
 from ..settings import Setting
 from ..style import Arch
-from ..client import Client
-from ..platform_tools import is_windows
 from ..util import client_logger as log
 
-_palette = QGuiApplication.palette()
+_app = QGuiApplication.instance()
+_palette = _app.palette() if isinstance(_app, QGuiApplication) else QPalette()
 is_dark = _palette.color(QPalette.ColorRole.Window).lightness() < 128
 
 base = _palette.color(QPalette.ColorRole.Base).name()
-green = "#3b3" if is_dark else "#292"
-yellow = "#cc3" if is_dark else "#762"
-red = "#d54" if is_dark else "#c33"
-grey = "#888" if is_dark else "#606060"
-highlight = "#8df" if is_dark else "#357"
+green = "#30b030" if is_dark else "#209020"
+yellow = "#c0c030" if is_dark else "#706020"
+red = "#d07a40" if is_dark else "#c07630"
+grey = "#888888" if is_dark else "#666666"
+highlight = "#80d0f0" if is_dark else "#335577"
+strong_highlight = "#70d0ff" if is_dark else "#2040ff"
 progress_alt = "#a16207" if is_dark else "#ca8a04"
 active = _palette.color(QPalette.ColorRole.Highlight).name()
-line = _palette.color(QPalette.ColorRole.Background).darker(120).name()
+line = _palette.color(QPalette.ColorRole.Window).darker(120).name()
 line_base = _palette.color(QPalette.ColorRole.Base).darker(120).name()
 
 flat_combo_stylesheet = f"""
     QComboBox {{ border: none; background-color: transparent; padding: 1px 12px 1px 2px; }}
     QComboBox QAbstractItemView {{ selection-color: {highlight}; }}
 """
+
+prompt_max_line_count = 40
+
+copy_to_clipboard_string = _("Copy to clipboard")  # keeping translations for future use
 
 icon_path = Path(__file__).parent.parent / "icons"
 
@@ -39,7 +48,7 @@ def icon(name: str):
     if not path.exists():
         path = path.with_suffix(".png")
     if not path.exists():
-        log.error(f"Icon {name} not found for them {theme}")
+        log.error(f"Icon {name} not found for theme {theme}")
         return QIcon()
     return QIcon(str(path))
 
@@ -47,7 +56,10 @@ def icon(name: str):
 def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client | None = None):
     if client:
         if not client.supports_arch(arch):
-            return icon("warning")
+            if arch is Arch.sdxl and client.supports_arch(Arch.illu):
+                arch = Arch.illu  # assume SDXL models are Illustrious if SDXL isn't supported
+            else:
+                return icon("warning")
         if format is FileFormat.diffusion and not client.models.for_arch(arch).has_te_vae:
             return icon("warning")
     if arch is Arch.sd15:
@@ -60,6 +72,8 @@ def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client
         return icon("sd-version-flux")
     elif arch is Arch.flux_k:
         return icon("sd-version-flux-k")
+    elif arch.is_flux2:
+        return icon("sd-version-flux-2")
     elif arch is Arch.illu:
         return icon("sd-version-illu")
     elif arch is Arch.illu_v:
@@ -68,6 +82,14 @@ def checkpoint_icon(arch: Arch, format: FileFormat | None = None, client: Client
         return icon("sd-version-chroma")
     elif arch.is_qwen_like:
         return icon("sd-version-qwen")
+    elif arch is Arch.zimage:
+        return icon("sd-version-z-image")
+    elif arch is Arch.anima:
+        return icon("sd-version-anima")
+    elif arch is Arch.ernie:
+        return icon("sd-version-ernie")
+    elif arch is Arch.krea2:
+        return icon("sd-version-krea2")
     else:
         log.warning(f"Unresolved SD version {arch}, cannot fetch icon")
         return icon("warning")
@@ -87,7 +109,7 @@ def add_header(layout: QVBoxLayout, setting: Setting):
     layout.addWidget(desc_label)
 
 
-def set_text_clipped(label: QLabel, text: str, padding=2):
+def set_text_clipped(label: QLabel, text: str, padding=4):
     metrics = QFontMetrics(label.font())
     elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, label.width() - padding)
     label.setText(elided)

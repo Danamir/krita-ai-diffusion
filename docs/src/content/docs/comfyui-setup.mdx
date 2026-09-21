@@ -21,6 +21,13 @@ or use <ExternalLink href="https://github.com/ltdrdata/ComfyUI-Manager">ComfyUI 
   * Inpaint nodes → <ExternalLink href="https://github.com/Acly/comfyui-inpaint-nodes">Acly/comfyui-inpaint-nodes</ExternalLink>
   * External tooling nodes → <ExternalLink href="https://github.com/Acly/comfyui-tooling-nodes">Acly/comfyui-tooling-nodes</ExternalLink>
 
+## Optional custom nodes
+These nodes will be used by the plugin automatically if they are installed. They
+extend functionality (eg. allowing to load additional model formats) but are not
+required.
+
+  * GGUF → <ExternalLink href="https://github.com/city96/ComfyUI-GGUF">city96/ComfyUI-GGUF</ExternalLink> - support loading .gguf models.
+
 ## Required models
 Some models are _required_ for the plugin to work - you cannot connect if they
 are not found. They are used implicitly across various functionality and
@@ -33,8 +40,8 @@ in `extra_model_paths.yml` will also work.
 Models can be downloaded and placed manually, or via script ([see below](#download-script)).
 
 <LinkButton href="/models#downloading-models">Model list SDXL</LinkButton>
-<LinkButton href="/models?arch-sd15=true&arch-sdxl=false#downloading-models">Model list SD1.5</LinkButton>
-<LinkButton href="/models?arch-flux=true&arch-sdxl=false&kind-clip_vision=false&kind-upscaler=false&kind-inpaint=false&kind-checkpoint=true&set-optional=true#downloading-models">Model list Flux</LinkButton>
+<LinkButton href="/models?arch-flux2_4b=true&arch-sdxl=false&kind-checkpoint=true&set-optional=true#downloading-models">Model list Flux 2</LinkButton>
+<LinkButton href="/models?arch-zimage=true&arch-sdxl=false&kind-checkpoint=true&set-optional=true#downloading-models">Model list Z-Image</LinkButton>
 <LinkButton href="/models?arch-sdxl=false#downloading-models" variant="secondary">Model list (minimal)</LinkButton>
 
 ## Diffusion Model Checkpoints
