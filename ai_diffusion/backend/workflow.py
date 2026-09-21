@@ -1110,11 +1110,6 @@ def inpaint(
     cond_base = cond.copy()
     model, regions = apply_attention_mask(w, model, cond_base, clip, extent.initial)
 
-    if params.use_reference or models.arch is Arch.qwen_2_1:
-        reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or in_image
-        cond_base.control.append(
-            Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
-        )
     control_mask = ImageOutput(inpaint_mask, is_mask=True)
     if params.use_inpaint_model and models.find_control(ControlMode.inpaint):
         cond_base.control.append(inpaint_control(in_image, control_mask, models.arch))
@@ -1126,7 +1121,16 @@ def inpaint(
         ]
     fill_mask = apply_grow(w, in_mask, params)
     fill_mask = scale_to_initial(extent, w, fill_mask, models, is_mask=True)
+    reference_image = in_image
     in_image = fill_masked(w, in_image, fill_mask, params.fill, models, extent.initial)
+
+    if params.use_reference or models.arch is Arch.qwen_2_1:
+        reference = get_inpaint_reference(ensure(images.initial_image), initial_bounds) or (
+            in_image if params.fill is FillMode.green else reference_image
+        )
+        cond_base.control.append(
+            Control(ControlMode.reference, ImageOutput(reference), None, 0.5, (0.2, 0.8))
+        )
 
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
@@ -1263,6 +1267,8 @@ def refine(
     latent_batch = w.batch_latent(latent, misc.batch_count)
     latent_batch = setup_latent_layers(w, latent_batch, extent.desired, misc.layer_count)
     ref_image = in_image if cond.edit_reference else None
+    prompt = encode_prompt(w, cond, clip, regions, ref_image, vae)
+    ref_image = in_image if cond.edit_reference else None
     prompt = encode_prompt(w, cond, clip, regions, ref_image, vae, sampling=sampling)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.desired, vae, models)
     prompt = apply_reference_conditioning(
@@ -1305,6 +1311,8 @@ def refine_region(
     in_mask = apply_grow_feather(w, in_mask, inpaint)
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
+    ref_image = in_image if cond.edit_reference else None
+    prompt = encode_prompt(w, cond, clip, regions, ref_image, vae)
     ref_image = in_image if cond.edit_reference else None
     prompt = encode_prompt(w, cond, clip, regions, ref_image, vae, sampling=sampling)
 
