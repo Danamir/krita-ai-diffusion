@@ -243,6 +243,7 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         model = w.model_sampling_sd3(model)
 
     if arch is Arch.qwen_2_1:
+        model = w.qwen_image_21_cache(model)
         model = w.model_sampling_aura_flow(model, shift=6.0)
 
     if checkpoint.v_prediction_zsnr:

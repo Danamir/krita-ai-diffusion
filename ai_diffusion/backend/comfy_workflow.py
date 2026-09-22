@@ -636,6 +636,9 @@ class ComfyWorkflow:
     def model_sampling_aura_flow(self, model: Output, shift=3.0, sampling="flow"):
         return self.add("ModelSamplingAuraFlow", 1, model=model, shift=shift, sampling=sampling)
 
+    def qwen_image_21_cache(self, model: Output, device="auto", dtype="default"):
+        return self.add("QwenImage21Cache", 1, model=model, device=device, dtype=dtype)
+
     def rescale_cfg(self, model: Output, multiplier=0.7):
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
