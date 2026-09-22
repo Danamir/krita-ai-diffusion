@@ -412,10 +412,13 @@ class ComfyWorkflow:
     ):
         self.sample_count += steps - start_at_step
 
-        if two_pass and arch.supports_split_rendering:
+        two_pass = two_pass and arch.supports_split_rendering
+        if two_pass:
             from ..settings import settings
             first_pass_settings = settings.first_pass_settings(arch)
+            two_pass = first_pass_settings.enabled
 
+        if two_pass:
             first_pass_sampler = first_pass_settings.sampler or sampler
             first_pass_cfg = first_pass_settings.cfg or cfg
             first_pass_ratio = first_pass_settings.ratio

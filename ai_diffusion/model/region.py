@@ -343,7 +343,11 @@ class RootRegion(QObject, ObservableProperties):
         from ..settings import settings
         if settings.use_refiner_pass:
             first_pass_settings = settings.first_pass_settings(self._model.arch)
-            if first_pass_settings.cfg is not None and first_pass_settings.cfg > 1:
+            if (
+                first_pass_settings.enabled
+                and first_pass_settings.cfg is not None
+                and first_pass_settings.cfg > 1
+            ):
                 force_cfg = True
 
         supported = self._model.arch.supports_cfg

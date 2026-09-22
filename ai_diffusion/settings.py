@@ -141,6 +141,7 @@ class PerformanceSettings:
 
 @dataclass
 class FirstPassSettings:
+    enabled: bool = True
     sampler: str = None
     cfg: float = None
     ratio: float = 0.6
@@ -635,7 +636,9 @@ class Settings(QObject):
             json_first_pass = json.loads(self.first_pass_sampler)
             settings_first_pass = json_first_pass.get(arch.name, json_first_pass.get('default', None))
 
-            if settings_first_pass is not None:
+            if settings_first_pass is not None and len(settings_first_pass) == 0:
+                fps.enabled = False
+            elif settings_first_pass is not None:
                 fps.sampler = settings_first_pass.get('sampler', fps.sampler)
                 fps.cfg = settings_first_pass.get('cfg', fps.cfg)
                 fps.ratio = settings_first_pass.get('ratio', fps.ratio)
