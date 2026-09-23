@@ -38,7 +38,7 @@ async def test_connect_success_and_disconnect():
     client = MockClient()
 
     states: list[ConnectionState] = []
-    conn.state_changed.connect(lambda s: states.append(s))
+    conn.state_changed.connect(states.append)
 
     conn.connect(client)
     await _wait_for_state(conn, ConnectionState.connecting, ConnectionState.disconnected)
@@ -64,7 +64,7 @@ async def test_connect_network_error():
     client.connect_error = NetworkError(0, "Connection refused", "ws://mock")
 
     states: list[ConnectionState] = []
-    conn.state_changed.connect(lambda s: states.append(s))
+    conn.state_changed.connect(states.append)
 
     conn.connect(client)
     await _wait_for_state(conn, ConnectionState.connecting, ConnectionState.disconnected)
@@ -85,7 +85,7 @@ async def test_connect_missing_resources():
     client.connect_error = missing
 
     states: list[ConnectionState] = []
-    conn.state_changed.connect(lambda s: states.append(s))
+    conn.state_changed.connect(states.append)
 
     conn.connect(client)
     await _wait_for_state(conn, ConnectionState.connecting, ConnectionState.disconnected)
@@ -111,10 +111,10 @@ async def test_listen_messages_and_reconnect():
     ]
 
     received: list[ClientMessage] = []
-    conn.message_received.connect(lambda msg: received.append(msg))
+    conn.message_received.connect(received.append)
 
     errors: list[str] = []
-    conn.error_changed.connect(lambda e: errors.append(e))
+    conn.error_changed.connect(errors.append)
 
     conn.connect(client)
     await _wait_for_state(conn, ConnectionState.connecting, ConnectionState.disconnected)

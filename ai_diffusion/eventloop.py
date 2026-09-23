@@ -9,7 +9,7 @@ _timer = QTimer()
 
 def process_python_events():
     if not _loop.is_running():
-        _loop.call_soon(lambda: _loop.stop())
+        _loop.call_soon(_loop.stop)
         _loop.run_forever()
 
 

@@ -402,15 +402,15 @@ def generate_html(
 
     # Add benchmark info
     bench_names = list(dict.fromkeys([col["bench_name"] for col in all_columns]))  # Unique, ordered
-    html_parts.append(f'        <div class="info">Benchmarks: {", ".join(bench_names)}</div>\n')
-
-    # Table headers
-    html_parts.append('        <div class="table-wrapper">\n')
-    html_parts.append('            <div class="table-header">\n')
-    html_parts.append("                <table>\n")
-    html_parts.append("                    <thead>\n")
-    html_parts.append("                        <tr>\n")
-    html_parts.append('                            <th class="column-1">Input Image</th>\n')
+    html_parts.extend((
+        f'        <div class="info">Benchmarks: {", ".join(bench_names)}</div>\n',
+        '        <div class="table-wrapper">\n',
+        '            <div class="table-header">\n',
+        "                <table>\n",
+        "                    <thead>\n",
+        "                        <tr>\n",
+        '                            <th class="column-1">Input Image</th>\n',
+    ))
 
     if len(all_columns) <= 2:
         column_2_class = "column-2"
@@ -429,39 +429,43 @@ def generate_html(
             )
     else:
         # Add selectors in headers for > 2 columns case
-        html_parts.append('                            <th class="column-2" id="left-header">\n')
-        html_parts.append("                                <div>Left Column:</div>\n")
-        html_parts.append(
-            '                                <select id="left-select" onchange="updateVisibility()">\n'
-        )
+        html_parts.extend((
+            '                            <th class="column-2" id="left-header">\n',
+            "                                <div>Left Column:</div>\n",
+            '                                <select id="left-select" onchange="updateVisibility()">\n',
+        ))
         for col in all_columns:
             label = f"{col['bench_name']} ({col['arch']})"
             html_parts.append(
                 f'                                    <option value="{col["idx"]}"{" selected" if col["idx"] == 0 else ""}>{label}</option>\n'
             )
-        html_parts.append("                                </select>\n")
-        html_parts.append("                            </th>\n")
-        html_parts.append('                            <th class="column-3" id="right-header">\n')
-        html_parts.append("                                <div>Right Column:</div>\n")
-        html_parts.append(
-            '                                <select id="right-select" onchange="updateVisibility()">\n'
-        )
-        html_parts.append('                                    <option value="">None</option>\n')
+        html_parts.extend((
+            "                                </select>\n",
+            "                            </th>\n",
+            '                            <th class="column-3" id="right-header">\n',
+            "                                <div>Right Column:</div>\n",
+            '                                <select id="right-select" onchange="updateVisibility()">\n',
+            '                                    <option value="">None</option>\n',
+        ))
         for col in all_columns:
             label = f"{col['bench_name']} ({col['arch']})"
             html_parts.append(
                 f'                                    <option value="{col["idx"]}"{" selected" if col["idx"] == 1 else ""}>{label}</option>\n'
             )
-        html_parts.append("                                </select>\n")
-        html_parts.append("                            </th>\n")
+        html_parts.extend((
+            "                                </select>\n",
+            "                            </th>\n",
+        ))
 
-    html_parts.append("                        </tr>\n")
-    html_parts.append("                    </thead>\n")
-    html_parts.append("                </table>\n")
-    html_parts.append("            </div>\n")
-    html_parts.append('            <div class="table-body">\n')
-    html_parts.append("                <table>\n")
-    html_parts.append("                    <tbody>\n")
+    html_parts.extend((
+        "                        </tr>\n",
+        "                    </thead>\n",
+        "                </table>\n",
+        "            </div>\n",
+        '            <div class="table-body">\n',
+        "                <table>\n",
+        "                    <tbody>\n",
+    ))
 
     # Table rows
     for image_name in all_image_names:
@@ -510,34 +514,26 @@ def generate_html(
             seed = result["seed"]
             meta = result.get("meta", {})
 
-            html_parts.append("                    <tr>\n")
-
-            # Input image cell with metadata
-            html_parts.append('                        <td class="column-1">\n')
-            html_parts.append('                            <div class="metadata">\n')
-            html_parts.append(
-                f'                                <div class="metadata-item"><span class="metadata-label">Image:</span><span class="metadata-value">{image_name}</span></div>\n'
-            )
-            html_parts.append(
-                f'                                <div class="metadata-item"><span class="metadata-label">Resolution:</span><span class="metadata-value">{resolution[0]}x{resolution[1]}</span></div>\n'
-            )
+            html_parts.extend((
+                "                    <tr>\n",
+                '                        <td class="column-1">\n',
+                '                            <div class="metadata">\n',
+                f'                                <div class="metadata-item"><span class="metadata-label">Image:</span><span class="metadata-value">{image_name}</span></div>\n',
+                f'                                <div class="metadata-item"><span class="metadata-label">Resolution:</span><span class="metadata-value">{resolution[0]}x{resolution[1]}</span></div>\n',
+            ))
             if "mode" in meta:
                 html_parts.append(
                     f'                                <div class="metadata-item"><span class="metadata-label">Mode:</span><span class="metadata-value">{meta["mode"]}</span></div>\n'
                 )
             # Escape HTML and truncate long prompts for display
             prompt_display = html.escape(prompt) if prompt else "(no prompt)"
-            html_parts.append(
-                f'                                <div class="metadata-item"><span class="metadata-label">Prompt:</span><span class="metadata-value">{prompt_display}</span></div>\n'
-            )
-            html_parts.append(
-                f'                                <div class="metadata-item"><span class="metadata-label">Seed:</span><span class="metadata-value">{seed}</span></div>\n'
-            )
-            html_parts.append("                            </div>\n")
-            html_parts.append(
-                f'                            <div class="image-cell"><img src="{input_img_path}" alt="Input: {image_name}"></div>\n'
-            )
-            html_parts.append("                        </td>\n")
+            html_parts.extend((
+                f'                                <div class="metadata-item"><span class="metadata-label">Prompt:</span><span class="metadata-value">{prompt_display}</span></div>\n',
+                f'                                <div class="metadata-item"><span class="metadata-label">Seed:</span><span class="metadata-value">{seed}</span></div>\n',
+                "                            </div>\n",
+                f'                            <div class="image-cell"><img src="{input_img_path}" alt="Input: {image_name}"></div>\n',
+                "                        </td>\n",
+            ))
 
             # Result columns
             for display_idx, col in enumerate(all_columns):
@@ -549,8 +545,10 @@ def generate_html(
                 else:
                     row_class = ""
 
-                html_parts.append(f'                        <td class="{col_class} {row_class}">\n')
-                html_parts.append('                            <div class="image-cell">\n')
+                html_parts.extend((
+                    f'                        <td class="{col_class} {row_class}">\n',
+                    '                            <div class="image-cell">\n',
+                ))
 
                 if image_name in col["results"]:
                     # Find the matching result (by prompt and seed only, arch is column-specific)
@@ -575,16 +573,12 @@ def generate_html(
                                 result_img_path = f"./benchmark_images/{result_filename}"
                                 full_prompt = result_meta.get("full_prompt", "")
                                 full_prompt = html.escape(full_prompt or "(no prompt)")
-                                html_parts.append(
-                                    '                                <div class="image-container">\n'
-                                )
-                                html_parts.append(
-                                    f'                                    <img src="{result_img_path}" alt="{alt}">\n'
-                                )
-                                html_parts.append(
-                                    f'                                    <div class="image-overlay">{full_prompt}</div>\n'
-                                )
-                                html_parts.append("                                </div>\n")
+                                html_parts.extend((
+                                    '                                <div class="image-container">\n',
+                                    f'                                    <img src="{result_img_path}" alt="{alt}">\n',
+                                    f'                                    <div class="image-overlay">{full_prompt}</div>\n',
+                                    "                                </div>\n",
+                                ))
                         except Exception as e:
                             html_parts.append(
                                 f"                                <p>Error loading image: {e}</p>\n"
@@ -598,15 +592,19 @@ def generate_html(
                         '                                <p style="color: #999;">Not available</p>\n'
                     )
 
-                html_parts.append("                            </div>\n")
-                html_parts.append("                        </td>\n")
+                html_parts.extend((
+                    "                            </div>\n",
+                    "                        </td>\n",
+                ))
 
             html_parts.append("                    </tr>\n")
 
-    html_parts.append("                    </tbody>\n")
-    html_parts.append("                </table>\n")
-    html_parts.append("            </div>\n")
-    html_parts.append("        </div>\n")
+    html_parts.extend((
+        "                    </tbody>\n",
+        "                </table>\n",
+        "            </div>\n",
+        "        </div>\n",
+    ))
 
     # Add JavaScript for dynamic columns
     if len(all_columns) > 2:

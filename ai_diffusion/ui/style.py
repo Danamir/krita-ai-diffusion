@@ -427,8 +427,7 @@ class LoraList(QWidget):
             for lora in root.files.loras:
                 if lora.source is not FileSource.unavailable:
                     parts = Path(lora.id).parts
-                    for i in range(1, len(parts)):
-                        folders.add("/".join(parts[:i]))
+                    folders.update("/".join(parts[:i]) for i in range(1, len(parts)))
             folder_icon = Krita.instance().icon("document-open")
             for folder in sorted(folders, key=lambda x: x.lower()):
                 self._filter_combo.addItem(folder_icon, folder)

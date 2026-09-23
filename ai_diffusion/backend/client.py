@@ -394,6 +394,7 @@ class Client(ABC):
     models: ClientModels
     device_info: DeviceInfo
 
+    @abstractmethod
     async def connect(self) -> None: ...
 
     class DiscoverStatus(NamedTuple):
@@ -417,13 +418,13 @@ class Client(ABC):
     async def cancel(self, job_ids: Iterable[str]): ...
 
     async def refresh(self):
-        pass
+        return
 
     async def translate(self, text: str, lang: str) -> str:
         return text
 
     async def disconnect(self):
-        pass
+        return
 
     @property
     def user(self) -> User | None:
@@ -443,9 +444,11 @@ class Client(ABC):
         return True
 
     @property
+    @abstractmethod
     def features(self) -> ClientFeatures: ...
 
     @property
+    @abstractmethod
     def performance_settings(self) -> PerformanceSettings: ...
 
     async def __aenter__(self):

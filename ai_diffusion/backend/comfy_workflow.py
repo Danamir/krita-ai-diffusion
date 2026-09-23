@@ -9,7 +9,7 @@ from typing import Any, Literal, NamedTuple, TypeVar, overload
 from uuid import uuid4
 
 from ..image import Bounds, Extent, Image, ImageCollection
-from ..util import base_type_match
+from ..util import base_type_match, is_one
 from ..util import client_logger as log
 from .resources import Arch, ControlMode
 
@@ -356,7 +356,7 @@ class ComfyWorkflow:
         if arch.is_flux_like:
             positive = self.flux_guidance(cond.positive, cfg if cfg > 1 else 3.5)
             guider = self.basic_guider(model, positive)
-        elif cfg == 1.0:
+        elif is_one(cfg):
             guider = self.basic_guider(model, cond.positive)
         else:
             guider = self.cfg_guider(model, cond, cfg)

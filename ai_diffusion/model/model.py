@@ -60,7 +60,7 @@ from ..settings import (
 )
 from ..style import Arch, Style, Styles
 from ..text import create_ai_generated_xmp, create_img_metadata, extract_layers
-from ..util import PluginError, clamp, ensure, trim_text, unique
+from ..util import PluginError, clamp, ensure, is_one, trim_text, unique
 from ..util import client_logger as log
 from .connection import Connection, ConnectionState
 from .control import ControlLayer
@@ -198,7 +198,7 @@ class DocumentModel(QObject, ObservableProperties):
                 self.upscale.upscaler = client.models.default_upscaler
 
     def _forward_error(self, error: str):
-        self.report_error(error if error else no_error)
+        self.report_error(error or no_error)
 
     def _forward_validation_error(self, error: str):
         if error:
@@ -272,7 +272,7 @@ class DocumentModel(QObject, ObservableProperties):
             conditioning, ref_layers = self._add_reference_layers(conditioning)
 
         original_conditioning = conditioning
-        inpaint_instruction = inpaint_mode if strength == 1.0 else None
+        inpaint_instruction = inpaint_mode if is_one(strength) else None
         conditioning, loras, prompt_meta = workflow.prepare_prompts(
             conditioning, self.style, seed, arch, inpaint_instruction, ref_layers
         )
@@ -963,7 +963,7 @@ class DocumentModel(QObject, ObservableProperties):
 
     def _performance_settings(self, client: Client):
         result = client.performance_settings
-        if self.resolution_multiplier != 1.0:
+        if not is_one(self.resolution_multiplier):
             result.resolution_multiplier = self.resolution_multiplier
         return result
 
@@ -1496,7 +1496,7 @@ class AnimationWorkspace(QObject, ObservableProperties):
         animation_id = str(uuid.uuid4())
 
         for frame in range(start_frame, end_frame + 1):
-            if layer.node.hasKeyframeAtTime(frame) or m.strength == 1.0:
+            if layer.node.hasKeyframeAtTime(frame) or is_one(m.strength):
                 canvas: Image | Extent = extent
                 if m.strength < 1.0 or m.is_editing:
                     canvas = layer.get_pixels(time=frame)
@@ -1567,7 +1567,7 @@ def get_selection_modifiers(
     feather = settings.selection_feather / 100
     invert = False
 
-    if inpaint_mode is InpaintMode.replace_background and strength == 1.0:
+    if inpaint_mode is InpaintMode.replace_background and is_one(strength):
         # only minimal grow/feather as there is often no desired transition between
         # forground object and background (to be replaced by something else entirely)
         feather = min(feather, 0.01)

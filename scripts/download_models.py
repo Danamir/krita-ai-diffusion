@@ -86,8 +86,7 @@ def list_models(
     if flux2 or all:
         versions.append(Arch.flux2_4b)
     if illu or all:
-        versions.append(Arch.illu)
-        versions.append(Arch.illu_v)
+        versions.extend((Arch.illu, Arch.illu_v))
     if zimage or all:
         versions.append(Arch.zimage)
 

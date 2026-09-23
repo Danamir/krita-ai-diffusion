@@ -965,7 +965,7 @@ def detect_inpaint(
     elif arch.is_sdxl_like:
         result.use_inpaint_model = strength > 0.8
     elif arch in (Arch.flux, Arch.zimage, Arch.anima):
-        result.use_inpaint_model = strength == 1.0
+        result.use_inpaint_model = strength > 0.99
     elif arch.is_edit:
         result.mode = InpaintMode.custom
         result.fill = FillMode.none
@@ -1311,7 +1311,7 @@ def upscale_simple(w: ComfyWorkflow, image: Image, model: str, factor: float):
     upscale_model = w.load_upscale_model(model)
     img = w.load_image(image)
     img = w.upscale_image(upscale_model, img)
-    if factor != 4.0:
+    if not math.isclose(factor, 4.0):
         img = w.scale_image(img, image.extent * factor)
     w.send_image(img)
     return w
@@ -1592,7 +1592,7 @@ def prepare_prompts(
         meta["prompt_final"] = merge_prompt(cond.positive, cond.style, cond.language)
 
     cfg = style.live_cfg_scale if is_live else style.cfg_scale
-    if cfg == 1.0:
+    if math.isclose(cfg, 1.0):
         cond.negative = ""  # CFG 1 does not use negative prompt
     else:
         cond.negative = strip_prompt_comments(cond.negative)
