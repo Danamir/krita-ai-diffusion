@@ -17,6 +17,7 @@ from ai_diffusion.backend.api import (
 from ai_diffusion.backend.client import (
     CheckpointInfo,
     Client,
+    ClientFeatures,
     ClientModels,
     JobInfoOutput,
     OutputBatchMode,
@@ -37,6 +38,7 @@ from ai_diffusion.model.custom_workflow import (
     workflow_parameters,
 )
 from ai_diffusion.model.jobs import Job, JobKind, JobParams, JobQueue
+from ai_diffusion.settings import PerformanceSettings
 from ai_diffusion.style import Style, Styles
 from ai_diffusion.util import PluginError
 
@@ -65,6 +67,14 @@ class MockClient(Client):
 
     async def cancel(self, job_ids: Iterable[str]):
         pass
+
+    @property
+    def features(self) -> ClientFeatures:
+        return ClientFeatures()
+
+    @property
+    def performance_settings(self) -> PerformanceSettings:
+        return PerformanceSettings()
 
 
 def create_mock_connection(

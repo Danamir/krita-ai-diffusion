@@ -9,7 +9,7 @@ from typing import Any, Literal, NamedTuple, TypeVar, overload
 from uuid import uuid4
 
 from ..image import Bounds, Extent, Image, ImageCollection
-from ..util import base_type_match
+from ..util import base_type_match, is_one
 from ..util import client_logger as log
 from .resources import Arch, ControlMode
 
@@ -453,7 +453,7 @@ class ComfyWorkflow:
             if arch.is_flux_like:
                 positive = self.flux_guidance(cond.positive, cfg if cfg > 1 else 3.5)
                 guider = self.basic_guider(model, positive)
-            elif cfg == 1.0:
+            elif is_one(cfg):
                 guider = self.basic_guider(model, cond.positive)
             else:
                 guider = self.cfg_guider(model, cond, cfg)
@@ -912,6 +912,28 @@ class ComfyWorkflow:
             prompt=prompt,
         )
 
+    def text_encode_qwen2(
+        self,
+        clip: Output,
+        vae: Output | None,
+        images: list[Output] | None,
+        positive: str | Output,
+        negative: str | Output,
+    ):
+        images = [] if images is None else images
+        assert len(images) <= 10, "Qwen Image 2.1 supports a maximum of 10 reference images"
+        args = {
+            "clip": clip,
+            "vae": vae,
+            "prompt": positive,
+            "negative_prompt": negative,
+            "resolution": 0,
+        }
+        for i, image in enumerate(images):
+            args[f"images.image_{i + 1}"] = image
+        positive, negative, _ = self.add("TextEncodeQwenImage21", 3, **args)
+        return ConditioningOutput(positive, negative)
+
     def background_region(self, conditioning: Output):
         return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
 
@@ -1248,7 +1270,9 @@ class ComfyWorkflow:
 
     def upscale_image(self, upscale_model: Output, image: Output):
         self.sample_count += 4  # approx, actual number depends on model and image size
-        return self.add("ImageUpscaleWithModel", 1, upscale_model=upscale_model, image=image)
+        rgb, alpha = self.split_rgba(image)
+        rgb = self.add("ImageUpscaleWithModel", 1, upscale_model=upscale_model, image=rgb)
+        return self.join_rgba(rgb, alpha)
 
     def invert_image(self, image: Output):
         return self.add("ImageInvert", 1, image=image)
@@ -1286,14 +1310,16 @@ class ComfyWorkflow:
     ):
         if strength <= 0.0:
             return target
-        return self.add(
+        rgb, alpha = self.split_rgba(target)
+        rgb = self.add(
             "INPAINT_ColorMatch",
             1,
-            target=target,
+            target=rgb,
             reference=reference,
             exclude_mask=exclude_mask,
             strength=strength,
         )
+        return self.join_rgba(rgb, alpha)
 
     def crop_mask(self, mask: Output, bounds: Bounds):
         return self.add(
@@ -1330,6 +1356,12 @@ class ComfyWorkflow:
 
     def mask_to_image(self, mask: Output):
         return self.add("MaskToImage", 1, mask=mask)
+
+    def split_rgba(self, image: Output):
+        return self.add("SplitImageWithAlpha", 2, image=image)
+
+    def join_rgba(self, image: Output, alpha: Output):
+        return self.add("JoinImageWithAlpha", 1, image=image, alpha=alpha)
 
     def batch_mask(self, batch: Output, mask: Output):
         image_batch = self.mask_to_image(batch)

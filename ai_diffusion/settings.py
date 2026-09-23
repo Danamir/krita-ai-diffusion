@@ -101,15 +101,15 @@ class ImageFileFormat(Enum):
 
     @property
     def quality(self):
-        if self in [ImageFileFormat.png]:
+        if self == ImageFileFormat.png:
             return 85
-        elif self in [ImageFileFormat.png_small]:
+        elif self == ImageFileFormat.png_small:
             return 50
-        elif self in [ImageFileFormat.webp]:
+        elif self == ImageFileFormat.webp:
             return 80
-        elif self in [ImageFileFormat.webp_lossless]:
+        elif self == ImageFileFormat.webp_lossless:
             return 100
-        elif self in [ImageFileFormat.jpeg]:
+        elif self == ImageFileFormat.jpeg:
             return 85
         else:
             return 85

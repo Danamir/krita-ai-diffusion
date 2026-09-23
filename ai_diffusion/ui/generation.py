@@ -55,7 +55,7 @@ from ..model.region import RootRegion
 from ..model.root import root
 from ..settings import settings
 from ..style import Styles
-from ..util import ensure, flatten, sequence_equal
+from ..util import ensure, flatten, is_one, sequence_equal
 from . import theme
 from .region import RegionPromptWidget
 from .widget import (
@@ -162,7 +162,7 @@ class HistoryWidget(QListWidget):
             self._last_job_params = job.params
             prompt = job.params.name if job.params.name != "" else "<no prompt>"
             strength = job.params.metadata.get("strength", 1.0)
-            strength = f"{strength * 100:.0f}% - " if strength != 1.0 else ""
+            strength = f"{strength * 100:.0f}% - " if not is_one(strength) else ""
 
             header = QListWidgetItem(f"{job.timestamp.astimezone():%H:%M} - {strength}{prompt}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -214,7 +214,7 @@ class HistoryWidget(QListWidget):
         title = params.name if params.name != "" else "<no prompt>"
         if len(title) > 70:
             title = title[:66] + "..."
-        if params.strength != 1.0:
+        if not is_one(params.strength):
             title = f"{title} @ {params.strength * 100:.0f}%"
         style = Styles.list().find(params.style)
         strings: list[str | list[str]] = [
@@ -661,7 +661,7 @@ class CustomInpaintWidget(QWidget):
 
     def update_widgets_enabled(self):
         arch = self._model.arch
-        self.fill_mode_combo.setEnabled(self.model.strength == 1.0 and not self.model.is_editing)
+        self.fill_mode_combo.setEnabled(is_one(self.model.strength) and not self.model.is_editing)
         self.use_inpaint_button.setEnabled(arch.is_sdxl_like or arch.has_controlnet_inpaint)
         self.use_prompt_focus_button.setVisible(arch is Arch.sd15 or arch.is_sdxl_like)
         self.edit_mode_switch.setEnabled(self.model.can_toggle_edit)
@@ -955,7 +955,7 @@ class GenerationWidget(QWidget):
         pos = QPoint(0, self.generate_button.height())
         if not self.model.edit_mode and self.model.arch.is_edit:
             menu = self.edit_menu
-        elif self.model.strength == 1.0:
+        elif is_one(self.model.strength):
             if self.model.region_only:
                 menu = self.generate_region_menu
             elif self.model.document.selection_bounds:
@@ -1015,7 +1015,7 @@ class GenerationWidget(QWidget):
             if is_edit:
                 icon = "edit"
                 text = _("Edit")
-            elif self.model.strength == 1.0:
+            elif is_one(self.model.strength):
                 icon = "workspace-generation"
                 text = _("Generate")
             else:
@@ -1034,7 +1034,7 @@ class GenerationWidget(QWidget):
                 text += " " + _("Region")
             if mode is InpaintMode.custom:
                 text += " " + _("(Custom)")
-            if self.model.strength == 1.0 and not is_edit:
+            if is_one(self.model.strength) and not is_edit:
                 if mode is InpaintMode.custom:
                     icon = "inpaint-custom"
                 elif is_region_only:
