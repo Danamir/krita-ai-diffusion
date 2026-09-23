@@ -23,5 +23,4 @@ default_checkpoint = {
     Arch.flux2_4b: "flux-2-klein-4b.safetensors",
     Arch.zimage: "z_image_turbo_fp8_e4m3fn.safetensors",
     Arch.anima: "anima-base-v1.0.safetensors",
-    Arch.qwen_2_1: "qwen_image_2.1_int8_convrot.safetensors",
 }

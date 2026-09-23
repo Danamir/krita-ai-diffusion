@@ -294,7 +294,7 @@ class Settings(QObject):
             "cfg": 5.0,
             "steps": 2,
         },
-        "qwen_2_1": {
+        "qwen2": {
             "sampler": "euler_ancestral",
             "cfg": 6.0,
             "steps": 6,

@@ -416,7 +416,7 @@ def test_prepare_prompt_instructions():
     assert result.conditioning.positive == expected_prompt
 
 
-@pytest.mark.parametrize("arch", [Arch.sdxl, Arch.flux2_4b, Arch.flux2_9b, Arch.qwen_2_1])
+@pytest.mark.parametrize("arch", [Arch.sdxl, Arch.flux2_4b, Arch.flux2_9b])
 def test_prepare_prompt_inpaint(arch):
     files = FileLibrary(FileCollection(), FileCollection())
     style = Style(Path("default.json"))
@@ -431,30 +431,10 @@ def test_prepare_prompt_inpaint(arch):
             expected_prompt = "Remove the object.\n\ninpaint prompt"
         case Arch.flux2_9b:
             expected_prompt = "Expand the image to fill the empty canvas.\n\ninpaint prompt"
-        case Arch.qwen_2_1:
-            expected_prompt = (
-                "Fill the empty (green) areas according to the image.\n\ninpaint prompt"
-            )
         case _:
             expected_prompt = "inpaint prompt"
     assert result.conditioning.positive == expected_prompt
     assert result.conditioning.edit_reference == arch.supports_edit
-
-
-def test_prepare_prompt_instructions_qwen_2_1():
-    files = FileLibrary(FileCollection(), FileCollection())
-    style = Style(Path("default.json"))
-    style.checkpoints = []
-    cond = ConditioningInput("base prompt")
-    cond.control = [
-        ControlInput(ControlMode.style, Image.create(Extent(4, 4))),
-        ControlInput(ControlMode.pose, Image.create(Extent(4, 4))),
-    ]
-
-    result = workflow.prepare_prompts(cond, style, seed=1, arch=Arch.qwen_2_1, files=files)
-    assert result.conditioning is not None
-    expected_prompt = "Apply the style from image 1.\nMatch the pose in image 2.\n\nbase prompt"
-    assert result.conditioning.positive == expected_prompt
 
 
 @pytest.mark.parametrize("extent", [Extent(256, 256), Extent(800, 800), Extent(512, 1024)])

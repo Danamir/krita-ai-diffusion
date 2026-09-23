@@ -120,22 +120,9 @@ class ComfyWorkflow:
             for k, v in node_inputs.items():
                 if v is not None:
                     args.setdefault(k, v)
-                elif k not in args and self._is_widget_input(node_name, k):
+                elif k not in args:
                     log.warning(f"Node {node_name} missing required input {k} (no default)")
         return args
-
-    def _is_widget_input(self, node_name: str, input_name: str):
-        if inputs := self.node_defs.inputs(node_name, "required"):
-            if value := inputs.get(input_name, None):
-                io_type = value[0]
-                return not isinstance(io_type, str) or io_type in (
-                    "INT",
-                    "FLOAT",
-                    "BOOL",
-                    "STRING",
-                    "COMBO",
-                )
-        return True
 
     def embed_images(self):
         r: dict[str, dict] = {}
@@ -633,12 +620,6 @@ class ComfyWorkflow:
     def model_sampling_sd3(self, model: Output, shift=3.0):
         return self.add("ModelSamplingSD3", 1, model=model, shift=shift)
 
-    def model_sampling_aura_flow(self, model: Output, shift=3.0, sampling="flow"):
-        return self.add("ModelSamplingAuraFlow", 1, model=model, shift=shift, sampling=sampling)
-
-    def qwen_image_21_cache(self, model: Output, device="auto", dtype="default"):
-        return self.add("QwenImage21Cache", 1, model=model, device=device, dtype=dtype)
-
     def rescale_cfg(self, model: Output, multiplier=0.7):
         return self.add("RescaleCFG", 1, model=model, multiplier=multiplier)
 
@@ -931,28 +912,6 @@ class ComfyWorkflow:
             prompt=prompt,
         )
 
-    def text_encode_qwen_image_21(
-        self,
-        clip: Output,
-        prompt: str | Output,
-        negative_prompt: str | Output,
-        images: list[Output],
-        vae: Output | None = None,
-        resolution: int = 0,
-    ):
-        args: dict[str, Input] = {
-            "clip": clip,
-            "prompt": prompt,
-            "negative_prompt": negative_prompt,
-            "resolution": resolution,
-        }
-        if vae:
-            args["vae"] = vae
-        for i, image in enumerate(images[:10], start=1):
-            args[f"images.image_{i}"] = image
-        positive, negative = self.add("TextEncodeQwenImage21", 2, **args)
-        return ConditioningOutput(positive, negative)
-
     def background_region(self, conditioning: Output):
         return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
 
@@ -1218,9 +1177,6 @@ class ComfyWorkflow:
     def vae_decode(self, vae: Output, latent_image: Output):
         return self.add("VAEDecode", 1, vae=vae, samples=latent_image)
 
-    def remove_alpha(self, image: Output):
-        return self.add("SplitImageWithAlpha", 1, image=image)
-
     def vae_decode_tiled(self, vae: Output, latent_image: Output):
         vae = self.override_vae_device(vae, "cuda:0")
         return self.add(
@@ -1330,8 +1286,6 @@ class ComfyWorkflow:
     ):
         if strength <= 0.0:
             return target
-        target = self.remove_alpha(target)
-        reference = self.remove_alpha(reference)
         return self.add(
             "INPAINT_ColorMatch",
             1,
