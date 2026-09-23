@@ -156,6 +156,8 @@ def _sampler_params(sampling: SamplingInput, extent: Extent, strength: float | N
     if settings.use_refiner_pass and arch is not None:
         if arch.is_sdxl_like:
             two_pass_methods = ("generate", "inpaint", "refine", "refine_region")
+        elif arch is Arch.qwen2:
+            two_pass_methods = ("generate", "refine")
         else:
             two_pass_methods = ("generate",)
 
@@ -239,6 +241,10 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     if arch is Arch.sd3:
         model = w.skip_layer_guidance_sd3(model)
         model = w.model_sampling_sd3(model)
+
+    if arch is Arch.qwen2:
+        model = w.qwen_image_21_cache(model)
+        model = w.model_sampling_aura_flow(model, shift=6.0)
 
     if checkpoint.v_prediction_zsnr:
         model = w.model_sampling_discrete(model, "v_prediction", zsnr=True)
