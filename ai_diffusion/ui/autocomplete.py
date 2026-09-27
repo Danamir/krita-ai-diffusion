@@ -150,6 +150,7 @@ class PromptAutoComplete:
         self._item_delegate = ensure(self._popup.itemDelegate())
         self._completion_prefix = ""
         self._completion_suffix = ""
+        self._lora_mode = False
 
         self._lora_model = FileFilter(root.files.loras)
         self._lora_model.available_only = True
@@ -208,20 +209,40 @@ class PromptAutoComplete:
             pos -= 1
         return text[pos:start]
 
-    def check_completion(self):
-        prefix = self._current_text()
-        name = prefix.removeprefix("<lora:")
-        lora_mode = len(prefix) > len(name)
-        layer_mode = False
-        if not lora_mode:
-            name = prefix.removeprefix("<layer:")
-            layer_mode = len(prefix) > len(name)
+    def _lora_query(self) -> str | None:
+        """Text between an unclosed `<lora:` on the current line and the cursor."""
+        text = self._widget.toPlainText()
+        pos = cursor_position(text, self._widget.textCursor())
+        line = text[text.rfind("\n", 0, pos) + 1 : pos]
+        start = line.rfind("<lora:")
+        if start == -1 or ">" in line[start:]:
+            return None
+        return line[start + len("<lora:") :]
 
-        if lora_mode:
+    def check_completion(self):
+        lora_query = self._lora_query()
+        self._lora_mode = lora_query is not None
+        self._completer.setCompletionMode(
+            QCompleter.CompletionMode.UnfilteredPopupCompletion
+            if self._lora_mode
+            else QCompleter.CompletionMode.PopupCompletion
+        )
+
+        prefix = self._current_text()
+        name = prefix.removeprefix("<layer:")
+        layer_mode = len(prefix) > len(name)
+
+        if lora_query is not None:
+            words = lora_query.replace("*", " ").replace("\\", "/").split()
+            self._lora_model.search_words = words
+            if self._lora_model.rowCount() == 0:
+                self._popup.hide()
+                return
             self._completer.setModel(self._lora_model)
-            self._completion_prefix = name
+            self._completion_prefix = lora_query
             self._completion_suffix = ">"
             self._popup.setItemDelegate(self._item_delegate)
+            name = ""
         elif layer_mode:
             layers = root.active_model.document.layers
             layer_model = QStringListModel([layer.name for layer in layers.images])
@@ -250,7 +271,7 @@ class PromptAutoComplete:
     def _insert_completion(self, completion):
         triggers = ""
         prefix = self._current_text()
-        if prefix.startswith("<lora:"):
+        if self._lora_mode:
             if file := root.files.loras.find(f"{completion}.safetensors"):
                 triggers = " " + file.meta("lora_triggers", "")
         elif prefix.startswith("<layer:"):

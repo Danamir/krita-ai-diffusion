@@ -11,6 +11,7 @@ from ai_diffusion.text import (
     eval_wildcards,
     extract_layers,
     extract_loras,
+    lora_name_triggers,
     merge_prompt,
     replace_layers,
     select_on_cursor_pos,
@@ -415,3 +416,12 @@ class TestSelectOnCursorPos:
         assert select_on_cursor_pos("(foo:1.3), bar, baz", 1) == (0, 9)
         assert select_on_cursor_pos("foo, (bar:1.1), baz", 6) == (5, 14)
         assert select_on_cursor_pos("foo, (bar:1.1) <bar:baz:1.0>", 16) == (15, 28)
+
+
+def test_lora_name_triggers():
+    assert lora_name_triggers("Artist (drawing, in the style of __)") == (
+        "drawing, in the style of Artist"
+    )
+    assert lora_name_triggers("sdxl/style/Pixel Art (pixel art , retro)") == "pixel art, retro"
+    assert lora_name_triggers("sdxl\\Neon (__ lights) (glow)") == "Neon lights, glow"
+    assert lora_name_triggers("sdxl/detail_tweaker") == ""

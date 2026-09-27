@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from itertools import chain
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from krita import DoubleSliderSpinBox, Krita
@@ -63,6 +64,7 @@ from ..model.model import (
     Workspace,
     no_error,
 )
+from ..files import FileSource
 from ..model.properties import Bind, Binding, bind, bind_combo
 from ..model.root import root
 from ..settings import Settings, settings
@@ -71,6 +73,7 @@ from ..text import (
     char16_index_to_str_index,
     char16_len,
     edit_attention,
+    lora_name_triggers,
     pattern_comment,
     pattern_layer,
     pattern_lora,
@@ -552,12 +555,21 @@ class TextPromptWidget(QPlainTextEdit):
             assert isinstance(e, QKeyEvent)
             if e.matches(QKeySequence.StandardKey.DeleteStartOfWord):
                 e.accept()
+            elif self._is_lora_cycle_key(e) and self._lora_at_cursor():
+                e.accept()
+            elif self._is_lora_triggers_key(e) and self._lora_at_cursor():
+                e.accept()
         return super().event(e)
 
     def keyPressEvent(self, e: QKeyEvent | None):
         assert e is not None
         if self._completer.is_active and e.key() in PromptAutoComplete.action_keys:
             e.ignore()
+            return
+
+        if self._is_lora_cycle_key(e) and self.handle_lora_cycle(e.key() == Qt.Key.Key_Down):
+            return
+        if self._is_lora_triggers_key(e) and self.handle_lora_triggers():
             return
 
         self.handle_weight_adjustment(e)
@@ -688,6 +700,77 @@ class TextPromptWidget(QPlainTextEdit):
             cursor.setPosition(min(start_c16 + char16_len(text_after_edit), char16_len(text)))
             cursor.setPosition(min(start_c16, char16_len(text)), QTextCursor.MoveMode.KeepAnchor)
             self.setTextCursor(cursor)
+
+    @staticmethod
+    def _is_lora_cycle_key(event: QKeyEvent):
+        return (
+            event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+            and event.modifiers() == Qt.KeyboardModifier.AltModifier
+        )
+
+    @staticmethod
+    def _is_lora_triggers_key(event: QKeyEvent):
+        return event.key() == Qt.Key.Key_Space and event.modifiers() == (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        )
+
+    def _lora_at_cursor(self):
+        text = self.toPlainText()
+        pos = char16_index_to_str_index(text, self.textCursor().position())
+        for match in pattern_lora.finditer(text):
+            if match.start() <= pos <= match.end():
+                return match
+        return None
+
+    def handle_lora_triggers(self):
+        """Handles Ctrl + Shift + Space to add the trigger words from the LoRA filename."""
+        match = self._lora_at_cursor()
+        if match is None:
+            return False
+        if triggers := lora_name_triggers(match[1].strip()):
+            text = self.toPlainText()
+            rest_of_line = text[match.end() :].split("\n", 1)[0]
+            fill = (" " if rest_of_line.strip() else "\n") + triggers
+            text = text[: match.end()] + fill + text[match.end() :]
+            self.setPlainText(text)
+            cursor = self.textCursor()
+            cursor.setPosition(str_index_to_char16_index(text, match.end() + len(fill)))
+            self.setTextCursor(cursor)
+        return True
+
+    def handle_lora_cycle(self, forward: bool):
+        """Handles Alt + (arrow key up / arrow key down) to switch to the previous/next LoRA."""
+        match = self._lora_at_cursor()
+        if match is None:
+            return False
+        files = sorted(
+            (f for f in root.files.loras if f.source is not FileSource.unavailable),
+            key=lambda f: f.name.lower(),
+        )
+        if not files:
+            return True
+
+        current = match[1].strip().lower()
+        names = [f.name.lower() for f in files]
+        stems = [Path(f.id).stem.lower() for f in files]
+        if current in names or current in stems:
+            found = names.index(current) if current in names else stems.index(current)
+            index = found + (1 if forward else -1)
+        else:  # unknown name, insert by alphabetical position
+            index = sum(1 for n in names if n < current) - (0 if forward else 1)
+        name = files[index % len(files)].name
+
+        text = self.toPlainText()
+        text = text[: match.start(1)] + name + text[match.end(1) :]
+        end = match.end() + len(name) - len(match[1])
+        self.setPlainText(text)
+        cursor = self.textCursor()
+        cursor.setPosition(str_index_to_char16_index(text, end))
+        cursor.setPosition(
+            str_index_to_char16_index(text, match.start()), QTextCursor.MoveMode.KeepAnchor
+        )
+        self.setTextCursor(cursor)
+        return True
 
 
 class StrengthWidget(DoubleSliderSpinBox):

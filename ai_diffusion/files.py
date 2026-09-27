@@ -251,6 +251,7 @@ class FileFilter(QSortFilterProxyModel):
         super().__init__(parent)
         self._available_only = False
         self._name_prefix = ""
+        self._search_words: list[str] = []
         self.setSourceModel(source)
         self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.sort(0)
@@ -273,6 +274,17 @@ class FileFilter(QSortFilterProxyModel):
         self._name_prefix = value
         self.invalidateFilter()
 
+    @property
+    def search_words(self):
+        return self._search_words
+
+    @search_words.setter
+    def search_words(self, value: list[str]):
+        value = [w.lower() for w in value if w]
+        if value != self._search_words:
+            self._search_words = value
+            self.invalidateFilter()
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex):
         if src := self.sourceModel():
             index = src.index(source_row, 0, source_parent)
@@ -283,6 +295,11 @@ class FileFilter(QSortFilterProxyModel):
             if self._name_prefix:
                 name = src.data(index)
                 if not name.startswith(self._name_prefix):
+                    return False
+            if self._search_words:
+                name = src.data(index).lower()
+                path = src.data(index, Qt.ItemDataRole.UserRole).lower().replace("\\", "/")
+                if not all(w in name or w in path for w in self._search_words):
                     return False
         return True
 
