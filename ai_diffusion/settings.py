@@ -306,6 +306,13 @@ class Settings(QObject):
     split_conditioning_sdxl: bool
     _split_conditioning_sdxl = Setting("SDXL split conditioning", False, "Split the conditioning prompts G ang L on ' . ' token for SDXL")
 
+    analyze_image_prompt: str
+    _analyze_image_prompt = Setting(
+        _("Image Analysis Instruction"),
+        "Describe this image in detail, covering the subjects, setting, composition, lighting, colors and art style, so it can be used as a prompt for a text-to-image model. Output only the description, without any introduction.",
+        _("Instruction for the vision-language text encoder when analyzing an image"),
+    )
+
     new_seed_after_apply: bool
     _new_seed_after_apply = Setting(
         _("Live: New Seed after Apply"),
