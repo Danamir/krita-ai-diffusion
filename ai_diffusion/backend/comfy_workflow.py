@@ -1307,9 +1307,11 @@ class ComfyWorkflow:
         return result
 
     def inpaint_image(self, model: Output, image: Output, mask: Output):
-        return self.add(
-            "INPAINT_InpaintWithModel", 1, inpaint_model=model, image=image, mask=mask, seed=834729
+        rgb, alpha = self.split_rgba(image)
+        rgb = self.add(
+            "INPAINT_InpaintWithModel", 1, inpaint_model=model, image=rgb, mask=mask, seed=834729
         )
+        return self.join_rgba(rgb, alpha)
 
     def color_match(
         self, target: Output, reference: Output, exclude_mask: Output | None = None, strength=1.0
@@ -1387,10 +1389,14 @@ class ComfyWorkflow:
         return self.add("ThresholdMask", 1, mask=mask, value=threshold)
 
     def fill_masked(self, image: Output, mask: Output, mode="neutral", falloff: int = 0):
-        return self.add("INPAINT_MaskedFill", 1, image=image, mask=mask, fill=mode, falloff=falloff)
+        rgb, alpha = self.split_rgba(image)
+        rgb = self.add("INPAINT_MaskedFill", 1, image=rgb, mask=mask, fill=mode, falloff=falloff)
+        return self.join_rgba(rgb, alpha)
 
     def blur_masked(self, image: Output, mask: Output, blur: int, falloff: int = 0):
-        return self.add("INPAINT_MaskedBlur", 1, image=image, mask=mask, blur=blur, falloff=falloff)
+        rgb, alpha = self.split_rgba(image)
+        rgb = self.add("INPAINT_MaskedBlur", 1, image=rgb, mask=mask, blur=blur, falloff=falloff)
+        return self.join_rgba(rgb, alpha)
 
     def expand_mask(self, mask: Output, grow: int, blur: int, kernel="gaussian"):
         return self.add("INPAINT_ExpandMask", 1, mask=mask, grow=grow, blur=blur, blur_type=kernel)
