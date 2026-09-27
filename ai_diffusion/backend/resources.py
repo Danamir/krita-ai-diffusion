@@ -200,8 +200,13 @@ class Arch(Enum):
         return self not in [Arch.flux, Arch.flux_k]
 
     @property
+    def supports_alpha(self):
+        return self is Arch.qwen2
+
+    @property
     def supports_split_rendering(self):
         return self in [Arch.sd15, Arch.sdxl, Arch.illu, Arch.illu_v, Arch.zimage, Arch.flux2_4b, Arch.flux2_9b, Arch.qwen2, Arch.krea2]
+
 
     @property
     def is_edit(self):  # edit models make changes to input images

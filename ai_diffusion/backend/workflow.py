@@ -1101,10 +1101,7 @@ def inpaint(
     )
     initial_bounds = extent.convert(target_bounds, "target", "initial")
 
-    if models.arch is Arch.flux:
-        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
-
-    in_image = w.load_image(ensure(images.initial_image))
+    in_image = w.load_image(ensure(images.initial_image), alpha=models.arch.supports_alpha)
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.hires_mask))
     inpaint_mask = apply_grow_feather(w, in_mask, params)
@@ -1256,9 +1253,7 @@ def refine(
     model = apply_ip_adapter(w, model, cond.control, models)
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
-    if models.arch is Arch.flux:
-        clip = Clip(w.override_clip_device(clip.model, "cpu"), clip.arch)
-    in_image = w.load_image(image)
+    in_image = w.load_image(image, alpha=models.arch.supports_alpha)
     in_image = scale_to_initial(extent, w, in_image, models)
     prompt, latent = encode_prompt(w, cond, clip, vae, regions, in_image, checkpoint.tiled_vae, sampling=sampling)
     latent = latent or vae_encode(w, vae, in_image, checkpoint.tiled_vae)
@@ -1296,7 +1291,7 @@ def refine_region(
     model, regions = apply_attention_mask(w, model, cond, clip, extent.initial)
     model = apply_regional_ip_adapter(w, model, cond.regions, extent.initial, models)
 
-    in_image = w.load_image(ensure(images.initial_image))
+    in_image = w.load_image(ensure(images.initial_image), alpha=models.arch.supports_alpha)
     in_image = scale_to_initial(extent, w, in_image, models)
     in_mask = w.load_mask(ensure(images.hires_mask))
     in_mask = apply_grow_feather(w, in_mask, inpaint)
