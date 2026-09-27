@@ -53,7 +53,6 @@ from .settings_widgets import (
     ComboBoxSetting,
     FileListSetting,
     MultiLineTextSetting,
-    LineEditSetting,
     SettingsTab,
     SliderSetting,
     SpinBoxSetting,
@@ -692,7 +691,10 @@ class DiffusionSettings(SettingsTab):
         nsfw_settings = [(_("Disabled"), 0.0), (_("Basic"), 0.65), (_("Strict"), 0.8)]
         self._widgets["nsfw_filter"].set_items(nsfw_settings)
         DiffusionSettings._warning_shown = self._warning_shown or settings.nsfw_filter > 0
-        self.add("analyze_image_prompt", LineEditSetting(S._analyze_image_prompt, self))
+        self.add(
+            "analyze_image_prompt",
+            MultiLineTextSetting(S._analyze_image_prompt, line_count=4, parent=self),
+        )
 
         self.add_separator("Experimental settings", 36)
         self.add("use_refiner_pass", SwitchSetting(S._use_refiner_pass, ("Refiner pass", "Single pass"), self))
