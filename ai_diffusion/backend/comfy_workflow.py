@@ -1317,11 +1317,12 @@ class ComfyWorkflow:
         if strength <= 0.0:
             return target
         rgb, alpha = self.split_rgba(target)
+        reference_rgb, _ = self.split_rgba(reference)
         rgb = self.add(
             "INPAINT_ColorMatch",
             1,
             target=rgb,
-            reference=reference,
+            reference=reference_rgb,
             exclude_mask=exclude_mask,
             strength=strength,
         )
