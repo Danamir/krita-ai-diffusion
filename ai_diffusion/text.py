@@ -9,7 +9,7 @@ from .backend.api import ConditioningInput, LoraInput, RegionInput, WorkflowKind
 from .files import FileCollection, FileSource
 from .localization import translate as _
 from .model.jobs import JobParams
-from .util import PluginError
+from .util import PluginError, is_one
 from .util import client_logger as log
 
 # Functions to convert between position in Python str objects (unicode) and
@@ -65,7 +65,7 @@ def merge_prompt(prompt: str, style_prompt: str, language: str = ""):
         prompt = f"lang:{language} {prompt} lang:en "
     if style_prompt == "":
         return prompt
-    elif "{prompt}" in style_prompt:
+    elif "{prompt}" in style_prompt:  # noqa
         return style_prompt.replace("{prompt}", prompt)
     elif prompt == "":
         return style_prompt
@@ -301,7 +301,7 @@ def edit_attention(text: str, positive: bool) -> str:
 
     return (
         attention_string
-        if weight == 1.0 and open_bracket == "("
+        if is_one(weight) and open_bracket == "("
         else f"{open_bracket}{attention_string}:{weight:.1f}{close_bracket}"
     )
 
@@ -357,13 +357,13 @@ def create_img_metadata(params: JobParams):
 
     # Construct output
     lines = []
-    lines.append(full_prompt)
-    lines.append(f"Negative prompt: {neg_prompt}")
-    lines.append(
-        f"Steps: {steps}, Sampler: {sampler}, CFG scale: {cfg_scale}, Seed: {seed}, Size: {width}x{height}, Model hash: unknown, Model: {model}"
-    )
+    lines.extend((
+        full_prompt,
+        f"Negative prompt: {neg_prompt}",
+        f"Steps: {steps}, Sampler: {sampler}, CFG scale: {cfg_scale}, Seed: {seed}, Size: {width}x{height}, Model hash: unknown, Model: {model}",
+    ))
 
-    if strength is not None and strength != 1.0:
+    if strength is not None and not is_one(strength):
         lines[-1] += f", Denoising strength: {strength}"
 
     return "\n".join(lines)

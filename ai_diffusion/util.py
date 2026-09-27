@@ -1,6 +1,7 @@
 import json
 import logging
 import logging.handlers
+import math
 import os
 import statistics
 import sys
@@ -137,6 +138,10 @@ def median_or_zero(values: Iterable[float]) -> float:
 
 def isnumber(x):
     return isinstance(x, (int, float))
+
+
+def is_one(x: float):
+    return math.isclose(x, 1.0)
 
 
 def base_type_match(a, b):

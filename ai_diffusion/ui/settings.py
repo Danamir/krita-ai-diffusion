@@ -774,10 +774,8 @@ class InterfaceSettings(SettingsTab):
         plugin_tags_path = util.plugin_dir / "tags"
         user_tags_path = util.user_data_dir / "tags"
         files = set()
-        for path in plugin_tags_path.glob("*.csv"):
-            files.add(path.stem)
-        for path in user_tags_path.glob("*.csv"):
-            files.add(path.stem)
+        files.update(path.stem for path in plugin_tags_path.glob("*.csv"))
+        files.update(path.stem for path in user_tags_path.glob("*.csv"))
 
         return list(files)
 

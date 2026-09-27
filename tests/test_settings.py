@@ -55,7 +55,7 @@ def test_save():
 def test_performance_preset():
     s = Settings()
     s.performance_preset = PerformancePreset.low
-    assert s.batch_size == 2 and s.max_pixel_count == 2 and s.resolution_multiplier == 1.0
+    assert s.batch_size == 2 and s.max_pixel_count == 2 and s.resolution_multiplier == 1
 
 
 def style_is_default(style):

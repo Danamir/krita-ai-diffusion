@@ -140,7 +140,7 @@ def test_extra_model_dirs(pytestconfig):
 
     server = Server(str(server_dir), get_backend())
     # Requires test_install_and_run to setup the server
-    assert server.state in [ServerState.stopped]
+    assert server.state == ServerState.stopped
 
     for dir in model_dirs:
         assert (server_dir / "models" / dir).exists()
@@ -153,7 +153,7 @@ async def test_verify_and_fix(pytestconfig, local_download_server):
 
     server = Server(str(server_dir), get_backend())
     # Requires test_install_and_run to setup the server
-    assert server.state in [ServerState.stopped]
+    assert server.state == ServerState.stopped
 
     model_file = resources.required_models[0]
     model_path = server_dir / model_file.files[0].path

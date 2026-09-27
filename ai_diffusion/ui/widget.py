@@ -1023,7 +1023,7 @@ class GenerateButton(QPushButton):
             seed_rect = rect.adjusted(rect.width() - cost_width - seed_width, 0, 0, 0)
             style.drawItemPixmap(painter, seed_rect, align, pixmap)
 
-        if is_hover and self.model.resolution_multiplier != 1.0:
+        if is_hover and self.model.resolution_multiplier != 1:
             pixmap = self._resolution_icon.pixmap(fm.height())
             resolution_rect = rect.adjusted(
                 rect.width() - cost_width - seed_width - pixmap_width - 4, 0, 0, 0

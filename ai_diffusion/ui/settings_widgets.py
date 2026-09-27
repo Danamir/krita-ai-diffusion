@@ -147,7 +147,7 @@ class SettingWidget(SettingWidgetBase):
         widget = self._widget
         assert widget is not None
         checkbox = self._checkbox = QCheckBox(text, self)
-        checkbox.toggled.connect(lambda v: widget.setEnabled(v))
+        checkbox.toggled.connect(widget.setEnabled)
         self._layout.removeWidget(self._widget)
         self._layout.addWidget(checkbox)
         self._layout.addWidget(self._widget)

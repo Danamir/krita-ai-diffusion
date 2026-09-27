@@ -324,7 +324,7 @@ class UpscaleWidget(QWidget):
         set_text_clipped(self.prompt_label, text, padding=padding)
 
     def _update_factor(self):
-        if self.factor_widget.value == 1.0 and self.model.upscale.use_diffusion:
+        if self.factor_widget.value == 1 and self.model.upscale.use_diffusion:
             self.upscale_button.operation = _("Refine")
         else:
             self.upscale_button.operation = _("Upscale")

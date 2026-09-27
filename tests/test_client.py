@@ -211,7 +211,7 @@ async def test_upload_lora(comfy_server: Server, tmp_path: Path):
             assert msg.job_id == "JOB-ID"
             assert msg.progress >= upload_progress
             upload_progress = msg.progress
-            if upload_progress == 1.0:
+            if upload_progress >= 1.0:
                 break
 
     await task

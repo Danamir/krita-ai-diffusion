@@ -2,7 +2,7 @@ import math
 from copy import copy
 from dataclasses import MISSING, Field, dataclass, field, fields, is_dataclass
 from enum import Enum
-from types import GenericAlias, UnionType
+from types import UnionType
 from typing import Any, get_args, get_origin
 
 from ..image import Bounds, Extent, Image, ImageCollection
@@ -349,18 +349,19 @@ class Deserializer:
         return self._value(field_type, value)
 
     def _value(self, cls, value):
-        if is_dataclass(cls):
-            return self._object(cls, value)
-        elif issubclass(cls, Enum):
-            return cls[value]
-        elif issubclass(cls, Image):
-            return self._images[value]
-        elif issubclass(cls, tuple):
-            return cls(*value)
-        elif isinstance(cls, GenericAlias) and issubclass(get_origin(cls), tuple):
+        origin = get_origin(cls)
+        if origin is tuple:
             return tuple(value)
-        elif isinstance(cls, GenericAlias) and issubclass(get_origin(cls), list):
+        elif origin is list:
             return [self._value(get_args(cls)[0], v) for v in value]
+        elif is_dataclass(cls):
+            return self._object(cls, value)
+        elif isinstance(cls, type) and issubclass(cls, Enum):
+            return cls[value]
+        elif isinstance(cls, type) and issubclass(cls, Image):
+            return self._images[value]
+        elif isinstance(cls, type) and issubclass(cls, tuple):
+            return cls(*value)
         else:
             return value
 
