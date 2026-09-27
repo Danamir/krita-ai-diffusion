@@ -73,6 +73,7 @@ from ..text import (
     char16_index_to_str_index,
     char16_len,
     edit_attention,
+    lora_name_triggers,
     pattern_comment,
     pattern_layer,
     pattern_lora,
@@ -556,6 +557,8 @@ class TextPromptWidget(QPlainTextEdit):
                 e.accept()
             elif self._is_lora_cycle_key(e) and self._lora_at_cursor():
                 e.accept()
+            elif self._is_lora_triggers_key(e) and self._lora_at_cursor():
+                e.accept()
         return super().event(e)
 
     def keyPressEvent(self, e: QKeyEvent | None):
@@ -565,6 +568,8 @@ class TextPromptWidget(QPlainTextEdit):
             return
 
         if self._is_lora_cycle_key(e) and self.handle_lora_cycle(e.key() == Qt.Key.Key_Down):
+            return
+        if self._is_lora_triggers_key(e) and self.handle_lora_triggers():
             return
 
         self.handle_weight_adjustment(e)
@@ -703,6 +708,12 @@ class TextPromptWidget(QPlainTextEdit):
             and event.modifiers() == Qt.KeyboardModifier.AltModifier
         )
 
+    @staticmethod
+    def _is_lora_triggers_key(event: QKeyEvent):
+        return event.key() == Qt.Key.Key_Space and event.modifiers() == (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        )
+
     def _lora_at_cursor(self):
         text = self.toPlainText()
         pos = char16_index_to_str_index(text, self.textCursor().position())
@@ -710,6 +721,22 @@ class TextPromptWidget(QPlainTextEdit):
             if match.start() <= pos <= match.end():
                 return match
         return None
+
+    def handle_lora_triggers(self):
+        """Handles Ctrl + Shift + Space to add the trigger words from the LoRA filename."""
+        match = self._lora_at_cursor()
+        if match is None:
+            return False
+        if triggers := lora_name_triggers(match[1].strip()):
+            text = self.toPlainText()
+            rest_of_line = text[match.end() :].split("\n", 1)[0]
+            fill = (" " if rest_of_line.strip() else "\n") + triggers
+            text = text[: match.end()] + fill + text[match.end() :]
+            self.setPlainText(text)
+            cursor = self.textCursor()
+            cursor.setPosition(str_index_to_char16_index(text, match.end() + len(fill)))
+            self.setTextCursor(cursor)
+        return True
 
     def handle_lora_cycle(self, forward: bool):
         """Handles Alt + (arrow key up / arrow key down) to switch to the previous/next LoRA."""

@@ -53,6 +53,15 @@ pattern_weight_expr = re.compile(r"\([^:()]+:(-?[\d.]+)\)")
 pattern_wildcard = re.compile(r"(\{[^{}]+\|[^{}]+\})")
 
 
+def lora_name_triggers(name: str) -> str:
+    """Trigger words in parenthesis of a LoRA filename, `__` stands for the name without them."""
+    filename = re.split(r"[/\\]", name)[-1]
+    groups = re.findall(r"\(([^()]*)\)", filename)
+    own_name = re.sub(r"\s*\([^()]*\)", "", filename).strip()
+    words = (w.strip() for group in groups for w in group.split(","))
+    return ", ".join(w.replace("__", own_name) for w in words if w)
+
+
 def strip_prompt_comments(prompt: str):
     """Strip comments (text after #) from the prompt, unless the # is escaped with a backslash,
     or it's a hex color code."""
