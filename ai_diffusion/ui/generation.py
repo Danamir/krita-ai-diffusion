@@ -24,8 +24,10 @@ from PyQt6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QPalette,
+    QTextCursor,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -56,6 +58,7 @@ from ..model.region import RootRegion
 from ..model.root import root
 from ..settings import settings
 from ..style import Styles
+from ..text import pattern_lora
 from ..util import ensure, flatten, is_one, sequence_equal
 from . import theme
 from .region import RegionPromptWidget
@@ -66,6 +69,7 @@ from .widget import (
     QueueButton,
     StrengthWidget,
     StyleSelectWidget,
+    TextPromptWidget,
     WorkspaceSelectWidget,
     create_wide_tool_button,
 )
@@ -771,6 +775,10 @@ class GenerationWidget(QWidget):
         self.analyze_button = create_wide_tool_button(
             "image-analyze", _("Analyze Image (copy description to clipboard)"), self
         )
+        self.analyze_button.clicked.connect(self.show_analyze_menu)
+        self.analyze_menu = self._create_analyze_menu()
+        self._analyze_selection: tuple[QTextCursor, str] | None = None  # when the menu opened
+        self._analyze_target: tuple[QTextCursor, str] | None = None  # for the running analysis
         strength_layout.addWidget(self.add_control_button)
         strength_layout.addWidget(self.add_region_button)
         strength_layout.addWidget(self.analyze_button)
@@ -854,8 +862,7 @@ class GenerationWidget(QWidget):
                 model.edit_mode_changed.connect(self.update_generate_options),
                 self.add_control_button.clicked.connect(self.add_control),
                 self.add_region_button.clicked.connect(self.add_region),
-                self.analyze_button.clicked.connect(model.analyze_image),
-                model.image_analyzed.connect(self.copy_image_description),
+                model.image_analyzed.connect(self.apply_image_description),
                 self.region_prompt.activated.connect(model.generate),
                 self.generate_button.clicked.connect(model.generate),
                 self.generate_button.ctrl_clicked.connect(model.generate_replace),
@@ -958,6 +965,30 @@ class GenerationWidget(QWidget):
         menu.addAction(self._mk_action(InpaintMode.custom, _("Edit (Custom)"), "inpaint-custom"))
         return menu
 
+    def _create_analyze_menu(self):
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        for text, instruction in _analyze_instructions:
+            action = QAction(text, menu)
+            action.setToolTip(instruction or _("Instruction from Settings > Diffusion"))
+            action.triggered.connect(lambda _checked, i=instruction: self.analyze_image(i))
+            menu.addAction(action)
+        return menu
+
+    def show_analyze_menu(self):
+        # The tool button doesn't take focus, so a prompt being edited still has it here
+        self._analyze_selection = None
+        widget = QApplication.focusWidget()
+        if isinstance(widget, TextPromptWidget) and widget.textCursor().hasSelection():
+            cursor = widget.textCursor()
+            self._analyze_selection = (cursor, cursor.selectedText())
+        pos = QPoint(0, self.analyze_button.height())
+        self.analyze_menu.exec(self.analyze_button.mapToGlobal(pos))
+
+    def analyze_image(self, instruction: str | None):
+        self._analyze_target = self._analyze_selection
+        self.model.analyze_image(instruction)
+
     def show_inpaint_menu(self):
         width = self.generate_button.width() + self.inpaint_mode_button.width()
         pos = QPoint(0, self.generate_button.height())
@@ -998,10 +1029,19 @@ class GenerationWidget(QWidget):
     def add_control(self):
         self.model.active_regions.add_control()
 
-    def copy_image_description(self, text: str):
+    def apply_image_description(self, text: str):
+        pos = self.analyze_button.mapToGlobal(self.analyze_button.rect().bottomLeft())
+        target, self._analyze_target = self._analyze_target, None
+        if target:
+            # The cursor follows edits made meanwhile, only replace if the selection is unchanged
+            cursor, selected = target
+            if not cursor.isNull() and cursor.selectedText() == selected:
+                loras = [m.group(0) for m in pattern_lora.finditer(selected)]
+                cursor.insertText(" ".join([text, *loras]))
+                QToolTip.showText(pos, _("Image description inserted in prompt"), self.analyze_button)
+                return
         if clipboard := QGuiApplication.clipboard():
             clipboard.setText(text)
-            pos = self.analyze_button.mapToGlobal(self.analyze_button.rect().bottomLeft())
             QToolTip.showText(pos, _("Image description copied to clipboard"), self.analyze_button)
 
     def update_generate_options(self):
@@ -1073,6 +1113,23 @@ class GenerationWidget(QWidget):
         self.generate_button.operation = text
         self.generate_button.setIcon(theme.icon(icon))
 
+
+# (menu text, instruction) - None uses the instruction from settings
+_analyze_instructions: list[tuple[str, str | None]] = [
+    (
+        _("Short caption"),
+        "In a few words, say what the main subject of this image is, as a short caption for a text-to-image prompt, for example 'a woman in a red coat holding an umbrella'. Mention only the subject itself, not the style, lighting, background or scene. Output only the caption, without a period.",
+    ),
+    (
+        _("Medium caption"),
+        "In one sentence, describe the main subject of this image as a caption for a text-to-image prompt, with its key visible details such as clothing, colors, pose and action, for example 'a young woman with short black hair in a long red coat and black boots, holding an open umbrella and walking forward'. Mention only the subject itself, not the art style, lighting, background or scene. Output only the caption, without a period.",
+    ),
+    (_("Description"), None),
+    (
+        _("Factual description"),
+        "Write a detailed text-to-image prompt that would recreate this image as faithfully as possible. Start with the medium and art style, then describe the main subjects (gender and age when apparent, physical appearance, clothing, pose, action and position in the frame), secondary elements, the environment, the composition and camera angle, the lighting and the dominant colors. Use factual visual language: no mood, atmosphere, emotions, story or subjective adjectives such as 'beautiful' or 'cozy'. Quote any visible text verbatim. Write natural sentences in a single paragraph, without labels or headings, and output only the prompt.",
+    ),
+]
 
 _region_mask_button_icons = {
     True: theme.icon("region-alpha-active"),

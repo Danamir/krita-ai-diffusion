@@ -638,12 +638,12 @@ class DocumentModel(QObject, ObservableProperties):
         eventloop.run(_report_errors(self, self._enqueue_job(job, input)))
         return job
 
-    def analyze_image(self):
+    def analyze_image(self, instruction: str | None = None):
         try:
             mask, _ = self._doc.create_mask_from_selection(SelectionModifiers(multiple=1))
             bounds = mask.bounds if mask else Bounds(0, 0, *self._doc.extent)
             image = self._get_current_image(bounds)
-            prompt = settings.analyze_image_prompt
+            prompt = instruction or settings.analyze_image_prompt
             input = workflow.prepare_analyze_image(image, self.arch, prompt, mask)
             job = self.jobs.add(JobKind.image_analysis, JobParams(bounds, "[Analyze]"))
         except Exception as e:
