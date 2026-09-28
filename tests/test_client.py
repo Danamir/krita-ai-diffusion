@@ -15,7 +15,7 @@ from ai_diffusion.backend.api import (
     WorkflowKind,
 )
 from ai_diffusion.backend.client import ClientEvent, resolve_arch
-from ai_diffusion.backend.comfy_client import ComfyClient, parse_url, websocket_url
+from ai_diffusion.backend.comfy_client import ComfyClient, find_model, parse_url, websocket_url
 from ai_diffusion.backend.network import NetworkError
 from ai_diffusion.backend.resources import ControlMode
 from ai_diffusion.backend.server import Server, ServerBackend, ServerState
@@ -145,6 +145,22 @@ async def test_disconnect(comfy_server: Server):
 def test_parse_url(url, expected_http, expected_ws):
     parsed = parse_url(url)
     assert parsed == expected_http and websocket_url(parsed) == expected_ws
+
+
+@pytest.mark.parametrize(
+    "models,te,expected",
+    [
+        (["qwen_3_4b_bf16.safetensors", "qwen_3_4b_fp8_mixed.safetensors"], "qwen_3_4b", "fp8"),
+        (["qwen_3_4b_fp8_mixed.safetensors", "qwen_3_4b_int8.safetensors"], "qwen_3_4b", "int8"),
+        (["qwen_3_4b.safetensors", "sub/qwen_3_4b_int8.safetensors"], "qwen_3_4b", "int8"),
+        (["krita/qwen_3_4b_bf16.safetensors", "qwen_3_4b_int8.safetensors"], "qwen_3_4b", "bf16"),
+        (["t5xxl_fp8_e4m3fn.safetensors", "t5xxl_fp16.safetensors"], "t5", "fp16"),
+    ],
+)
+def test_find_text_encoder_prefers_quantized(models, te, expected):
+    id = resources.ResourceId(resources.ResourceKind.text_encoder, Arch.all, te)
+    found = find_model(models, id)
+    assert found is not None and expected in found
 
 
 def check_client_info(client: ComfyClient):
