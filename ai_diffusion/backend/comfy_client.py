@@ -698,6 +698,16 @@ def _check_for_missing_nodes(nodes: ComfyObjectInfo):
     ]
 
 
+def _quant_bonus(kind: ResourceKind, name: str):
+    # prefer quantized text encoders over bf16/fp16 within the same search pattern (must stay < 100)
+    if kind is ResourceKind.text_encoder:
+        if "int8" in name:
+            return 60
+        if "fp8" in name:
+            return 50
+    return 0
+
+
 def _find_model(
     model_list: Sequence[str],
     kind: ResourceKind,
@@ -718,7 +728,7 @@ def _find_model(
             pattern = pattern.lower()
             if all(p in name for p in pattern.split("*")):
                 # prioritize names with "krita" in the path, then earlier matches
-                prio = 0 if "krita" in name else i * 100 + len(name)
+                prio = -100 if "krita" in name else i * 100 + len(name) - _quant_bonus(kind, name)
                 matches.append((filename, prio))
 
     matches = sorted(matches, key=lambda m: m[1])
