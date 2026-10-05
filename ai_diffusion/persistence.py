@@ -386,10 +386,17 @@ def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
         for node in prompt.values():
             if node.get("class_type") in _comfy_sampler_types:
                 inputs = node.get("inputs", {})
+                if isinstance(inputs.get("guider"), list):
+                    # SamplerCustomAdvanced: conditionings on the guider (CFGGuider, BasicGuider)
+                    guider_inputs = prompt.get(inputs["guider"][0], {}).get("inputs", {})
+                    inputs = {
+                        "positive": guider_inputs.get("positive", guider_inputs.get("conditioning")),
+                        "negative": guider_inputs.get("negative"),
+                    }
                 if isinstance(inputs.get("positive"), list):
-                    positive = _find_text_prompt_custom(prompt, inputs["positive"][0])
+                    positive = _find_text_prompt_custom(prompt, *inputs["positive"][:2])
                 if isinstance(inputs.get("negative"), list):
-                    negative = _find_text_prompt_custom(prompt, inputs["negative"][0])
+                    negative = _find_text_prompt_custom(prompt, *inputs["negative"][:2])
 
         if not positive.strip():
             # try detection from clip text encode, ie. for regional workflows
@@ -403,7 +410,7 @@ def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
                 else:
                     continue
                 if isinstance(text_input, list):  # only linked texts, literal ones are mostly negatives
-                    positive += _find_text_prompt_custom(prompt, text_input[0], extended=True)
+                    positive += _find_text_prompt_custom(prompt, *text_input[:2], extended=True)
 
             if "\n" in positive:
                 positive = "\n".join(dict.fromkeys(positive.split("\n")))
@@ -424,8 +431,10 @@ def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
 
 
 _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]
-_comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler"]
+# Generated texts are not stored in the image, zeroed out conditionings have no text
+_comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler", "TextGenerate", "ConditioningZeroOut"]
 _comfy_prompt_text_nodes = ["CLIPTextEncode", "ImpactWildcardProcessor"]
+_comfy_text_links = ["conditioning", "positive", "text", "string", "prompt"]  # Followed first by the fallback
 
 
 def _find_text_prompt(workflow: dict[str, dict], node_key: str):
@@ -439,8 +448,13 @@ def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     return ""
 
 
-def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=False) -> str:
-    """Follow the inputs of a ComfyUI prompt node until finding the text typed by the user."""
+def _find_text_prompt_custom(
+    workflow: dict[str, dict], node_key: str, output: int = 0, extended=False
+) -> str:
+    """Follow the inputs of a ComfyUI prompt node until finding the text typed by the user.
+
+    The output index selects the positive or negative text of nodes having both.
+    """
     node = workflow.get(node_key)
     if not node:
         return ""
@@ -448,14 +462,28 @@ def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=
     class_type = node.get("class_type", "")
     inputs = node.get("inputs", {})
 
+    def follow(link: list) -> str:  # Link to another node: [node_key, output_index]
+        return _find_text_prompt_custom(workflow, link[0], *link[1:2], extended=extended)
+
     def resolve(value) -> str:
-        if isinstance(value, list):  # Link to another node: [node_key, output_index]
-            return _find_text_prompt_custom(workflow, value[0], extended)
+        if isinstance(value, list):
+            return follow(value)
         return value if isinstance(value, str) else ""
 
     def combine() -> str:
-        linked = (i for i in inputs.values() if isinstance(i, list))
-        return "".join(_find_text_prompt_custom(workflow, i[0], extended) + "\n" for i in linked)
+        return "".join(follow(i) + "\n" for i in inputs.values() if isinstance(i, list))
+
+    def resolve_bool(value) -> bool | None:
+        if isinstance(value, list):  # Linked boolean, ie. PrimitiveBoolean
+            value = workflow.get(value[0], {}).get("inputs", {}).get("value")
+        return value if isinstance(value, bool) else None
+
+    def branch(condition, if_true, if_false) -> str:
+        """Follow the branch selected by the condition, or both when it can not be evaluated."""
+        if (selected := resolve_bool(condition)) is not None:
+            return resolve(if_true if selected else if_false)
+        texts = (resolve(if_true), resolve(if_false))
+        return "\n".join(dict.fromkeys(text for text in texts if text.strip()))
 
     if "CLIPTextEncode" in class_type:
         if text := inputs.get("text", "") or inputs.get("text_g", ""):
@@ -467,13 +495,17 @@ def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=
         return combine()
     elif class_type == "Text _O":
         return resolve(inputs.get("text", ""))
+    elif class_type.startswith("SDXLPromptStyler"):
+        return resolve(inputs.get("text_negative" if output == 1 else "text_positive", ""))
     elif class_type == "ImpactConditionalBranch":
-        return resolve(inputs.get("tt_value", "")) + "\n" + resolve(inputs.get("ff_value", ""))
+        return branch(inputs.get("cond"), inputs.get("tt_value", ""), inputs.get("ff_value", ""))
+    elif "on_true" in inputs and "on_false" in inputs:  # ComfySwitchNode and similar switches
+        return branch(inputs.get("switch", inputs.get("boolean")), inputs["on_true"], inputs["on_false"])
     elif class_type in _comfy_ignore_nodes:
         return ""
 
-    # Fallback: follow the first linked input
-    for value in inputs.values():
+    # Fallback: follow a text or conditioning input, or else the first linked input
+    for value in [inputs[key] for key in _comfy_text_links if key in inputs] + list(inputs.values()):
         if isinstance(value, list):
-            return _find_text_prompt_custom(workflow, value[0], extended)
+            return follow(value)
     return ""
