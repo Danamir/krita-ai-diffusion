@@ -361,57 +361,66 @@ def _read_image_text(filename: str) -> dict[str, str]:
 def import_prompt_from_file(model: DocumentModel):
     exts = (".png", ".jpg", ".jpeg", ".webp")
     filename = model.document.filename
-    if model.regions.positive == "" and model.regions.negative == "" and filename.endswith(exts):
+    if model.regions.positive == "" and model.regions.negative == "" and filename.lower().endswith(exts):
         try:
-            image_text = _read_image_text(filename)
-            # A1111
-            if text := image_text.get("parameters"):
-                if "Negative prompt:" in text:
-                    positive, negative = text.split("Negative prompt:", 1)
-                    model.regions.positive = positive.strip()
-                    model.regions.negative = negative.split("Steps:", 1)[0].strip()
-            # ComfyUI
-            elif text := image_text.get("prompt"):
-                prompt: dict[str, dict] = json.loads(text)
-                for node in prompt.values():
-                    if node["class_type"] in _comfy_sampler_types:
-                        inputs = node["inputs"]
-                        if inputs.get("positive", None) is not None:
-                            model.regions.positive = _find_text_prompt_custom(prompt, inputs["positive"][0])
-                        if inputs.get("negative", None) is not None:
-                            model.regions.negative = _find_text_prompt_custom(prompt, inputs["negative"][0])
-
-                if not model.regions.positive:
-                    # try detection from clip text encode, ie. for regional workflows
-                    for node in prompt.values():
-                        if node["class_type"] == "CLIPTextEncode":
-                            inputs = node["inputs"]
-                            model.regions.positive += _find_text_prompt_custom(prompt, inputs["text"][0], extended=True)
-                        elif node["class_type"] == "CLIPTextEncodeSDXL":
-                            inputs = node["inputs"]
-                            model.regions.positive += _find_text_prompt_custom(prompt, inputs["text_g"][0], extended=True)
-
-                    if "\n" in model.regions.positive:
-                        positives = model.regions.positive.split("\n")
-                        positives = dict.fromkeys(positives).keys()
-                        model.regions.positive = "\n".join(positives)
-                        model.regions.positive = model.regions.positive.strip("\n")
-
-            # ComfyUI fallback (older workflows)
-            elif text := reader.text("workflow"):
-                prompt: dict[str, dict] = json.loads(text)
-                for node in prompt.get("nodes", []):
-                    if node["type"] in _comfy_prompt_text_nodes:
-                        widgets_values = node.get("widgets_values", [])  # type: list[str]
-                        if len(widgets_values) > 1 and widgets_values[1] and widgets_values[1].strip():
-                            model.regions.positive = widgets_values[1].strip()
-                            break
-                        elif len(widgets_values) > 0 and widgets_values[0] and widgets_values[0].strip():
-                            model.regions.positive = widgets_values[0].strip()
-                            break
-
+            positive, negative = _extract_prompts(_read_image_text(filename))
+            model.regions.positive = positive
+            model.regions.negative = negative
         except Exception as e:
-            log.warning(f"Failed to read PNG metadata from {filename}: {e}")
+            log.warning(f"Failed to read PNG metadata from {filename}: {type(e).__name__} {e}")
+
+
+def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
+    """Positive and negative prompts found in the text metadata of an A1111 or ComfyUI image."""
+    positive, negative = "", ""
+
+    # A1111
+    if text := image_text.get("parameters"):
+        if "Negative prompt:" in text:
+            positive, negative = text.split("Negative prompt:", 1)
+            negative = negative.split("Steps:", 1)[0]
+
+    # ComfyUI
+    elif text := image_text.get("prompt"):
+        prompt: dict[str, dict] = json.loads(text)
+        for node in prompt.values():
+            if node.get("class_type") in _comfy_sampler_types:
+                inputs = node.get("inputs", {})
+                if isinstance(inputs.get("positive"), list):
+                    positive = _find_text_prompt_custom(prompt, inputs["positive"][0])
+                if isinstance(inputs.get("negative"), list):
+                    negative = _find_text_prompt_custom(prompt, inputs["negative"][0])
+
+        if not positive.strip():
+            # try detection from clip text encode, ie. for regional workflows
+            positive = ""
+            for node in prompt.values():
+                inputs = node.get("inputs", {})
+                if node.get("class_type") == "CLIPTextEncode":
+                    text_input = inputs.get("text")
+                elif node.get("class_type") == "CLIPTextEncodeSDXL":
+                    text_input = inputs.get("text_g")
+                else:
+                    continue
+                if isinstance(text_input, list):  # only linked texts, literal ones are mostly negatives
+                    positive += _find_text_prompt_custom(prompt, text_input[0], extended=True)
+
+            if "\n" in positive:
+                positive = "\n".join(dict.fromkeys(positive.split("\n")))
+
+    # ComfyUI fallback (older workflows)
+    elif text := image_text.get("workflow"):
+        workflow: dict = json.loads(text)
+        for node in workflow.get("nodes", []):
+            if node.get("type") in _comfy_prompt_text_nodes:
+                # ImpactWildcardProcessor: populated text in second position, CLIPTextEncode: text in first
+                widgets_values = node.get("widgets_values", [])[:2]
+                values = [v for v in widgets_values if isinstance(v, str) and v.strip()]
+                if values:
+                    positive = values[-1]
+                    break
+
+    return positive.strip(), negative.strip()
 
 
 _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]
@@ -430,77 +439,41 @@ def _find_text_prompt(workflow: dict[str, dict], node_key: str):
     return ""
 
 
-def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=False):
-    if node := workflow.get(node_key):
-        if "CLIPTextEncode" in node["class_type"]:
-            input = node.get("inputs", {}).get("text", "") or node.get("inputs", {}).get("text_g", "")
-            if input:
-                if isinstance(input, list):
-                    return _find_text_prompt_custom(workflow, input[0], extended)
-                else:
-                    return input
-        elif node["class_type"] == "ImpactWildcardProcessor":
-            input = node.get("inputs", {}).get("populated_text", "")
-            if input:
-                if isinstance(input, list):
-                    return _find_text_prompt_custom(workflow, input[0], extended)
-                else:
-                    return input
-        elif node["class_type"] == "Concat Text _O":
-            input = node.get("inputs", [])
-            if isinstance(input, list):
-                prompt = ""
-                for i in input:
-                    prompt += _find_text_prompt_custom(workflow, i["link"], extended) + "\n"
+def _find_text_prompt_custom(workflow: dict[str, dict], node_key: str, extended=False) -> str:
+    """Follow the inputs of a ComfyUI prompt node until finding the text typed by the user."""
+    node = workflow.get(node_key)
+    if not node:
+        return ""
 
-                return prompt
-            elif isinstance(input, dict):
-                prompt = ""
-                for i in input.values():
-                    if i:
-                        prompt += _find_text_prompt_custom(workflow, i[0], extended) + "\n"
+    class_type = node.get("class_type", "")
+    inputs = node.get("inputs", {})
 
-                return prompt
+    def resolve(value) -> str:
+        if isinstance(value, list):  # Link to another node: [node_key, output_index]
+            return _find_text_prompt_custom(workflow, value[0], extended)
+        return value if isinstance(value, str) else ""
 
-        elif node["class_type"] == "SeargePromptCombiner" and extended:
-            input = node.get("inputs", [])
-            if isinstance(input, list):
-                prompt = ""
-                for i in input:
-                    prompt += _find_text_prompt_custom(workflow, i["link"], extended) + "\n"
+    def combine() -> str:
+        linked = (i for i in inputs.values() if isinstance(i, list))
+        return "".join(_find_text_prompt_custom(workflow, i[0], extended) + "\n" for i in linked)
 
-                return prompt
-            elif isinstance(input, dict):
-                prompt = ""
-                for i in input.values():
-                    if i:
-                        prompt += _find_text_prompt_custom(workflow, i[0], extended) + "\n"
+    if "CLIPTextEncode" in class_type:
+        if text := inputs.get("text", "") or inputs.get("text_g", ""):
+            return resolve(text)
+    elif class_type == "ImpactWildcardProcessor":
+        if text := inputs.get("populated_text", ""):
+            return resolve(text)
+    elif class_type == "Concat Text _O" or (class_type == "SeargePromptCombiner" and extended):
+        return combine()
+    elif class_type == "Text _O":
+        return resolve(inputs.get("text", ""))
+    elif class_type == "ImpactConditionalBranch":
+        return resolve(inputs.get("tt_value", "")) + "\n" + resolve(inputs.get("ff_value", ""))
+    elif class_type in _comfy_ignore_nodes:
+        return ""
 
-                return prompt
-
-        elif node["class_type"] == "Text _O":
-            input = node.get("inputs", {}).get("text", "")
-            if isinstance(input, list):
-                return _find_text_prompt_custom(workflow, input[0], extended)
-            else:
-                return input
-
-        elif node["class_type"] == "ImpactConditionalBranch":
-            input_tt = node.get("inputs", {}).get("tt_value", "")
-            if isinstance(input_tt, list):
-                input_tt = _find_text_prompt_custom(workflow, input_tt[0], extended)
-                
-            input_ff = node.get("inputs", {}).get("ff_value", "")
-            if isinstance(input_ff, list):
-                input_ff = _find_text_prompt_custom(workflow, input_ff[0], extended)
-
-            return input_tt + "\n" + input_ff
-
-        elif node["class_type"] in _comfy_ignore_nodes:
-            return ""
-
-        # Fallback
-        for input in node.get("inputs", {}).values():
-            if isinstance(input, list):
-                return _find_text_prompt_custom(workflow, input[0], extended)
+    # Fallback: follow the first linked input
+    for value in inputs.values():
+        if isinstance(value, list):
+            return _find_text_prompt_custom(workflow, value[0], extended)
     return ""
