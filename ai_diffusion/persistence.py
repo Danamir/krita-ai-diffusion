@@ -23,6 +23,7 @@ from .model.properties import deserialize, serialize
 from .model.region import Region, RootRegion
 from .settings import settings
 from .style import Style, Styles
+from .text import pattern_lora
 from .util import client_logger as log
 from .util import encode_json
 
@@ -415,6 +416,12 @@ def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
             if "\n" in positive:
                 positive = "\n".join(dict.fromkeys(positive.split("\n")))
 
+        # Append the LoRAs applied to the model, unless already in the prompt
+        tagged = {match[1].lower() for match in pattern_lora.finditer(positive)}
+        tags = [tag for name, tag in _find_lora_tags(prompt) if name.lower() not in tagged]
+        if tags:
+            positive = "\n".join([positive.strip(), *tags])
+
     # ComfyUI fallback (older workflows)
     elif text := image_text.get("workflow"):
         workflow: dict = json.loads(text)
@@ -435,6 +442,50 @@ _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "Sample
 _comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler", "TextGenerate", "ConditioningZeroOut"]
 _comfy_prompt_text_nodes = ["CLIPTextEncode", "ImpactWildcardProcessor"]
 _comfy_text_links = ["conditioning", "positive", "text", "string", "prompt"]  # Followed first by the fallback
+_comfy_model_links = ["model", "guider"]  # Followed from a sampler up to the model loader
+
+
+def _find_lora_tags(prompt: dict[str, dict]) -> list[tuple[str, str]]:
+    """LoRAs applied to the diffusion model, as (name, `<lora:name:strength>` tag) in application order.
+
+    Follows the model chain from the samplers up to the loader, ignoring the unused branches.
+    The name is normalized like the remote LoRA files: forward slashes, without extension.
+    """
+    found: list[tuple[str, Any]] = []
+    visited = set()
+
+    def follow(node_key: str):
+        if node_key in visited or node_key not in prompt:
+            return
+        visited.add(node_key)
+        inputs = prompt[node_key].get("inputs", {})
+
+        node_loras = []
+        if isinstance(inputs.get("lora_name"), str):  # LoraLoader, LoraLoaderModelOnly
+            node_loras.append((inputs["lora_name"], inputs.get("strength_model")))
+        for value in inputs.values():  # rgthree Power Lora Loader entries
+            if isinstance(value, dict) and value.get("on") and isinstance(value.get("lora"), str):
+                node_loras.append((value["lora"], value.get("strength")))
+        found.extend(reversed(node_loras))  # Whole list reversed below, from the loader to the sampler
+
+        for key in _comfy_model_links:
+            if isinstance(inputs.get(key), list):
+                follow(inputs[key][0])
+
+    for node_key, node in prompt.items():
+        if node.get("class_type") in _comfy_sampler_types:
+            follow(node_key)
+
+    tags: dict[str, str] = {}
+    for file, strength in reversed(found):
+        if file == "None":
+            continue
+        name = file.replace("\\", "/")
+        name = name[: name.rfind(".")] if "." in name else name
+        if name not in tags:
+            linked = not isinstance(strength, (int, float)) or isinstance(strength, bool)
+            tags[name] = f"<lora:{name}>" if linked else f"<lora:{name}:{strength:g}>"
+    return list(tags.items())
 
 
 def _find_text_prompt(workflow: dict[str, dict], node_key: str):
