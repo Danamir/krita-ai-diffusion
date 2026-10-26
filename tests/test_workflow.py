@@ -9,6 +9,7 @@ from PyQt6.QtCore import QByteArray
 
 from ai_diffusion.backend import workflow
 from ai_diffusion.backend.api import (
+    CheckpointInput,
     ConditioningInput,
     ControlInput,
     CustomWorkflowInput,
@@ -32,10 +33,10 @@ from ai_diffusion.backend.client import (
 )
 from ai_diffusion.backend.cloud_client import CloudClient
 from ai_diffusion.backend.comfy_client import ComfyClient
-from ai_diffusion.backend.comfy_workflow import ComfyWorkflow
+from ai_diffusion.backend.comfy_workflow import ComfyObjectInfo, ComfyWorkflow
 from ai_diffusion.backend.resources import ControlMode, ResourceKind, resource_id
 from ai_diffusion.backend.workflow import detect_inpaint
-from ai_diffusion.files import File, FileCollection, FileLibrary, FileSource
+from ai_diffusion.files import File, FileCollection, FileFormat, FileLibrary, FileSource
 from ai_diffusion.image import Bounds, Extent, Image, ImageCollection, Mask
 from ai_diffusion.pose import Pose
 from ai_diffusion.settings import PerformanceSettings
@@ -268,6 +269,64 @@ def test_anima_lllite_control_workflow():
     assert w.root[str(model.node - 1)]["inputs"]["weights"] == "anima-lllite-anytest.safetensors"
     assert any(n["class_type"] == "ETN_control_load" for n in w.root.values())
     assert not any(n["class_type"] == "ControlNetLoader" for n in w.root.values())
+
+
+@pytest.mark.parametrize("custom_nodes", [False, True])
+def test_moss_image_workflow(custom_nodes: bool):
+    w = ComfyWorkflow()
+    models = ClientModels()
+    if custom_nodes:
+        models.node_inputs = ComfyObjectInfo({"MOSSImageUNETLoader": {}, "MOSSImageCLIPLoader": {}})
+    models.checkpoints = {
+        "MOSS": CheckpointInfo(
+            "moss_image_sft_int8_convrot.safetensors", Arch.moss, FileFormat.diffusion
+        )
+    }
+    models.resources[resource_id(ResourceKind.text_encoder, Arch.all, "qwen_35_9b")] = (
+        "qwen3.5_9b_int8_convrot.safetensors"
+    )
+    models.resources[resource_id(ResourceKind.vae, Arch.moss, "default")] = (
+        "flux2-vae_small.safetensors"
+    )
+
+    checkpoint = CheckpointInput("MOSS", Arch.moss, rescale_cfg=0)
+    model, clip, _vae = workflow.load_checkpoint_with_lora(w, checkpoint, models)
+    cond = workflow.ConditioningOutput(
+        w.clip_text_encode(clip.model, "a test", Arch.moss),
+        w.clip_text_encode(clip.model, "", Arch.moss),
+    )
+    latents = w.empty_latent_image(Extent(1024, 1024), Arch.moss)
+    w.sampler_custom_advanced(
+        model,
+        cond,
+        latents,
+        Arch.moss,
+        sampler="er_sde",
+        scheduler="simple",
+        steps=25,
+        cfg=2.5,
+        extent=Extent(1024, 1024),
+    )
+
+    loaders = {n["class_type"]: n["inputs"] for n in w.root.values()}
+    if custom_nodes:
+        unet, te = loaders["MOSSImageUNETLoader"], loaders["MOSSImageCLIPLoader"]
+        assert "UNETLoader" not in loaders and "CLIPLoader" not in loaders
+    else:
+        unet, te = loaders["UNETLoader"], loaders["CLIPLoader"]
+        assert te["type"] == "moss_image"
+    assert unet["unet_name"] == "moss_image_sft_int8_convrot.safetensors"
+    assert te["clip_name"] == "qwen3.5_9b_int8_convrot.safetensors"
+    assert loaders["ModelSamplingSD3"]["shift"] == 5.0
+    assert loaders["VAELoader"]["vae_name"] == "flux2-vae_small.safetensors"
+    assert loaders["EmptyFlux2LatentImage"]["width"] == 1024
+    assert "ReferenceLatent" not in loaders
+    assert "CFGGuider" in loaders and "BasicGuider" not in loaders
+    assert loaders["BasicScheduler"]["scheduler"] == "simple"
+    assert loaders["KSamplerSelect"]["sampler_name"] == "er_sde"
+    slg = [n["inputs"] for n in w.root.values() if n["class_type"] == "SkipLayerGuidanceDiTSimple"]
+    assert len(slg) == 1
+    assert slg[0]["single_layers"] == "22" and slg[0]["double_layers"] == ""
 
 
 def test_prepare_lora():

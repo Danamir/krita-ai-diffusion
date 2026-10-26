@@ -648,6 +648,24 @@ class ComfyWorkflow:
         else:
             return default
 
+    def skip_layer_guidance(
+        self,
+        model: Output,
+        single_layers: str,
+        double_layers: str = "",
+        start_percent=0.0,
+        end_percent=1.0,
+    ):
+        return self.add(
+            "SkipLayerGuidanceDiTSimple",
+            1,
+            model=model,
+            double_layers=double_layers,
+            single_layers=single_layers,
+            start_percent=start_percent,
+            end_percent=end_percent,
+        )
+
     def load_checkpoint(self, checkpoint: str):
         if "__unet__" in checkpoint:
             # -Configuration-
@@ -698,6 +716,12 @@ class ComfyWorkflow:
             return self.add("UNETLoaderNF4", 1, unet_name=model_name)
 
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
+
+    def load_moss_diffusion_model(self, model_name: str):
+        return self.add_cached("MOSSImageUNETLoader", 1, unet_name=model_name, weight_dtype="default")
+
+    def load_moss_clip(self, clip_name: str):
+        return self.add_cached("MOSSImageCLIPLoader", 1, clip_name=clip_name, device="default")
 
     def load_clip(self, clip_name: str, type: str):
         node = "CLIPLoader"
@@ -810,7 +834,7 @@ class ComfyWorkflow:
         w, h = extent.width, extent.height
         if arch.is_flux_like or arch.is_qwen_like or arch in (Arch.sd3, Arch.chroma, Arch.zimage, Arch.anima):
             return self.add("EmptySD3LatentImage", 1, width=w, height=h, batch_size=batch_size)
-        if arch.is_flux2 or arch is Arch.ernie:
+        if arch.is_flux2 or arch is Arch.ernie or arch is Arch.moss:
             return self.add("EmptyFlux2LatentImage", 1, width=w, height=h, batch_size=batch_size)
         else:
             return self.add("EmptyLatentImage", 1, width=w, height=h, batch_size=batch_size)
