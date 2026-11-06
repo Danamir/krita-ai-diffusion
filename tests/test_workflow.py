@@ -13,10 +13,12 @@ from ai_diffusion.backend.api import (
     ConditioningInput,
     ControlInput,
     CustomWorkflowInput,
+    ExtentInput,
     FillMode,
     ImageInput,
     InpaintMode,
     InpaintParams,
+    Krea2EditInput,
     LoraInput,
     RegionInput,
     SamplingInput,
@@ -269,6 +271,97 @@ def test_anima_lllite_control_workflow():
     assert w.root[str(model.node - 1)]["inputs"]["weights"] == "anima-lllite-anytest.safetensors"
     assert any(n["class_type"] == "ETN_control_load" for n in w.root.values())
     assert not any(n["class_type"] == "ControlNetLoader" for n in w.root.values())
+
+
+def _krea2_edit_models(custom_nodes=True, loras=True):
+    models = ClientModels()
+    if custom_nodes:
+        models.node_inputs = ComfyObjectInfo({"Krea2EditModelPatch": {}, "Krea2EditGroundedEncode": {}})
+    models.checkpoints = {
+        "Krea2": CheckpointInfo("krea2_lustify.safetensors", Arch.krea2, FileFormat.diffusion)
+    }
+    models.resources[resource_id(ResourceKind.text_encoder, Arch.all, "qwen_3vl_4b")] = (
+        "qwen3vl_4b.safetensors"
+    )
+    models.resources[resource_id(ResourceKind.vae, Arch.krea2, "default")] = "qwen_image_vae.safetensors"
+    if loras:
+        models.resources[resource_id(ResourceKind.lora, Arch.krea2, "edit")] = (
+            "krea2_general_edit_v2.safetensors"
+        )
+        models.resources[resource_id(ResourceKind.lora, Arch.krea2, "identity_edit")] = (
+            "krea2_identity_edit_v2.safetensors"
+        )
+    return models
+
+
+def _krea2_edit_job(references: int, edit: Krea2EditInput | None = None, edit_reference=True):
+    image = Image.create(Extent(512, 512))
+    control = [ControlInput(ControlMode.reference, Image.create(Extent(256, 256)))] * references
+    cond = ConditioningInput("make it red", control=control, edit_reference=edit_reference)
+    cond.krea2_edit = edit
+    return WorkflowInput(
+        WorkflowKind.refine,
+        images=ImageInput(ExtentInput(*[Extent(512, 512)] * 4), image),
+        models=CheckpointInput("Krea2", Arch.krea2),
+        sampling=SamplingInput("res_multistep", "simple", 1.0, 12),
+        conditioning=cond,
+    )
+
+
+@pytest.mark.parametrize("references", [0, 1])
+def test_krea2_edit_workflow(references: int):
+    edit = Krea2EditInput("identity_edit", 1024, ref_boost=2.5, ref_boost_a=0.8)
+    w = workflow.create(_krea2_edit_job(references, edit), _krea2_edit_models())
+    nodes = list(w.root.values())
+    by_type = {n["class_type"]: n["inputs"] for n in nodes}
+
+    assert by_type["LoraLoaderModelOnly"]["lora_name"] == "krea2_identity_edit_v2.safetensors"
+    patch = by_type["Krea2EditModelPatch"]
+    assert patch["fit_mode"] == "fit"
+    assert ("source_image_b" in patch) == (references == 1)
+    if references == 1:
+        assert patch["ref_boost"] == 2.5 and patch["ref_boost_a"] == 0.8
+    else:  # canvas alone is the last reference: the scene boost applies to it
+        assert patch["ref_boost"] == 0.8 and patch["ref_boost_a"] == 1.0
+    sampler = next(n for n in nodes if n["class_type"] == "SamplerCustomAdvanced")
+    assert patch["target_latent"] == sampler["inputs"]["latent_image"]
+
+    encodes = [n["inputs"] for n in nodes if n["class_type"] == "Krea2EditGroundedEncode"]
+    assert len(encodes) == 1  # cfg 1: no separate negative
+    assert encodes[0]["prompt"] == "make it red"
+    assert encodes[0]["grounding_px"] == 1024
+    assert ("image_b" in encodes[0]) == (references == 1)
+    assert "ReferenceLatent" not in by_type
+    assert "CLIPTextEncode" not in by_type
+
+
+def test_krea2_edit_negative():
+    job = _krea2_edit_job(0)
+    job.sampling = SamplingInput("res_multistep", "simple", 3.0, 20)
+    job.conditioning = ConditioningInput("remove the cup", "blurry", edit_reference=True)
+    w = workflow.create(job, _krea2_edit_models())
+    encodes = [n["inputs"] for n in w.root.values() if n["class_type"] == "Krea2EditGroundedEncode"]
+    assert sorted(e["prompt"] for e in encodes) == ["blurry", "remove the cup"]
+    assert all(e["grounding_px"] == 768 for e in encodes)
+
+
+def test_krea2_without_edit():
+    w = workflow.create(_krea2_edit_job(0, edit_reference=False), _krea2_edit_models())
+    types = {n["class_type"] for n in w.root.values()}
+    assert "Krea2EditModelPatch" not in types and "Krea2EditGroundedEncode" not in types
+    assert "LoraLoaderModelOnly" not in types
+
+
+def test_krea2_edit_too_many_references():
+    with pytest.raises(RuntimeError, match="one reference layer"):
+        workflow.create(_krea2_edit_job(2), _krea2_edit_models())
+
+
+@pytest.mark.parametrize("missing", ["nodes", "lora"])
+def test_krea2_edit_missing_requirements(missing: str):
+    models = _krea2_edit_models(custom_nodes=missing != "nodes", loras=missing != "lora")
+    with pytest.raises(RuntimeError, match="comfyui-krea2edit" if missing == "nodes" else "LoRA"):
+        workflow.create(_krea2_edit_job(0), models)
 
 
 @pytest.mark.parametrize("custom_nodes", [False, True])

@@ -998,6 +998,46 @@ class ComfyWorkflow:
         positive, negative, _ = self.add("TextEncodeQwenImage21", 3, **args)
         return ConditioningOutput(positive, negative)
 
+    def krea2_edit_grounded_encode(
+        self, clip: Output, prompt: str | Output, images: list[Output], grounding_px: int
+    ):
+        assert 1 <= len(images) <= 2, "Krea 2 edit supports one or two reference images"
+        args: dict[str, Any] = {"clip": clip, "prompt": prompt, "image": images[0]}
+        if len(images) > 1:
+            args["image_b"] = images[1]
+        args["grounding_px"] = grounding_px
+        args["system_prompt"] = ""
+        return self.add("Krea2EditGroundedEncode", 1, **args)
+
+    def krea2_edit_model_patch(
+        self,
+        model: Output,
+        vae: Output,
+        source_latent: Output,
+        images: list[Output],
+        target_latent: Output,
+        ref_boost: float = 1.0,
+        ref_boost_a: float = 1.0,
+    ):
+        # TODO: ref_boost_mask (optional MASK) restricts ref_boost to a region of the subject
+        # reference, e.g. a face. Could come from the reference layer's alpha or a selection.
+        assert 1 <= len(images) <= 2, "Krea 2 edit supports one or two reference images"
+        args: dict[str, Any] = {
+            "model": model,
+            "source_latent": source_latent,
+            "ref_boost": ref_boost,
+            "ref_boost_a": ref_boost_a,
+            "fit_mode": "fit",
+            "vae": vae,
+            "source_image": images[0],
+        }
+        if len(images) > 1:
+            args["source_image_b"] = images[1]
+        args["target_latent"] = target_latent
+        args["ref_position"] = "aligned (trained)"
+        args["ref_position_a"] = "aligned (trained)"
+        return self.add("Krea2EditModelPatch", 1, **args)
+
     def background_region(self, conditioning: Output):
         return self.add("ETN_BackgroundRegion", 1, conditioning=conditioning)
 

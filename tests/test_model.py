@@ -742,3 +742,86 @@ async def test_apply_region_group(workflows_dir: Path):
         assert isinstance(r2_right, tuple) and r2_right[3] == 0, (
             "result2: right side must be transparent"
         )
+
+
+def _add_krea2(model: DocumentModel, client: MockClient):
+    client.models.checkpoints["test_krea2.safetensors"] = CheckpointInfo(
+        "test_krea2.safetensors", Arch.krea2
+    )
+    model.style = _make_style("test_krea2.safetensors")
+
+
+@qtapp
+async def test_krea2_edit_settings_layer(workflows_dir: Path):
+    from ai_diffusion.model.control import settings_layer_id
+
+    krita_doc = Krita.instance().openDocument("test")
+    async with _model_env(krita_doc, workflows_dir) as (model, client):
+        _add_krea2(model, client)
+        assert len(model.layers.images) == 1
+        controls = model.edit_regions.control
+        assert len(controls) == 0
+
+        model.edit_mode = True
+        assert len(controls) == 1
+        settings = controls[0]
+        assert settings.layer_id == settings_layer_id and settings.is_supported
+        settings.grounding_px = 1024
+        settings.ref_boost_a = 3.0
+        settings.krea2_lora = "identity_edit"
+
+        model.edit_mode = False
+        assert not settings.is_supported  # not used outside Krea 2 edit mode
+        model.edit_mode = True
+        assert len(controls) == 1  # not duplicated
+        assert settings.is_supported
+
+        model.edit_regions.positive = "make it red"
+        model.generate()
+        result = await _wait_for_enqueue(client)
+        cond = result[0].conditioning
+        assert cond is not None and cond.edit_reference
+        assert cond.control == []  # the settings layer has no image
+        assert cond.krea2_edit is not None
+        assert cond.krea2_edit.lora == "identity_edit"
+        assert cond.krea2_edit.grounding_px == 1024 and cond.krea2_edit.ref_boost_a == 3.0
+
+
+@qtapp
+async def test_krea2_edit_reference_layer(workflows_dir: Path):
+    krita_doc = Krita.instance().openDocument("test")
+    nodes = []
+    for name in ("a", "b"):
+        node = krita_doc.createNode(name, "paintlayer")
+        img = Image.create(Extent(512, 512), fill=Qt.GlobalColor.green)
+        node.setPixelData(img.to_packed_bytes(), 0, 0, 512, 512)
+        krita_doc.rootNode().addChildNode(node, None)
+        nodes.append(node)
+    krita_doc.setActiveNode(nodes[0])
+
+    async with _model_env(krita_doc, workflows_dir) as (model, client):
+        _add_krea2(model, client)
+        controls = model.edit_regions.control
+        model.edit_mode = True
+
+        # with more than one layer the auto-added control references the active layer
+        assert len(controls) == 1
+        first = controls[0]
+        assert not first.is_settings and first.mode is ControlMode.reference
+        assert first.layer.name == "a" and first.is_supported
+        first.grounding_px = 512
+
+        model.edit_regions.positive = "make it red"
+        model.generate()
+        result = await _wait_for_enqueue(client)
+        cond = result[0].conditioning
+        assert cond is not None and len(cond.control) == 1
+        assert cond.krea2_edit is not None and cond.krea2_edit.grounding_px == 512
+
+        # a second real reference layer is not supported
+        krita_doc.setActiveNode(nodes[1])
+        second = controls.emplace()
+        assert second.mode is ControlMode.reference
+        assert not second.is_supported and "one reference layer" in second.error_text
+        controls.remove(first)
+        assert second.is_supported

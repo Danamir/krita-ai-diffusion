@@ -65,7 +65,7 @@ from ..text import create_ai_generated_xmp, create_img_metadata, extract_layers
 from ..util import PluginError, clamp, ensure, is_one, trim_text, unique
 from ..util import client_logger as log
 from .connection import Connection, ConnectionState
-from .control import ControlLayer
+from .control import ControlLayer, is_krea2_edit
 from .custom_workflow import (
     CustomGenerationMode,
     CustomWorkspace,
@@ -188,7 +188,21 @@ class DocumentModel(QObject, ObservableProperties):
         connection.error_changed.connect(self._forward_error)
         self.custom.validation_error_changed.connect(self._forward_validation_error)
         Styles.list().changed.connect(self._init_on_connect)
+        self.edit_mode_changed.connect(self._ensure_krea2_settings)
+        self.style_changed.connect(self._ensure_krea2_settings)
+        connection.state_changed.connect(self._ensure_krea2_settings)
         self._init_on_connect()
+
+    def _ensure_krea2_settings(self):
+        """Krea 2 edit settings live in a control layer, always provide one in edit mode."""
+        if not is_krea2_edit(self):
+            return
+        control = self.edit_regions.control
+        if control.settings is None and not any(c.uses_image_reference for c in control):
+            if len(self.layers.images) > 1:
+                control.add()  # reference on the active layer, holds the settings too
+            else:
+                control.add_settings()
 
     def _init_on_connect(self):
         if self._connection.state is not ConnectionState.connected:

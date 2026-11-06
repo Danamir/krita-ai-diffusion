@@ -104,6 +104,7 @@ class JobParams:
                 "end": c.end,
             }
             for c in control
+            if not c.is_settings
         ]
 
     @property

@@ -9,7 +9,7 @@ from PyQt6.QtGui import QColor
 
 from .. import util
 from ..backend import resources
-from ..backend.api import ControlInput
+from ..backend.api import ControlInput, Krea2EditInput
 from ..backend.resources import Arch, ControlMode, ResourceKind, resource_id
 from ..image import BlendMode, Bounds, Extent, Image
 from ..layer import Layer, LayerType
@@ -21,6 +21,14 @@ from .properties import ObservableProperties, Property
 
 if TYPE_CHECKING:
     from .model import DocumentModel
+
+# Virtual layer of the "--Settings--" control layer: holds Krea 2 edit settings without an image
+settings_layer_id = QUuid("{4b2f7c1e-8d3a-4e6b-9f05-2c7a1e9d6b38}")
+krea2_grounding_steps = (512, 768, 1024, 1536)
+
+
+def is_krea2_edit(model: DocumentModel):
+    return model.arch is Arch.krea2 and model.is_editing
 
 
 class ControlLayer(QObject, ObservableProperties):
@@ -41,6 +49,10 @@ class ControlLayer(QObject, ObservableProperties):
     has_range = Property(True)
     has_active_job = Property(False)
     error_text = Property("")
+    krea2_lora = Property("edit", persist=True)
+    grounding_px = Property(768, persist=True)
+    ref_boost = Property(1.0, persist=True)
+    ref_boost_a = Property(1.0, persist=True)
 
     mode_changed = pyqtSignal(ControlMode)
     layer_id_changed = pyqtSignal(QUuid)
@@ -55,6 +67,10 @@ class ControlLayer(QObject, ObservableProperties):
     has_active_job_changed = pyqtSignal(bool)
     has_range_changed = pyqtSignal(bool)
     error_text_changed = pyqtSignal(str)
+    krea2_lora_changed = pyqtSignal(str)
+    grounding_px_changed = pyqtSignal(int)
+    ref_boost_changed = pyqtSignal(float)
+    ref_boost_a_changed = pyqtSignal(float)
     modified = pyqtSignal(QObject, str)
 
     def __init__(self, model: DocumentModel, mode: ControlMode, layer_id: QUuid, index: int):
@@ -63,6 +79,7 @@ class ControlLayer(QObject, ObservableProperties):
         super().__init__()
         self._model = model
         self._index = index
+        self._list: ControlLayerList | None = None
         self._generate_job: jobs.Job | None = None
         self.layer_id = layer_id
         self.mode = mode
@@ -80,6 +97,20 @@ class ControlLayer(QObject, ObservableProperties):
         layer = self._model.layers.updated().find(self.layer_id)
         assert layer is not None, "Control layer has been deleted"
         return layer
+
+    @property
+    def is_settings(self):
+        return self.layer_id == settings_layer_id
+
+    @property
+    def uses_image_reference(self):
+        """True if the layer's image is passed as a reference image to edit models."""
+        if self.is_settings:
+            return False
+        return self.mode.is_ip_adapter or self.mode.can_substitute_instruction(self._model.arch)
+
+    def to_krea2_edit(self):
+        return Krea2EditInput(self.krea2_lora, self.grounding_px, self.ref_boost, self.ref_boost_a)
 
     def set_mode(self, mode: ControlMode):
         if mode != self.mode:
@@ -119,6 +150,7 @@ class ControlLayer(QObject, ObservableProperties):
         self._update_is_supported()
 
     def to_api(self, bounds: Bounds | None = None, time: int | None = None):
+        assert not self.is_settings, "Settings control layer has no image"
         layer = self.layer
         if not self.is_supported:
             raise PluginError(f"Can't use '{layer.name}' as control layer: {self.error_text}")
@@ -204,6 +236,14 @@ class ControlLayer(QObject, ObservableProperties):
         from .root import root
 
         is_supported = True
+        if self.is_settings:
+            if not is_krea2_edit(self._model):
+                self.error_text = _("Only used in Krea 2 edit mode")
+                is_supported = False
+            self.is_supported = is_supported
+            self.can_generate = False
+            return
+
         if client := root.connection.client_if_connected:
             models = client.models.for_arch(self._model.arch)
 
@@ -252,6 +292,14 @@ class ControlLayer(QObject, ObservableProperties):
                         self.error_text = _("Not supported for") + f" {models.arch.value}"
                     is_supported = False
 
+            if is_supported and models.arch is Arch.krea2 and self.uses_image_reference:
+                if not self._model.is_editing:
+                    self.error_text = _("Krea 2 supports reference layers in edit mode only")
+                    is_supported = False
+                elif self._has_previous_image_reference():
+                    self.error_text = _("Krea 2 edit supports only one reference layer")
+                    is_supported = False
+
             if self._index >= client.features.max_control_layers:
                 self.error_text = _("Too many control layers")
                 is_supported = False
@@ -259,7 +307,16 @@ class ControlLayer(QObject, ObservableProperties):
         self.is_supported = is_supported
         self.can_generate = is_supported and self.mode.has_preprocessor
 
+    def _has_previous_image_reference(self):
+        if self._list is None:
+            return False
+        previous = (c for c in self._list if c is not self and c.index < self.index)
+        return any(c.uses_image_reference for c in previous)
+
     def _update_is_pose_vector(self):
+        if self.is_settings:
+            self.is_pose_vector = False
+            return
         self.is_pose_vector = self.mode is ControlMode.pose and self.layer.type is LayerType.vector
 
     def _update_active_job(self):
@@ -293,11 +350,43 @@ class ControlLayerList(QObject):
         if layer is None:  # shouldn't be possible, Krita doesn't allow removing all non-mask layers
             log.warning("Trying to add control layer, but document has no suitable layer")
             return
-        mode = ControlMode.reference if self._model.arch.is_edit else self._last_mode
+        is_edit = self._model.arch.is_edit or is_krea2_edit(self._model)
+        mode = ControlMode.reference if is_edit else self._last_mode
         control = ControlLayer(self._model, mode, layer.id, len(self._layers))
+        self._insert(control, len(self._layers))
+
+    def add_settings(self):
+        """Adds the virtual "--Settings--" control layer on top of the list."""
+        control = ControlLayer(self._model, ControlMode.reference, settings_layer_id, 0)
+        self._insert(control, 0)
+        return control
+
+    def _insert(self, control: ControlLayer, index: int):
+        control._list = self
         control.mode_changed.connect(self._update_last_mode)
-        self._layers.append(control)
+        control.mode_changed.connect(self._update_supported)
+        control.layer_id_changed.connect(self._update_supported)
+        self._layers.insert(index, control)
+        for i, c in enumerate(self._layers):
+            c.index = i
         self.added.emit(control)
+
+    def _update_supported(self):
+        for c in self._layers:
+            c._update_is_supported()
+
+    @property
+    def settings(self):
+        return next((c for c in self._layers if c.is_settings), None)
+
+    def krea2_edit_input(self):
+        """Krea 2 edit settings from the topmost settings or reference control layer."""
+        if not is_krea2_edit(self._model):
+            return None
+        for c in self._layers:
+            if c.is_settings or (c.uses_image_reference and c.is_supported):
+                return c.to_krea2_edit()
+        return None
 
     def emplace(self):
         self.add()
@@ -311,9 +400,10 @@ class ControlLayerList(QObject):
             c.index = i
 
     def to_api(self, bounds: Bounds | None = None, time: int | None = None):
-        for layer in (c for c in self._layers if not c.is_supported):
+        layers = [c for c in self._layers if not c.is_settings]
+        for layer in (c for c in layers if not c.is_supported):
             log.warning(f"Trying to use control layer {layer.mode.name}: {layer.error_text}")
-        return [c.to_api(bounds, time) for c in self._layers if c.is_supported]
+        return [c.to_api(bounds, time) for c in layers if c.is_supported]
 
     def _update_last_mode(self, mode: ControlMode):
         self._last_mode = mode

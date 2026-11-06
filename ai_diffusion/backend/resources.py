@@ -220,7 +220,7 @@ class Arch(Enum):
 
     @property
     def supports_edit(self):  # includes text-to-image models that can also edit
-        return self.is_edit or self.is_flux2 or self is Arch.qwen2
+        return self.is_edit or self.is_flux2 or self in [Arch.qwen2, Arch.krea2]
 
     @property
     def is_sdxl_like(self):
@@ -439,7 +439,7 @@ class ControlMode(Enum):
 
     def can_substitute_instruction(self, arch: Arch):
         """True if this control mode is covered by instruction-following edit models."""
-        if arch.is_flux2 or arch is Arch.qwen2:
+        if arch.is_flux2 or arch in [Arch.qwen2, Arch.krea2]:
             return self in [
                 ControlMode.style,
                 ControlMode.composition,
@@ -824,6 +824,8 @@ search_paths: dict[str, list[str]] = {
     resource_id(ResourceKind.lora, Arch.sdxl, ControlMode.face): ["ip-adapter-faceid-plusv2_sdxl_lora", "ip-adapter-faceid_sdxl_lora"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.depth): ["flux1-depth"],
     resource_id(ResourceKind.lora, Arch.flux, ControlMode.canny_edge): ["flux1-canny"],
+    resource_id(ResourceKind.lora, Arch.krea2, "edit"): ["krea2_general_edit_v2", "krea2_general_edit"],
+    resource_id(ResourceKind.lora, Arch.krea2, "identity_edit"): ["krea2_identity_edit_v2", "krea2_identity_edit"],
     resource_id(ResourceKind.lora, Arch.flux2_4b, ControlMode.inpaint): ["flux-2-klein-4B-outpaint-lora", "4b-outpaint-lora", "LyNiaZ53Tudg0J6sT8Xbx"],
     resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.universal): ["z-image-turbo-fun-controlnet-union-2.1", "z-image-turbo-fun-controlnet-union"],
     resource_id(ResourceKind.model_patch, Arch.zimage, ControlMode.blur): ["z-image-turbo-fun-controlnet-tile-2.1", "z-image-turbo-fun-controlnet-tile"],

@@ -32,6 +32,7 @@ from .api import (
     ImageInput,
     InpaintMode,
     InpaintParams,
+    Krea2EditInput,
     LoraInput,
     RegionInput,
     SamplingInput,
@@ -496,6 +497,7 @@ class Conditioning:
     regions: list[Region] = field(default_factory=list)
     style_prompt: str = ""
     edit_reference: bool = False
+    krea2_edit: Krea2EditInput | None = None
 
     @staticmethod
     def from_input(i: ConditioningInput, sampling: SamplingInput | None):
@@ -507,6 +509,7 @@ class Conditioning:
             [Region.from_input(r, idx, i.language) for idx, r in enumerate(i.regions)],
             i.style,
             i.edit_reference,
+            i.krea2_edit,
         )
 
     def copy(self):
@@ -517,6 +520,7 @@ class Conditioning:
             [r.copy() for r in self.regions],
             self.style_prompt,
             self.edit_reference,
+            self.krea2_edit,
         )
 
     def downscale(self, original: Extent, target: Extent):
@@ -597,6 +601,69 @@ def apply_reference_conditioning(
     return prompt, input_latent
 
 
+def is_krea2_edit(cond: Conditioning, arch: Arch, image: Output | None):
+    return arch is Arch.krea2 and cond.edit_reference and image is not None
+
+
+def krea2_edit_images(w: ComfyWorkflow, cond: Conditioning, image: Output):
+    """Krea 2 edit takes the canvas (scene) and at most one reference layer (subject)."""
+    images = [image] + [c.image.load(w) for c in cond.all_control if c.mode.is_ip_adapter]
+    if len(images) > 2:
+        raise RuntimeError(_("Krea 2 edit supports only one reference layer"))
+    return images
+
+
+def encode_krea2_edit(
+    w: ComfyWorkflow, cond: Conditioning, clip: Clip, vae: Output, image: Output, tiled_vae: bool
+):
+    """The text encoder sees the reference images (grounding), the negative is encoded the same way.
+    Returns the VAE-encoded canvas, used both as starting latent and as source of the model patch.
+    """
+    params = cond.krea2_edit or Krea2EditInput()
+    images = krea2_edit_images(w, cond, image)
+    text = cond.positive.prepare(w, cond.style_prompt)
+    positive = w.krea2_edit_grounded_encode(clip.model, text, images, params.grounding_px)
+    negative = positive
+    if cond.negative is not None:
+        text = cond.negative.prepare(w)
+        negative = w.krea2_edit_grounded_encode(clip.model, text, images, params.grounding_px)
+    latent = vae_encode(w, vae, image, tiled_vae)
+    return ConditioningOutput(positive, negative), latent
+
+
+def apply_krea2_edit(
+    w: ComfyWorkflow,
+    model: Output,
+    cond: Conditioning,
+    vae: Output,
+    image: Output | None,
+    source_latent: Output | None,
+    target_latent: Output,
+    models: ModelDict,
+):
+    """Patches the model with the edit LoRA and the reference images as clean latent tokens."""
+    if not is_krea2_edit(cond, models.arch, image) or source_latent is None:
+        return model
+    if "Krea2EditModelPatch" not in models.node_inputs:
+        raise RuntimeError(_("Krea 2 edit requires the custom nodes from") + " comfyui-krea2edit")
+    params = cond.krea2_edit or Krea2EditInput()
+    lora = models.lora.find(params.lora)
+    if lora is None:
+        search = resources.search_path(ResourceKind.lora, Arch.krea2, params.lora) or []
+        missing = _("The server is missing the Krea 2 edit LoRA")
+        raise RuntimeError(f"{missing} ({', '.join(search)})")
+    images = krea2_edit_images(w, cond, ensure(image))
+    # ref_boost acts on the last image: the subject with two images, the canvas when it is alone
+    if len(images) > 1:
+        ref_boost, ref_boost_a = params.ref_boost, params.ref_boost_a
+    else:
+        ref_boost, ref_boost_a = params.ref_boost_a, 1.0
+    model = w.load_lora_model(model, lora, 1.0)
+    return w.krea2_edit_model_patch(
+        model, vae, source_latent, images, target_latent, ref_boost, ref_boost_a
+    )
+
+
 def encode_prompt(
     w: ComfyWorkflow,
     cond: Conditioning,
@@ -618,7 +685,9 @@ def encode_prompt(
         cond.positive.seed = sampling.seed
 
     if len(cond.regions) <= 1 or all(len(r.loras) == 0 for r in cond.regions):
-        if arch is Arch.qwen2:
+        if is_krea2_edit(cond, arch, image):
+            return encode_krea2_edit(w, cond, clip, vae, ensure(image), tiled_vae)
+        elif arch is Arch.qwen2:
             positive = cond.positive.prepare(w, cond.style_prompt)
             negative = cond.negative.prepare(w) if cond.negative else ""
             prompt = w.text_encode_qwen2(clip.model, vae, ref_images, positive, negative)
@@ -1149,6 +1218,7 @@ def inpaint(
     model = apply_ip_adapter(w, model, cond_base.control, models)
     model = apply_regional_ip_adapter(w, model, cond_base.regions, extent.initial, models)
     prompt, latent = encode_prompt(w, cond_base, clip, vae, regions, in_image, checkpoint.tiled_vae, sampling=sampling)
+    source_latent = latent
     model, prompt = apply_control(
         w, model, prompt, cond_base.all_control, extent.initial, vae, models
     )
@@ -1174,6 +1244,9 @@ def inpaint(
         inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
+    inpaint_model = apply_krea2_edit(
+        w, inpaint_model, cond_base, vae, in_image, source_latent, latent, models
+    )
     sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
@@ -1272,9 +1345,11 @@ def refine(
     in_image = w.load_image(image, alpha=models.arch.supports_alpha)
     in_image = scale_to_initial(extent, w, in_image, models)
     prompt, latent = encode_prompt(w, cond, clip, vae, regions, in_image, checkpoint.tiled_vae, sampling=sampling)
+    source_latent = latent
     latent = latent or vae_encode(w, vae, in_image, checkpoint.tiled_vae)
     latent_batch = w.batch_latent(latent, misc.batch_count)
     latent_batch = setup_latent_layers(w, latent_batch, extent.desired, misc.layer_count)
+    model = apply_krea2_edit(w, model, cond, vae, in_image, source_latent, latent_batch, models)
     model, prompt = apply_control(w, model, prompt, cond.all_control, extent.desired, vae, models)
     sampler_params = _sampler_params(sampling, extent.desired, arch=models.arch)
     sampler = w.sampler_custom_advanced(model, prompt, latent_batch, models.arch, **sampler_params)
@@ -1314,6 +1389,7 @@ def refine_region(
     initial_mask = scale_to_initial(extent, w, in_mask, models, is_mask=True)
 
     prompt, latent = encode_prompt(w, cond, clip, vae, regions, in_image, checkpoint.tiled_vae, sampling=sampling)
+    source_latent = latent
 
     if inpaint.use_inpaint_model and models.control.find(ControlMode.inpaint) is not None:
         cond.control.append(inpaint_control(in_image, initial_mask, models.arch))
@@ -1330,6 +1406,9 @@ def refine_region(
         inpaint_model = model
 
     latent = w.batch_latent(latent, misc.batch_count)
+    inpaint_model = apply_krea2_edit(
+        w, inpaint_model, cond, vae, in_image, source_latent, latent, models
+    )
     sampler_params = _sampler_params(sampling, extent.initial, arch=models.arch)
     out_latent = w.sampler_custom_advanced(
         inpaint_model, prompt, latent, models.arch, **sampler_params
@@ -1624,6 +1703,7 @@ _layer_replace = {
     Arch.flux2_9b: "image {}",
     Arch.qwen_e_p: "Picture {}",
     Arch.qwen2: "<image{}>",
+    Arch.krea2: "Image {}",
 }
 _control_instructions = {
     ControlMode.style: "Apply the style from {}.",

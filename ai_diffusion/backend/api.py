@@ -96,6 +96,14 @@ class ControlInput:
 
 
 @dataclass
+class Krea2EditInput:
+    lora: str = "edit"  # resource id of the edit LoRA: "edit" (general) or "identity_edit"
+    grounding_px: int = 768  # longest side of the images fed to the vision encoder, 0 = native
+    ref_boost: float = 1.0  # attention boost for the last reference (subject, or canvas alone)
+    ref_boost_a: float = 1.0  # attention boost for the first reference (canvas) with two images
+
+
+@dataclass
 class RegionInput:
     mask: Image
     bounds: Bounds
@@ -113,6 +121,7 @@ class ConditioningInput:
     regions: list[RegionInput] = field(default_factory=list)
     language: str = ""
     edit_reference: bool = False  # use input image as conditioning reference
+    krea2_edit: Krea2EditInput | None = None
 
 
 class InpaintMode(Enum):

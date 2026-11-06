@@ -423,6 +423,7 @@ def process_regions(
         positive=workflow.merge_prompt(parent_prompt, root.positive),
         negative=root.negative,
         control=control,
+        krea2_edit=root.control.krea2_edit_input(),
     )
 
     # Collect layers with linked regions. Optionally restrict to to child layers of a region.
