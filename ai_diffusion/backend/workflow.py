@@ -275,8 +275,8 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     if arch is Arch.moss:
         # MOSSImageUNETLoader uses shift 1.0, the reference workflow overrides it to 5.0
         model = w.model_sampling_sd3(model, shift=5.0)
-        # official recipe: skip layer 22 in the uncond pass; long text renders as garbage without it
-        model = w.skip_layer_guidance(model, single_layers="22")
+        # skip layers 22,24 in the uncond pass; long text renders as garbage without it
+        model = w.skip_layer_guidance(model, single_layers="22,24", end_percent=0.8)
 
     return model, Clip(clip, arch), vae
 

@@ -416,10 +416,14 @@ def test_moss_image_workflow(custom_nodes: bool):
     assert "ReferenceLatent" not in loaders
     assert "CFGGuider" in loaders and "BasicGuider" not in loaders
     assert loaders["BasicScheduler"]["scheduler"] == "simple"
-    assert loaders["KSamplerSelect"]["sampler_name"] == "er_sde"
+    assert "KSamplerSelect" not in loaders
+    er_sde = loaders["SamplerER_SDE"]
+    assert er_sde["solver_type"] == "ER-SDE" and er_sde["max_stage"] == 3
+    assert er_sde["eta"] == 1.0 and er_sde["s_noise"] == 1.1
     slg = [n["inputs"] for n in w.root.values() if n["class_type"] == "SkipLayerGuidanceDiTSimple"]
     assert len(slg) == 1
-    assert slg[0]["single_layers"] == "22" and slg[0]["double_layers"] == ""
+    assert slg[0]["single_layers"] == "22,24" and slg[0]["double_layers"] == ""
+    assert slg[0]["start_percent"] == 0.0 and slg[0]["end_percent"] == 0.8
 
 
 def test_prepare_lora():

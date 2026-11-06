@@ -434,7 +434,7 @@ class ComfyWorkflow:
                 output_count=2,
                 noise=self.random_noise(seed),
                 guider=first_pass_guider,
-                sampler=self.sampler_select(first_pass_sampler),
+                sampler=self.sampler_select(first_pass_sampler, arch),
                 sigmas=first_sigmas,
                 latent_image=latent_image,
             )[0]
@@ -444,7 +444,7 @@ class ComfyWorkflow:
                 output_count=2,
                 noise=self.disable_noise(),
                 guider=second_pass_guider,
-                sampler=self.sampler_select(sampler),
+                sampler=self.sampler_select(sampler, arch),
                 sigmas=second_sigmas,
                 latent_image=latent,
             )[1]
@@ -467,7 +467,7 @@ class ComfyWorkflow:
                 output_count=2,
                 noise=self.random_noise(seed),
                 guider=guider,
-                sampler=self.sampler_select(sampler),
+                sampler=self.sampler_select(sampler, arch),
                 sigmas=sigmas,
                 latent_image=latent_image,
             )[1]
@@ -586,12 +586,21 @@ class ComfyWorkflow:
             output_count=1,
         )
 
-    def sampler_select(self, sampler_name="dpmpp_2m_sde_gpu"):
+    def sampler_select(self, sampler_name="dpmpp_2m_sde_gpu", arch: Arch | None = None):
         if sampler_name == "euler_cfgpp":
             return self.add_cached(
                 "SamplerEulerCFGpp",
                 output_count=1,
                 version="regular",
+            )
+        elif sampler_name == "er_sde" and arch is Arch.moss:
+            return self.add_cached(
+                "SamplerER_SDE",
+                output_count=1,
+                solver_type="ER-SDE",
+                max_stage=3,
+                eta=1.0,
+                s_noise=1.1,
             )
         else:
             return self.add_cached(
