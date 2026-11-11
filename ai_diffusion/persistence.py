@@ -434,6 +434,16 @@ def _extract_prompts(image_text: dict[str, str]) -> tuple[str, str]:
                     positive = values[-1]
                     break
 
+        if not positive:
+            # Text typed in a string primitive linked to a prompt node
+            linked = _linked_to_prompt_nodes(workflow)
+            for node in workflow.get("nodes", []):
+                values = node.get("widgets_values", [])
+                if node.get("type") in _comfy_primitive_string_nodes and node.get("id") in linked:
+                    if values and isinstance(values[0], str) and values[0].strip():
+                        positive = values[0]
+                        break
+
     return positive.strip(), negative.strip()
 
 
@@ -441,8 +451,28 @@ _comfy_sampler_types = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "Sample
 # Generated texts are not stored in the image, zeroed out conditionings have no text
 _comfy_ignore_nodes = ["LLMPromptGenerator", "LLMSampler", "TextGenerate", "ConditioningZeroOut"]
 _comfy_prompt_text_nodes = ["CLIPTextEncode", "ImpactWildcardProcessor"]
+# Core string primitives, possibly linked to the text input of the prompt nodes
+_comfy_primitive_string_nodes = ["PrimitiveStringMultiline", "PrimitiveString"]
 _comfy_text_links = ["conditioning", "positive", "text", "string", "prompt"]  # Followed first by the fallback
 _comfy_model_links = ["model", "guider"]  # Followed from a sampler up to the model loader
+
+
+def _linked_to_prompt_nodes(workflow: dict) -> set:
+    """Ids of the UI workflow nodes having an output linked to a prompt text node."""
+    nodes = workflow.get("nodes", [])
+    prompt_ids = {node.get("id") for node in nodes if node.get("type") in _comfy_prompt_text_nodes}
+    linked = set()
+    for link in workflow.get("links", []):
+        # Links are [id, origin_id, origin_slot, target_id, target_slot, type] lists, or dicts
+        if isinstance(link, list) and len(link) >= 4:
+            origin, target = link[1], link[3]
+        elif isinstance(link, dict):
+            origin, target = link.get("origin_id"), link.get("target_id")
+        else:
+            continue
+        if target in prompt_ids:
+            linked.add(origin)
+    return linked
 
 
 def _find_lora_tags(prompt: dict[str, dict]) -> list[tuple[str, str]]:
@@ -546,8 +576,15 @@ def _find_text_prompt_custom(
         return combine()
     elif class_type == "Text _O":
         return resolve(inputs.get("text", ""))
+    elif class_type == "SDXLPromptStylerAdvanced":
+        # Outputs: positive G, L and combined text (0-2), then negative G, L and combined (3-5)
+        if output >= 3:
+            return resolve(inputs.get("text_negative", ""))
+        return resolve(inputs.get("text_positive_g") or inputs.get("text_positive_l", ""))
     elif class_type.startswith("SDXLPromptStyler"):
         return resolve(inputs.get("text_negative" if output == 1 else "text_positive", ""))
+    elif class_type in _comfy_primitive_string_nodes:
+        return resolve(inputs.get("value", ""))
     elif class_type == "ImpactConditionalBranch":
         return branch(inputs.get("cond"), inputs.get("tt_value", ""), inputs.get("ff_value", ""))
     elif "on_true" in inputs and "on_false" in inputs:  # ComfySwitchNode and similar switches
