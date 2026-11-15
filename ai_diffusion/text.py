@@ -132,6 +132,37 @@ def extract_loras(prompt: str, lora_files: FileCollection):
     return prompt.strip(), loras
 
 
+_override_item = r":([a-z_]+)(?:=|[ \t]+)([^:\s]+)"
+pattern_sampling_override = re.compile(
+    rf"^[ \t]*((?:{_override_item}[ \t]*)+)$\n?", re.MULTILINE | re.IGNORECASE
+)
+pattern_sampling_override_item = re.compile(_override_item, re.IGNORECASE)
+_sampling_override_types = {"steps": int, "cfg": float, "seed": int}
+_sampling_override_aliases = {"step": "steps"}
+
+
+def extract_sampling_overrides(prompt: str) -> tuple[str, dict[str, int | float]]:
+    """Remove lines like `:steps=10:cfg=1.0` or `:steps 10 :cfg 1.0` from the prompt
+    and return the parsed values."""
+    overrides: dict[str, int | float] = {}
+
+    def replace(match: re.Match[str]):
+        for name, value in pattern_sampling_override_item.findall(match[1]):
+            key = str(name).lower()
+            key = _sampling_override_aliases.get(key) or key
+            if parse := _sampling_override_types.get(key):
+                try:
+                    overrides[key] = parse(value)
+                except ValueError:
+                    log.warning(f"Invalid value for prompt sampling override {key}: {value}")
+            else:
+                log.warning(f"Unknown prompt sampling override: {key}")
+        return ""
+
+    prompt = pattern_sampling_override.sub(replace, prompt)
+    return prompt.strip(), overrides
+
+
 def _extract_layers(prompt: str, start_index=1):
     layer_index = start_index
     layer_names: dict[str, int] = {}

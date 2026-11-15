@@ -122,6 +122,7 @@ class ConditioningInput:
     language: str = ""
     edit_reference: bool = False  # use input image as conditioning reference
     krea2_edit: Krea2EditInput | None = None
+    sampling_override: dict[str, Any] = field(default_factory=dict)  # from ":steps=5:cfg=2" prompt lines
 
 
 class InpaintMode(Enum):

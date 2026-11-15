@@ -493,6 +493,54 @@ def test_prepare_negative():
     assert live.metadata["negative_prompt_final"] == ""
 
 
+def test_prepare_sampling_override():
+    models = ClientModels()
+    models.checkpoints = {"CP": CheckpointInfo("CP", Arch.sd15)}
+    files = FileLibrary(FileCollection(), FileCollection())
+    style = Style(Path("default.json"))
+    style.checkpoints = ["CP"]
+    style.sampler_steps = 30
+    style.cfg_scale = 5.0
+    cond = ConditioningInput("a cat\n:steps=7:cfg=1.0\non a mat", "ugly")
+
+    result = workflow.prepare_prompts(cond, style, seed=1, arch=Arch.sd15, files=files)
+    assert result.conditioning.positive == "a cat\non a mat"
+    assert result.conditioning.sampling_override == {"steps": 7, "cfg": 1.0}
+    assert result.conditioning.negative == ""  # override cfg=1 drops negative prompt
+    assert result.metadata["sampling_override"] == {"steps": 7, "cfg": 1.0}
+
+    job = workflow.prepare(
+        WorkflowKind.generate,
+        Extent(512, 512),
+        result.conditioning,
+        style,
+        seed=1,
+        perf=default_perf,
+        models=models,
+        files=files,
+    )
+    assert job.sampling and job.sampling.total_steps == 7 and job.sampling.cfg_scale == 1.0
+
+    cond = ConditioningInput("a {cat|dog|bird|fish|cow|pig}\n:seed 1234")
+    a = workflow.prepare_prompts(cond, style, seed=1, arch=Arch.sd15, files=files)
+    b = workflow.prepare_prompts(cond, style, seed=99, arch=Arch.sd15, files=files)
+    assert a.conditioning.positive == b.conditioning.positive  # wildcards use override seed
+    job = workflow.prepare(
+        WorkflowKind.generate,
+        Extent(512, 512),
+        a.conditioning,
+        style,
+        seed=1,
+        perf=default_perf,
+        models=models,
+        files=files,
+    )
+    assert job.sampling and job.sampling.seed == 1234
+
+    refine = workflow.sampling_from_style(style, 0.5, False, {"steps": 20})
+    assert refine.total_steps == 20 and refine.start_step == 10 and refine.cfg_scale == 5.0
+
+
 def test_prepare_wildcards():
     files = FileLibrary(FileCollection(), FileCollection())
     mask = Mask.rectangle(Bounds(0, 0, 10, 10), Bounds(0, 0, 10, 10)).to_image()

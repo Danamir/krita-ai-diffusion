@@ -15,6 +15,7 @@ from ..style import SamplerPresets, Style, StyleSettings
 from ..text import (
     eval_wildcards,
     extract_loras,
+    extract_sampling_overrides,
     merge_prompt,
     replace_layers,
     strip_prompt_comments,
@@ -64,10 +65,16 @@ def generate_seed():
     return random.randint(0, 2**32 - 1)
 
 
-def sampling_from_style(style: Style, strength: float, is_live: bool):
+def sampling_from_style(
+    style: Style, strength: float, is_live: bool, override: dict[str, Any] | None = None
+):
+    override = override or {}
     sampler_name = style.live_sampler if is_live else style.sampler
-    cfg = style.live_cfg_scale if is_live else style.cfg_scale
+    cfg = override.get("cfg", style.live_cfg_scale if is_live else style.cfg_scale)
     min_steps, max_steps = style.get_steps(is_live=is_live)
+    if "steps" in override:
+        max_steps = max(1, override["steps"])
+        min_steps = min(min_steps, max_steps)
     preset = SamplerPresets.instance()[sampler_name]
     result = SamplingInput(
         sampler=preset.sampler,
@@ -1757,6 +1764,7 @@ def prepare_prompts(
     ref_layers: dict[str, int] | None = None,
     files: FileLibrary | None = None,
     is_live=False,
+    apply_seed_override=True,
 ):
     cond = copy(cond)
     files = files or FileLibrary.instance()
@@ -1772,6 +1780,15 @@ def prepare_prompts(
 
     cond.style = style.style_prompt
     cond.positive = strip_prompt_comments(cond.positive)
+    cond.positive, overrides = extract_sampling_overrides(cond.positive)
+    for region in cond.regions:
+        region.positive, region_overrides = extract_sampling_overrides(region.positive)
+        overrides = region_overrides | overrides  # root prompt wins
+    cond.sampling_override = overrides
+    if overrides:
+        meta["sampling_override"] = overrides
+    if apply_seed_override and "seed" in overrides:
+        seed = int(overrides["seed"])  # wildcards follow the overridden seed
     cond.positive = eval_wildcards(cond.positive, seed)
     if cond.positive != meta["prompt"]:
         meta["prompt_eval"] = cond.positive
@@ -1785,7 +1802,7 @@ def prepare_prompts(
     if cond.positive != "":
         meta["prompt_final"] = merge_prompt(cond.positive, cond.style, cond.language)
 
-    cfg = style.live_cfg_scale if is_live else style.cfg_scale
+    cfg = overrides.get("cfg", style.live_cfg_scale if is_live else style.cfg_scale)
     if math.isclose(cfg, 1.0):
         cond.negative = ""  # CFG 1 does not use negative prompt
     else:
@@ -1840,8 +1857,8 @@ def prepare(
     """
     i = WorkflowInput(kind)
     i.conditioning = cond
-    i.sampling = sampling_from_style(style, strength, is_live)
-    i.sampling.seed = seed
+    i.sampling = sampling_from_style(style, strength, is_live, cond.sampling_override)
+    i.sampling.seed = int(cond.sampling_override.get("seed", seed))
     i.models = style.get_models(models.checkpoints)
     i.models.loras = unique(i.models.loras + (loras or []), key=lambda l: l.name)
     i.models.dynamic_caching = perf.dynamic_caching

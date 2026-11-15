@@ -1,3 +1,5 @@
+import pytest
+
 from ai_diffusion.backend.api import ConditioningInput, ControlInput, LoraInput
 from ai_diffusion.backend.resources import ControlMode
 from ai_diffusion.files import File, FileCollection
@@ -11,6 +13,7 @@ from ai_diffusion.text import (
     eval_wildcards,
     extract_layers,
     extract_loras,
+    extract_sampling_overrides,
     lora_name_triggers,
     merge_prompt,
     replace_layers,
@@ -425,3 +428,26 @@ def test_lora_name_triggers():
     assert lora_name_triggers("sdxl/style/Pixel Art (pixel art , retro)") == "pixel art, retro"
     assert lora_name_triggers("sdxl\\Neon (__ lights) (glow)") == "Neon lights, glow"
     assert lora_name_triggers("sdxl/detail_tweaker") == ""
+
+
+@pytest.mark.parametrize(
+    "prompt,expected_prompt,expected",
+    [
+        (":steps=5\na cat", "a cat", {"steps": 5}),
+        ("a cat\n:cfg=2.5", "a cat", {"cfg": 2.5}),
+        ("a cat\n  :steps=10:cfg=1.0  \non a mat", "a cat\non a mat", {"steps": 10, "cfg": 1.0}),
+        ("a cat\n:steps=abc:cfg=3", "a cat", {"cfg": 3.0}),
+        ("a cat\n:foo=1:steps=4", "a cat", {"steps": 4}),
+        ("ratio 16:9, a cat", "ratio 16:9, a cat", {}),
+        ("a cat :steps=5", "a cat :steps=5", {}),
+        ("a cat\n:steps 12 :cfg 3.5", "a cat", {"steps": 12, "cfg": 3.5}),
+        ("a cat\n:step=8:seed 42", "a cat", {"steps": 8, "seed": 42}),
+        (":Steps 6\na cat", "a cat", {"steps": 6}),
+        (":3 cute\na cat", ":3 cute\na cat", {}),
+        (":steps a cat", ":steps a cat", {}),
+    ],
+)
+def test_extract_sampling_overrides(prompt, expected_prompt, expected):
+    result, overrides = extract_sampling_overrides(prompt)
+    assert result == expected_prompt
+    assert overrides == expected

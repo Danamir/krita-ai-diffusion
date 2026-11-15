@@ -374,6 +374,7 @@ class DocumentModel(QObject, ObservableProperties):
                         self.arch,
                         params.inpaint_mode,
                         params.ref_layers,
+                        apply_seed_override=False,  # seed is already derived from the override
                     )
                     input.conditioning = next_prompt.conditioning
                     params.metadata = params.metadata | next_prompt.metadata
@@ -571,11 +572,12 @@ class DocumentModel(QObject, ObservableProperties):
                 style = self.style
                 is_live = style_node.input("sampler_preset", "auto") == "live"
                 custom_input.models = style.get_models(client.models.checkpoints)
-                custom_input.sampling = workflow.sampling_from_style(style, 1.0, is_live)
-
                 cond = ConditioningInput(self.regions.positive, self.regions.negative)
                 arch = resolve_arch(style, client)
                 prepared = workflow.prepare_prompts(cond, style, seed, arch)
+                custom_input.sampling = workflow.sampling_from_style(
+                    style, 1.0, is_live, prepared.conditioning.sampling_override
+                )
                 custom_input.positive_evaluated = prepared.metadata["prompt_final"]
                 custom_input.negative_evaluated = prepared.metadata["negative_prompt_final"]
                 custom_input.models.loras = unique(
