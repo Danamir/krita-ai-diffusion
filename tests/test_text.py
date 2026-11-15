@@ -454,6 +454,15 @@ def test_lora_name_triggers():
         ("a cat\n:seed=4-x", "a cat", {}),
         ("a cat\n:batch=3:batch-size 1", "a cat", {"batch": 3, "batch_size": 1}),
         ("a cat\n:batches=3", "a cat", {}),  # old name, now unknown
+        ("a cat\n<lora:turbo>:steps=6:cfg=1.0", "a cat\n<lora:turbo>", {"steps": 6, "cfg": 1.0}),
+        (
+            "<lora:my lora:0.5> :steps 4 <lora:b>\na cat",
+            "<lora:my lora:0.5> <lora:b>\na cat",
+            {"steps": 4},
+        ),
+        (":steps=6<lora:turbo>\na cat", "<lora:turbo>\na cat", {"steps": 6}),
+        ("<lora:turbo> <lora:b>\na cat", "<lora:turbo> <lora:b>\na cat", {}),
+        ("<lora:turbo> a cat :steps=6", "<lora:turbo> a cat :steps=6", {}),
     ],
 )
 def test_extract_sampling_overrides(prompt, expected_prompt, expected):

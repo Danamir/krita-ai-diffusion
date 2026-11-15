@@ -132,10 +132,14 @@ def extract_loras(prompt: str, lora_files: FileCollection):
     return prompt.strip(), loras
 
 
-_override_item = r":([a-z_-]+)(?:=|[ \t]+)([^:\s]+)"
+_override_item = r":([a-z_-]+)(?:=|[ \t]+)([^:\s<]+)"
+_override_lora = r"<lora:[^<>]*>"
+# A line made only of overrides, optionally mixed with <lora:...> tags (removed later anyway)
 pattern_sampling_override = re.compile(
-    rf"^[ \t]*((?:{_override_item}[ \t]*)+)$\n?", re.MULTILINE | re.IGNORECASE
+    rf"^[ \t]*((?:(?:{_override_lora}|{_override_item})[ \t]*)+)$\n?",
+    re.MULTILINE | re.IGNORECASE,
 )
+pattern_sampling_override_lora = re.compile(_override_lora, re.IGNORECASE)
 pattern_sampling_override_item = re.compile(_override_item, re.IGNORECASE)
 _sampling_override_types = {"steps": int, "cfg": float, "seed": int, "batch_size": int, "batch": int}
 _sampling_override_aliases = {"step": "steps"}
@@ -157,12 +161,16 @@ def _parse_seed_list(value: str) -> list[int]:
 
 def extract_sampling_overrides(prompt: str) -> tuple[str, dict[str, Any]]:
     """Remove lines like `:steps=10:cfg=1.0` or `:steps 10 :cfg 1.0` from the prompt
-    and return the parsed values. `:seed=42,50,69` or `:seed=42-45` sets `seed` to the first
+    and return the parsed values. The line may also hold `<lora:...>` tags, which are kept. `:seed=42,50,69` or `:seed=42-45` sets `seed` to the first
     value and `seeds` to the full list (one job per seed)."""
     overrides: dict[str, Any] = {}
 
     def replace(match: re.Match[str]):
-        for name, value in pattern_sampling_override_item.findall(match[1]):
+        loras = pattern_sampling_override_lora.findall(match[1])
+        items = pattern_sampling_override_item.findall(pattern_sampling_override_lora.sub(" ", match[1]))
+        if not items:
+            return match[0]  # only LoRA tags, leave the line alone
+        for name, value in items:
             key = str(name).lower().replace("-", "_")
             key = _sampling_override_aliases.get(key) or key
             if parse := _sampling_override_types.get(key):
@@ -177,6 +185,8 @@ def extract_sampling_overrides(prompt: str) -> tuple[str, dict[str, Any]]:
                     log.warning(f"Invalid value for prompt sampling override {key}: {value}")
             else:
                 log.warning(f"Unknown prompt sampling override: {key}")
+        if loras:  # keep the LoRA tags for extract_loras
+            return " ".join(loras) + ("\n" if match[0].endswith("\n") else "")
         return ""
 
     prompt = pattern_sampling_override.sub(replace, prompt)

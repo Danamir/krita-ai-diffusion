@@ -454,6 +454,12 @@ def test_prepare_lora():
     assert LoraInput("PINK_UNICORNS.safetensors", 0.77) in result.loras
     assert LoraInput("x/FRACTAL.safetensors", 0.55) in result.loras
 
+    cond = ConditioningInput("baloon\n<lora:PINK_UNICORNS:0.6>:steps=6:cfg=1.0")
+    mixed = workflow.prepare_prompts(cond, style, seed=29, arch=Arch.sd15, files=files)
+    assert mixed.conditioning.positive == "baloon crab"
+    assert mixed.conditioning.sampling_override == {"steps": 6, "cfg": 1.0}
+    assert LoraInput("PINK_UNICORNS.safetensors", 0.6) in mixed.loras
+
     job = workflow.prepare(
         WorkflowKind.generate,
         Extent(512, 512),
