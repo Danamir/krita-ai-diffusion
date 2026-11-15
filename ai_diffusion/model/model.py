@@ -361,8 +361,15 @@ class DocumentModel(QObject, ObservableProperties):
                 await self._connection.client.cancel(to_cancel)
             queue_mode = QueueMode.back
 
-        for i in range(count):
-            seed = sampling.seed + i * settings.batch_size
+        override = input.conditioning.sampling_override if input.conditioning else {}
+        batch_size = int(override.get("batch_size", settings.batch_size))
+        if kind is JobKind.diffusion and "batch" in override:
+            count = max(1, int(override["batch"]))  # replaces the "Batches" slider
+        seeds = [sampling.seed + i * batch_size for i in range(count)]
+        if kind is JobKind.diffusion and "seeds" in override:
+            seeds = override["seeds"]  # seed list from prompt replaces the job count
+
+        for i, seed in enumerate(seeds):
             params.seed = seed
             if i > 0:
                 input = replace(input, sampling=replace(sampling, seed=seed))

@@ -537,6 +537,21 @@ def test_prepare_sampling_override():
     )
     assert job.sampling and job.sampling.seed == 1234
 
+    for text, expected_batch in [(":seed=5,6,7", 1), (":seed=5,6:batch-size=3", 3), (":batch-size 2", 2)]:
+        cond = ConditioningInput(f"a cat\n{text}")
+        prepared = workflow.prepare_prompts(cond, style, seed=1, arch=Arch.sd15, files=files)
+        job = workflow.prepare(
+            WorkflowKind.generate,
+            Extent(512, 512),
+            prepared.conditioning,
+            style,
+            seed=1,
+            perf=default_perf,
+            models=models,
+            files=files,
+        )
+        assert job.batch_count == expected_batch, text
+
     refine = workflow.sampling_from_style(style, 0.5, False, {"steps": 20})
     assert refine.total_steps == 20 and refine.start_step == 10 and refine.cfg_scale == 5.0
 

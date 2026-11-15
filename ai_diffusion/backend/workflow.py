@@ -1944,6 +1944,10 @@ def prepare(
     if arch is Arch.sdxl and i.inpaint and i.inpaint.use_inpaint_model:
         i.models.dynamic_caching = False  # inpaint model incompatible with dynamic caching
 
+    if "batch_size" in cond.sampling_override:
+        i.batch_count = max(1, int(cond.sampling_override["batch_size"]))
+    elif "seeds" in cond.sampling_override:
+        i.batch_count = 1  # one image per listed seed
     i.batch_count = 1 if is_live else i.batch_count
     i.images.layer_count = layer_count if arch is Arch.qwen_l else 1
     i.color_match = 1.0 if settings.color_match else 0.0

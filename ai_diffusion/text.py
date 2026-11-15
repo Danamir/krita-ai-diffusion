@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import re
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from .backend.api import ConditioningInput, LoraInput, RegionInput, WorkflowKind
 from .files import FileCollection, FileSource
@@ -132,28 +132,48 @@ def extract_loras(prompt: str, lora_files: FileCollection):
     return prompt.strip(), loras
 
 
-_override_item = r":([a-z_]+)(?:=|[ \t]+)([^:\s]+)"
+_override_item = r":([a-z_-]+)(?:=|[ \t]+)([^:\s]+)"
 pattern_sampling_override = re.compile(
     rf"^[ \t]*((?:{_override_item}[ \t]*)+)$\n?", re.MULTILINE | re.IGNORECASE
 )
 pattern_sampling_override_item = re.compile(_override_item, re.IGNORECASE)
-_sampling_override_types = {"steps": int, "cfg": float, "seed": int}
+_sampling_override_types = {"steps": int, "cfg": float, "seed": int, "batch_size": int, "batch": int}
 _sampling_override_aliases = {"step": "steps"}
 
 
-def extract_sampling_overrides(prompt: str) -> tuple[str, dict[str, int | float]]:
+def _parse_seed_list(value: str) -> list[int]:
+    """Parse `42,50,69` and ranges like `42-45` (inclusive), which can be mixed: `1,5-7`."""
+    seeds: list[int] = []
+    for part in filter(None, value.split(",")):
+        if "-" in part:
+            start, end = (int(s) for s in part.split("-", 1))
+            if end < start:
+                raise ValueError(f"descending seed range {part}")
+            seeds.extend(range(start, end + 1))
+        else:
+            seeds.append(int(part))
+    return seeds
+
+
+def extract_sampling_overrides(prompt: str) -> tuple[str, dict[str, Any]]:
     """Remove lines like `:steps=10:cfg=1.0` or `:steps 10 :cfg 1.0` from the prompt
-    and return the parsed values."""
-    overrides: dict[str, int | float] = {}
+    and return the parsed values. `:seed=42,50,69` or `:seed=42-45` sets `seed` to the first
+    value and `seeds` to the full list (one job per seed)."""
+    overrides: dict[str, Any] = {}
 
     def replace(match: re.Match[str]):
         for name, value in pattern_sampling_override_item.findall(match[1]):
-            key = str(name).lower()
+            key = str(name).lower().replace("-", "_")
             key = _sampling_override_aliases.get(key) or key
             if parse := _sampling_override_types.get(key):
                 try:
-                    overrides[key] = parse(value)
-                except ValueError:
+                    if key == "seed" and ("," in value or "-" in value):
+                        seeds = _parse_seed_list(value)
+                        overrides["seed"] = seeds[0]
+                        overrides["seeds"] = seeds
+                    else:
+                        overrides[key] = parse(value)
+                except (ValueError, IndexError):
                     log.warning(f"Invalid value for prompt sampling override {key}: {value}")
             else:
                 log.warning(f"Unknown prompt sampling override: {key}")

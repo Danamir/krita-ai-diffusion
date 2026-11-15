@@ -445,6 +445,15 @@ def test_lora_name_triggers():
         (":Steps 6\na cat", "a cat", {"steps": 6}),
         (":3 cute\na cat", ":3 cute\na cat", {}),
         (":steps a cat", ":steps a cat", {}),
+        ("a cat\n:seed=42,50,69", "a cat", {"seed": 42, "seeds": [42, 50, 69]}),
+        ("a cat\n:batch-size 2:seed=7", "a cat", {"batch_size": 2, "seed": 7}),
+        ("a cat\n:seed=4,x", "a cat", {}),
+        ("a cat\n:seed=42-45", "a cat", {"seed": 42, "seeds": [42, 43, 44, 45]}),
+        ("a cat\n:seed 1,5-7", "a cat", {"seed": 1, "seeds": [1, 5, 6, 7]}),
+        ("a cat\n:seed=45-42", "a cat", {}),
+        ("a cat\n:seed=4-x", "a cat", {}),
+        ("a cat\n:batch=3:batch-size 1", "a cat", {"batch": 3, "batch_size": 1}),
+        ("a cat\n:batches=3", "a cat", {}),  # old name, now unknown
     ],
 )
 def test_extract_sampling_overrides(prompt, expected_prompt, expected):
