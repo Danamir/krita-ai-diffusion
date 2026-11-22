@@ -402,15 +402,17 @@ def test_moss_image_workflow(custom_nodes: bool):
     )
 
     loaders = {n["class_type"]: n["inputs"] for n in w.root.values()}
+    unet = loaders["UNETLoader"]
+    assert "MOSSImageUNETLoader" not in loaders
     if custom_nodes:
-        unet, te = loaders["MOSSImageUNETLoader"], loaders["MOSSImageCLIPLoader"]
-        assert "UNETLoader" not in loaders and "CLIPLoader" not in loaders
+        te = loaders["MOSSImageCLIPLoader"]
+        assert "CLIPLoader" not in loaders
     else:
-        unet, te = loaders["UNETLoader"], loaders["CLIPLoader"]
+        te = loaders["CLIPLoader"]
         assert te["type"] == "moss_image"
     assert unet["unet_name"] == "moss_image_sft_int8_convrot.safetensors"
     assert te["clip_name"] == "qwen3.5_9b_int8_convrot.safetensors"
-    assert loaders["ModelSamplingSD3"]["shift"] == 5.0
+    assert loaders["ModelSamplingAuraFlow"]["shift"] == 5.0
     assert loaders["VAELoader"]["vae_name"] == "flux2-vae_small.safetensors"
     assert loaders["EmptyFlux2LatentImage"]["width"] == 1024
     assert "ReferenceLatent" not in loaders

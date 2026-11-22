@@ -229,8 +229,6 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
     match model_info.format:
         case FileFormat.checkpoint:
             model, clip, vae = w.load_checkpoint(model_info.filename)
-        case FileFormat.diffusion if arch is Arch.moss and "MOSSImageUNETLoader" in models.node_inputs:
-            model = w.load_moss_diffusion_model(model_info.filename)
         case FileFormat.diffusion:
             model = w.load_diffusion_model(model_info.filename)
         case _:
@@ -280,8 +278,8 @@ def load_checkpoint_with_lora(w: ComfyWorkflow, checkpoint: CheckpointInput, mod
         model = w.apply_self_attention_guidance(model)
 
     if arch is Arch.moss:
-        # MOSSImageUNETLoader uses shift 1.0, the reference workflow overrides it to 5.0
-        model = w.model_sampling_sd3(model, shift=5.0)
+        # default shift is 1.0, the reference workflow overrides it to 5.0
+        model = w.model_sampling_aura_flow(model, shift=5.0)
         # skip layers 22,24 in the uncond pass; long text renders as garbage without it
         model = w.skip_layer_guidance(model, single_layers="22,24", end_percent=0.8)
 

@@ -726,9 +726,6 @@ class ComfyWorkflow:
 
         return self.add_cached("UNETLoader", 1, unet_name=model_name, weight_dtype="default")
 
-    def load_moss_diffusion_model(self, model_name: str):
-        return self.add_cached("MOSSImageUNETLoader", 1, unet_name=model_name, weight_dtype="default")
-
     def load_moss_clip(self, clip_name: str):
         return self.add_cached("MOSSImageCLIPLoader", 1, clip_name=clip_name, device="default")
 
