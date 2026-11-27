@@ -212,7 +212,7 @@ class Arch(Enum):
 
     @property
     def supports_image_analysis(self):  # text encoder is a vision-language model
-        return self in [Arch.qwen2, Arch.krea2]
+        return self in [Arch.qwen2, Arch.krea2, Arch.moss]
 
     @property
     def is_edit(self):  # edit models make changes to input images

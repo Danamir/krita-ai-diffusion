@@ -1981,7 +1981,11 @@ def prepare_create_control_image(
 def analyze_image(
     w: ComfyWorkflow, images: ImageInput, arch: Arch, prompt: str, seed: int, models: ClientModels
 ):
-    clip = load_text_encoder(w, arch, models)
+    thinking = True
+    if arch is Arch.moss:
+        clip, thinking = _load_moss_analyze_encoder(w, models)
+    else:
+        clip = load_text_encoder(w, arch, models)
     image = w.load_image(ensure(images.initial_image))
     if images.hires_mask:
         # White reads as blank paper to VL models, other fills get described as a border or frame
@@ -1989,9 +1993,25 @@ def analyze_image(
         image = w.composite_image_masked(image, white, w.load_mask(images.hires_mask))
     # thinking=False adds an empty <think> block, which Qwen3-VL Instruct models aren't trained on.
     # The 4B model then often starts its reply with a new "assistant" turn.
-    text = w.text_generate(clip, prompt, image, seed, thinking=True)
+    text = w.text_generate(clip, prompt, image, seed, thinking=thinking)
     w.preview_text(text)
     return w
+
+
+_moss_analyze_encoder = "qwen3-vl-4b-instruct-abliterated-fp8-scaled"
+
+
+def _load_moss_analyze_encoder(w: ComfyWorkflow, models: ClientModels):
+    # MOSSImageCLIPLoader output generates garbage text, so a separate encoder is loaded anyway.
+    # Prefer a lighter Qwen3-VL 4B, fall back to the MOSS Qwen3.5 9B with the native loader.
+    clip_files = models.node_inputs.options("CLIPLoader", "clip_name")
+    name = next((f for f in clip_files if _moss_analyze_encoder in f.lower()), None)
+    name = name or models.for_arch(Arch.all).text_encoder.find("qwen_3vl_4b")
+    if name:
+        return w.load_clip(name, type="krea2"), True
+    te = models.for_arch(Arch.moss).text_encoder
+    # Qwen3.5 is a hybrid model, thinking=False gives its standard no-reasoning template
+    return w.load_clip(te["qwen_35_9b"], type="moss_image"), False
 
 
 def prepare_analyze_image(
