@@ -350,10 +350,14 @@ def _read_image_text(filename: str) -> dict[str, str]:
     """Text chunks of an image, keyed by keyword ('parameters', 'prompt', ...).
 
     PNGs are parsed directly: QImageReader collapses newlines in text chunks, which would
-    flatten a multi-line prompt into a single paragraph. Other formats fall back to Qt.
+    flatten a multi-line prompt into a single paragraph. WebPs are parsed directly for the
+    EXIF tags written by ComfyUI, which Qt doesn't expose. Other formats fall back to Qt.
     """
     if filename.lower().endswith(".png"):
         if text := Image.read_png_text(filename):
+            return text
+    elif filename.lower().endswith(".webp"):
+        if text := Image.read_webp_text(filename):
             return text
     reader = QImageReader(filename)
     return {key: reader.text(key) for key in reader.textKeys()}

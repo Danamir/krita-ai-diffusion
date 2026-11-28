@@ -493,6 +493,55 @@ class Image:
         Path(img_path).write_bytes(result)
 
     @staticmethod
+    def read_webp_text(img_path: str | Path) -> dict[str, str]:
+        """Read "key:value" ASCII EXIF tags from a WebP file, as written by ComfyUI.
+
+        ComfyUI stores the prompt in tag 0x0110 ("prompt:{...}") and the workflow in tag
+        0x010F ("workflow:{...}"), counting down for additional extra_pnginfo entries.
+        """
+        result: dict[str, str] = {}
+        data = Path(img_path).read_bytes()
+        if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            return result
+
+        exif = b""
+        offset = 12
+        while offset + 8 <= len(data):
+            kind = data[offset : offset + 4]
+            size = struct.unpack("<I", data[offset + 4 : offset + 8])[0]
+            if kind == b"EXIF":
+                exif = data[offset + 8 : offset + 8 + size]
+                break
+            offset += 8 + size + size % 2
+        if exif.startswith(b"Exif\x00\x00"):
+            exif = exif[6:]
+        if len(exif) < 8 or exif[:2] not in (b"II", b"MM"):
+            return result
+
+        endian = "<" if exif[:2] == b"II" else ">"
+        ifd = struct.unpack(endian + "I", exif[4:8])[0]
+        if ifd + 2 > len(exif):
+            return result
+        count = struct.unpack(endian + "H", exif[ifd : ifd + 2])[0]
+        for i in range(count):
+            entry = ifd + 2 + i * 12
+            if entry + 12 > len(exif):
+                break
+            _tag, kind, length = struct.unpack(endian + "HHI", exif[entry : entry + 8])
+            if kind != 2:  # ASCII
+                continue
+            if length <= 4:
+                value = exif[entry + 8 : entry + 8 + length]
+            else:
+                start = struct.unpack(endian + "I", exif[entry + 8 : entry + 12])[0]
+                value = exif[start : start + length]
+            text = value.rstrip(b"\x00").decode("utf-8", errors="replace")
+            key, sep, rest = text.partition(":")
+            if sep and key and key.isidentifier():
+                result.setdefault(key, rest)
+        return result
+
+    @staticmethod
     def read_png_text(img_path: str | Path) -> dict[str, str]:
         """Read tEXt/zTXt/iTXt chunks from a PNG file, keyed by keyword.
 
